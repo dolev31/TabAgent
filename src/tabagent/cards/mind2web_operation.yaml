@@ -1,0 +1,53 @@
+card_version: 1
+name: mind2web_operation
+decision:
+  kind: single
+  group: task_uid
+  label: op
+  decision:
+  - task_uid
+  - step_index
+  eval:
+  - eval_original_op
+  - eval_op_value
+features:
+- name: instruction
+  family: state
+  type: text
+  description: task instruction (confirmed_task)
+- name: website
+  family: state
+  type: cat
+- name: domain
+  family: state
+  type: cat
+  description: 'web domain: Entertainment, Shopping or Travel'
+- name: subdomain
+  family: state
+  type: cat
+- name: n_prior_actions
+  family: state
+  type: num
+  args:
+    col: step_index
+  description: actions taken before this step
+- name: history_action_reprs
+  family: state
+  type: text
+  description: representations of the earlier actions of the task, ' | '-joined
+- name: target_tag
+  family: state
+  type: cat
+  description: HTML tag of the step's target element
+- name: target_type
+  family: state
+  type: cat
+  description: type attribute of the target element
+synth:
+  text_cols:
+  - instruction
+  k: 2
+provenance:
+  kind: hand-authored
+  ported_from: pre-release Mind2Web adapter (columns of the paper runs)
+  paper: Table 1

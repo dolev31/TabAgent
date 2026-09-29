@@ -1,0 +1,55 @@
+card_version: 1
+name: tau2_tool_shortlisting
+decision:
+  kind: ranking
+  group: task_uid
+  label: used
+  candidate: tool
+features:
+- name: instruction
+  family: state
+  type: text
+  description: The task's user scenario (the repr of its key-sorted dict, as in the pre-release tables).
+- name: instr_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: instruction
+- name: tool_name
+  family: schema
+  type: cat
+  description: The tool id with underscores as spaces.
+- name: tool_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: instruction
+    passage: tool_name
+    encoder: e5-small-v2
+  description: Centered e5 cosine between the instruction and the tool name (centering fitted per fold).
+- name: tool_task_lex
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: instruction
+    b: tool_name
+- name: tool_prior_usage
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: tool
+    fill: zero
+  description: Share of training tasks whose successful runs used the tool.
+synth:
+  text_cols:
+  - instruction
+  k: 4
+provenance:
+  kind: hand-authored
+  paper: Table 2 (tab:transfer_new), App. B.2
+  note: The pre-release per-agent card (materialize_tau2_cards / run_p2 / run_e8_tau2), with every
+    data-dependent statistic fitted inside the training fold.

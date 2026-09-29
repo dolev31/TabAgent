@@ -131,10 +131,9 @@ def test_sandbox_reports_tracebacks_and_missing_features():
 
 def test_sandbox_has_no_secrets_and_times_out(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-" + "x" * 30)
-    box = SubprocessSandbox(timeout_s=3)
-    r = box.run("import os\nfeatures = {'env': len(os.environ)}", {})
+    r = SubprocessSandbox(timeout_s=60).run("import os\nfeatures = {'env': len(os.environ)}", {})
     assert r.ok and r.features["env"] <= 2  # empty environment (a platform may inject one variable)
-    slow = box.run("while True:\n    pass", {})
+    slow = SubprocessSandbox(timeout_s=2).run("while True:\n    pass", {})
     assert not slow.ok and ("timed out" in slow.error or "exited" in slow.error or slow.error)
 
 

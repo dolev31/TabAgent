@@ -1,0 +1,59 @@
+card_version: 1
+name: skillsbench_skill_select
+decision:
+  kind: ranking
+  group: task_uid
+  label: relevant
+  candidate: skill_name
+features:
+- name: task_text
+  family: state
+  type: text
+  description: the task instruction (task.md)
+- name: skill_name
+  family: schema
+  type: cat
+- name: skill_desc
+  family: schema
+  type: text
+  description: first 800 characters of the skill's SKILL.md
+- name: skill_name_len
+  family: schema
+  type: num
+  source: word_count
+  args:
+    col: skill_name
+- name: skill_global_freq
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: skill_name
+  description: share of training tasks whose bundle contains the skill (fitted in-fold)
+- name: skill_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: task_text
+    passage: skill_desc
+    encoder: e5-small-v2
+- name: skill_task_lex_overlap
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: task_text
+    b:
+    - skill_name
+    - skill_desc
+synth:
+  text_cols:
+  - task_text
+  k: 2
+provenance:
+  kind: frozen
+  paper: Table 1 skill selection; Fig. 2a; Fig. 3
+  note: Pre-release skill_select card with every statistic fitted inside the training fold. The pre-release build
+    fitted skill_global_freq once on a fixed 70% split that overlaps the cross-validation test folds. The prior
+    hurts on SkillsBench; skillsbench_skill_select_noprior drops it.

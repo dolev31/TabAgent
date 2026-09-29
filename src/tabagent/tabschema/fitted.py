@@ -267,7 +267,9 @@ class KnnOutcome(FittedFeature):
         same = per_task.index.astype(str).to_numpy()[:, None] == np.asarray(self.tasks_, dtype=str)[None, :]
         sim[same] = -np.inf  # a training task never counts as its own neighbour
         kk = max(1, min(k, len(self.tasks_) - 1))
-        idx = np.argpartition(sim, -kk, axis=1)[:, -kk:]
+        # Deterministic neighbours: highest similarity first, ties broken by task id (duplicate texts occur).
+        tie = np.argsort(np.argsort(np.asarray(self.tasks_, dtype=str)))
+        idx = np.lexsort((np.broadcast_to(tie, sim.shape), -sim), axis=1)[:, :kk]
         vals = self.V_.to_numpy()
         means = pd.DataFrame(np.nanmean(vals[idx], axis=1), index=per_task.index, columns=self.V_.columns)
         means = means.fillna(self.colmean_)

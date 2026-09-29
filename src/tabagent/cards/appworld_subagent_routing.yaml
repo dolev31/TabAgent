@@ -1,0 +1,77 @@
+card_version: 1
+name: appworld_subagent_routing
+decision:
+  kind: policy
+  group: task_uid
+  label: success
+  candidate: system_id
+  reward: success
+  eval:
+  - eval_pass_fraction
+features:
+- name: instruction
+  family: state
+  type: text
+  description: the AppWorld task instruction, the only pre-decision context
+- name: instr_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: instruction
+- name: system_id
+  family: schema
+  type: text
+  description: >-
+    <agent>/<provider>/<model>. Tokenized as text, as in the paper runs, so systems that share an agent
+    architecture or a backbone share tokens.
+- name: architecture
+  family: schema
+  type: cat
+  source: python:tabagent.datasets.appworld:architecture
+  args:
+    col: system_id
+- name: backbone
+  family: schema
+  type: cat
+  source: python:tabagent.datasets.appworld:backbone
+  args:
+    col: system_id
+- name: backbone_family
+  family: schema
+  type: cat
+  source: python:tabagent.datasets.appworld:backbone_family
+  args:
+    col: system_id
+- name: prior_success_rate
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    value: success
+    fill: global
+  description: the system's success rate on the training tasks
+- name: prior_success_rank
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    value: success
+    stat: rank
+- name: system_success_on_similar
+  family: dependency
+  type: num
+  source: fitted:knn_outcome
+  args:
+    query: instruction
+    value: success
+    k: 15
+    encoder: e5-small-v2
+  description: the system's success rate on the 15 most similar training tasks (e5 instruction embeddings)
+provenance:
+  kind: hand-authored
+  paper: Table 1, sub-agent routing (AppWorld, 14 systems)
+  note: >-
+    The pre-release AppWorld routing card, whose priors were already refitted on every training fold. Its
+    task_family_solve_rate feature (the mean over systems of system_success_on_similar) has no fitted source
+    in this release and is omitted.

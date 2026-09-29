@@ -1,0 +1,113 @@
+card_version: 1
+name: llmrouterbench_model_routing
+decision:
+  kind: policy
+  group: task_uid
+  label: success
+  candidate: model_id
+  reward: success
+  eval:
+  - eval_cost_usd
+  - eval_prompt_tokens
+  - eval_completion_tokens
+features:
+- name: origin_query
+  family: state
+  type: text
+  description: the tau2-bench task instruction, the only pre-decision context
+- name: query_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: origin_query
+- name: query_char_len
+  family: state
+  type: num
+  source: char_len
+  args:
+    col: origin_query
+- name: query_domain
+  family: state
+  type: cat
+  source: python:tabagent.datasets.llmrouterbench:query_domain
+  args:
+    col: origin_query
+  description: airline, retail or telecom by keyword hits (at least two), else unknown
+- name: model_id
+  family: schema
+  type: cat
+- name: model_family
+  family: schema
+  type: cat
+  source: python:tabagent.datasets.llmrouterbench:model_family
+  args:
+    col: model_id
+- name: is_reasoning_model
+  family: schema
+  type: num
+  source: python:tabagent.datasets.llmrouterbench:is_reasoning_model
+  args:
+    col: model_id
+- name: price_in_per_1m
+  family: schema
+  type: num
+  source: python:tabagent.datasets.llmrouterbench:list_price
+  args:
+    col: model_id
+    side: in
+  description: public input price ($/1M tokens), LLMRouterBench README
+- name: price_out_per_1m
+  family: schema
+  type: num
+  source: python:tabagent.datasets.llmrouterbench:list_price
+  args:
+    col: model_id
+    side: out
+  description: public output price ($/1M tokens), LLMRouterBench README
+- name: price_rank
+  family: schema
+  type: num
+  source: python:tabagent.datasets.llmrouterbench:price_rank
+  args:
+    col: model_id
+- name: prior_success_rate
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    value: success
+    fill: global
+  description: the model's success rate on the training tasks
+- name: prior_success_rank
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    value: success
+    stat: rank
+- name: prior_mean_cost
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    value: eval_cost_usd
+    fill: global
+  description: the model's mean realized cost (USD) on the training tasks
+- name: model_success_on_similar
+  family: dependency
+  type: num
+  source: fitted:knn_outcome
+  args:
+    query: origin_query
+    value: success
+    k: 15
+    encoder: e5-small-v2
+  description: the model's success rate on the 15 most similar training tasks (e5 query embeddings)
+provenance:
+  kind: hand-authored
+  paper: Table 1, model routing (LLMRouterBench, de-leaked)
+  note: >-
+    The pre-release router card with every label-derived feature fitted inside the training folds (the
+    de-leaked protocol). Its task_family_solve_rate feature (the mean over models of
+    model_success_on_similar) has no fitted source in this release and is omitted.

@@ -1,0 +1,17 @@
+{
+ "source_id": "tau2_sft_final",
+ "files": [
+  {
+   "path": "README.md",
+   "url": "https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-final/resolve/b6a74d4c62296113ae183d2f8c5ec92be1f59bab/README.md",
+   "sha256": "077ee7157a7bcd91d9102d94040b0710f807fc98a946c3c3103f194fe7c8eb7c",
+   "size_bytes": 1921
+  },
+  {
+   "path": "tau2_sft_final.jsonl",
+   "url": "https://huggingface.co/datasets/Jarrodbarnes/tau2-sft-final/resolve/b6a74d4c62296113ae183d2f8c5ec92be1f59bab/tau2_sft_final.jsonl",
+   "sha256": "d8128595a64431033bde6ae3d2fcc43b7b532ecfc6f9f5d645ba2a5f2082f817",
+   "size_bytes": 8192692
+  }
+ ]
+}
