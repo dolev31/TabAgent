@@ -41,3 +41,14 @@ def test_download_verifies_checksum(tmp_path):
     assert download(url, tmp_path / "out" / "x.txt", good).read_text() == "hello"
     with pytest.raises(ValueError, match="checksum"):
         download(url, tmp_path / "out" / "y.txt", "0" * 64)
+
+
+def test_cache_keeps_dotted_names_apart(tmp_path):
+    import pandas as pd
+
+    from tabagent.datasets import _read_cache, _write_cache
+
+    a, b = tmp_path / "tau2__gpt-4.1__v2", tmp_path / "tau2__gpt-4.1-mini__v2"
+    _write_cache(a, pd.DataFrame({"x": [1]}))
+    _write_cache(b, pd.DataFrame({"x": [2, 3]}))
+    assert len(_read_cache(a)) == 1 and len(_read_cache(b)) == 2

@@ -71,21 +71,26 @@ def folds(name: str) -> dict:
     return {g: int(f) for g, f in json.loads(res.read_text())["by_group"].items()}
 
 
+def _cache_file(stem, ext: str):
+    # Not Path.with_suffix: dataset names contain dots (gpt-4.1), which it would treat as a suffix.
+    return stem.parent / f"{stem.name}.{ext}"
+
+
 def _read_cache(stem) -> pd.DataFrame | None:
     """Cached tables are written by this library: parquet when pyarrow is installed, else pickle."""
-    if stem.with_suffix(".parquet").exists():
-        return pd.read_parquet(stem.with_suffix(".parquet"))
-    if stem.with_suffix(".pkl").exists():
-        return pd.read_pickle(stem.with_suffix(".pkl"))
+    if _cache_file(stem, "parquet").exists():
+        return pd.read_parquet(_cache_file(stem, "parquet"))
+    if _cache_file(stem, "pkl").exists():
+        return pd.read_pickle(_cache_file(stem, "pkl"))
     return None
 
 
 def _write_cache(stem, df: pd.DataFrame) -> None:
     stem.parent.mkdir(parents=True, exist_ok=True)
     try:
-        df.to_parquet(stem.with_suffix(".parquet"), index=False)
+        df.to_parquet(_cache_file(stem, "parquet"), index=False)
     except ImportError:
-        df.to_pickle(stem.with_suffix(".pkl"))
+        df.to_pickle(_cache_file(stem, "pkl"))
 
 
 def load(
@@ -101,7 +106,7 @@ def load(
             f"{name}: {ds.source.license}. {ds.source.notes} Pass accept_license=True to confirm "
             "that your use complies with the upstream terms."
         )
-    tag = name.replace("/", "__")
+    tag = f"{name.replace('/', '__')}__v{ds.version}"
     if build_kwargs:
         tag += (
             "__"

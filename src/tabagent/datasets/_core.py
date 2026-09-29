@@ -123,3 +123,4 @@ class DatasetInfo:
     description: str = ""
     args: dict[str, Any] = field(default_factory=dict)
     requires_license_acceptance: bool = False
+    version: int = 1  # bump when the builder's output changes, so cached tables are rebuilt

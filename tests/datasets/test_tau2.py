@@ -15,7 +15,10 @@ SCENARIO = {"persona": None, "instructions": {"reason_for_call": "Cancel my trip
 
 
 def _sim(sid, task_id, reward, *calls):
-    msgs = [{"role": "assistant", "content": "Hi", "tool_calls": None}]
+    msgs = [
+        {"role": "assistant", "content": "Hi", "tool_calls": None},
+        {"role": "user", "content": f"customer request for task {task_id}", "tool_calls": None},
+    ]
     for i, (name, requestor) in enumerate(calls):
         call = {"id": f"{sid}-{i}", "name": name, "arguments": {}, "requestor": requestor}
         msgs.append({"role": requestor, "content": None, "tool_calls": [call]})
@@ -86,7 +89,14 @@ def test_agent_labels_union_successful_runs_only():
     assert pos == {t0: {"get_user_details", "cancel_reservation", "calculate"}, t1: {"toggle_data"}}
     row = df[(df.task_uid == t1) & (df.tool == "toggle_data")].iloc[0]
     assert row.tool_name == "toggle data" and row.domain == "telecom"
-    assert row.instruction == "{'instructions': 'Pay my bill.', 'persona': 'calm'}"
+    assert row.instruction == "customer request for task 1"  # what the agent sees, not the hidden scenario
+    legacy = tau2.agent_decisions([("x.json", airline), ("y.json", telecom)], AGENT, context="user_scenario")
+    assert (
+        legacy[legacy.task_uid == t1].instruction.iloc[0]
+        == "{'instructions': 'Pay my bill.', 'persona': 'calm'}"
+    )
+    with pytest.raises(ValueError, match="context"):
+        tau2.agent_decisions([("x.json", airline)], AGENT, context="oracle")
 
 
 def test_agent_duplicate_runs_and_shared_tasks():

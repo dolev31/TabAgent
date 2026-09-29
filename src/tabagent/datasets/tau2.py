@@ -122,14 +122,33 @@ def scenario_text(user_scenario: Any) -> str:
     return str(json.loads(json.dumps(user_scenario, sort_keys=True)))
 
 
+def _first_user(messages: Iterable[Mapping]) -> str:
+    """The first user message that carries text."""
+    return next((str(m["content"]) for m in messages if m.get("role") == "user" and m.get("content")), "")
+
+
 # --------------------------------------------------------------------------- official release (per agent)
-def agent_decisions(payloads: Iterable[tuple[str, Mapping]], agent: str) -> pd.DataFrame:
+CONTEXTS = ("first_user_message", "user_scenario")
+
+
+def agent_decisions(
+    payloads: Iterable[tuple[str, Mapping]], agent: str, context: str = "first_user_message"
+) -> pd.DataFrame:
     """Decision rows of one agent from ``(file name, parsed result file)`` pairs, in file order.
+
+    ``context`` selects the decision context text: what the agent itself sees before it acts, i.e. the
+    customer's first message in the task's first successful run, or the task's ``ticket`` for the solo
+    ("no-user") modes where no customer speaks (the default); or ``user_scenario``, the simulator's hidden
+    task description that the pre-release tables used (never visible to the agent).
 
     Task ids follow the trajectory-corpus builder: ``stable_uid("task", source, "<git commit>:<domain>:<id>",
     canonical_hash(task))``, so a task embedded identically in several result files is one group.
     """
-    tasks: dict[str, tuple[str, str]] = {}  # task uid -> (domain, instruction)
+    if context not in CONTEXTS:
+        raise ValueError(f"context must be one of {CONTEXTS}")
+    tasks: dict[str, tuple[str, str]] = {}  # task uid -> (domain, user scenario text)
+    tickets: dict[str, str] = {}  # task uid -> ticket (the solo modes' task statement)
+    first_user: dict[str, str] = {}  # task uid -> first user message of its first successful run
     used: dict[str, set[str]] = {}  # task uid -> tools of its successful runs, in order of first success
     seen: set[str] = set()
     for name, payload in payloads:
@@ -144,6 +163,7 @@ def agent_decisions(payloads: Iterable[tuple[str, Mapping]], agent: str) -> pd.D
             uid = stable_uid("task", OFFICIAL.id, f"{revision}:{domain}:{native}", canonical_hash(task))
             lookup[native] = uid
             tasks.setdefault(uid, (domain, scenario_text(task.get("user_scenario"))))
+            tickets.setdefault(uid, str(task.get("ticket") or ""))
         for j, sim in enumerate(payload.get("simulations") or []):
             traj = stable_uid("traj", OFFICIAL.id, name, sim.get("id") or f"{name}:{j}")
             if traj in seen:
@@ -164,18 +184,26 @@ def agent_decisions(payloads: Iterable[tuple[str, Mapping]], agent: str) -> pd.D
                         f"{name}: simulation {j} refers to task {task_id!r}, not embedded in the file"
                     )
                 used.setdefault(lookup[task_id], set()).update(called)
+                uid = lookup[task_id]
+                first_user.setdefault(uid, _first_user(sim.get("messages") or []) or tickets[uid])
     unknown = set().union(*used.values()) - set(AGENT_CATALOG)
     if unknown:
         raise ValueError(f"tools outside the 67-tool catalog: {sorted(unknown)}")
+
+    def text(t: str) -> str:
+        return first_user[t] if context == "first_user_message" else tasks[t][1]
+
     rows = [
-        (t, *tasks[t], c, c.replace("_", " "), int(c in tools))
+        (t, tasks[t][0], text(t), c, c.replace("_", " "), int(c in tools))
         for t, tools in used.items()
         for c in AGENT_CATALOG
     ]
     return pd.DataFrame(rows, columns=AGENT_COLUMNS)
 
 
-def build_agent(source: Source, download: bool = False, agent: str = AGENTS[0]) -> pd.DataFrame:
+def build_agent(
+    source: Source, download: bool = False, agent: str = AGENTS[0], context: str = "first_user_message"
+) -> pd.DataFrame:
     """Rebuild ``tau2/<agent>`` from the agent's result files of the pinned official release."""
     files = [p for p in source.files(RESULTS_DIR) if Path(p).name.startswith(f"{agent}_")]
     if not files:
@@ -185,7 +213,7 @@ def build_agent(source: Source, download: bool = False, agent: str = AGENTS[0]) 
         for rel in files:  # one file in memory at a time (the largest is 51 MB)
             yield Path(rel).name, json.loads(source.path(rel, download).read_text(encoding="utf-8"))
 
-    return agent_decisions(payloads(), agent)
+    return agent_decisions(payloads(), agent, context)
 
 
 # --------------------------------------------------------------------------- tau2-sft-final (per domain)
@@ -231,10 +259,6 @@ def called_tools(messages: Iterable[Mapping]) -> set[str]:
     return out
 
 
-def _first_user(messages: Iterable[Mapping]) -> str:
-    return next((str(m.get("content") or "") for m in messages if m.get("role") == "user"), "")
-
-
 def domain_decisions(
     records: Iterable[Mapping], catalogs: Mapping[str, list[dict]], domain: str | None = None
 ) -> pd.DataFrame:
@@ -271,12 +295,21 @@ def domain_decisions(
     return pd.DataFrame(rows, columns=DOMAIN_COLUMNS)
 
 
+#: Tools of the official toolkits left out of the per-domain catalogs, as in the paper: retail's
+#: ``get_item_details`` is never called by any agent (airline 14, retail 15, telecom 13; 38 in the union).
+EXCLUDED_TOOLS: dict[str, frozenset[str]] = {"retail": frozenset({"get_item_details"})}
+
+
 def build_domain(source: Source, download: bool = False, domain: str | None = None) -> pd.DataFrame:
     """Rebuild ``tau2/<domain>`` (or ``tau2/all-domains`` for ``domain=None``) from the pinned releases."""
     catalogs = {
-        d: parse_toolkit(
-            OFFICIAL.path(f"src/tau2/domains/{d}/tools.py", download).read_text(encoding="utf-8")
-        )
+        d: [
+            t
+            for t in parse_toolkit(
+                OFFICIAL.path(f"src/tau2/domains/{d}/tools.py", download).read_text(encoding="utf-8")
+            )
+            if t["tool"] not in EXCLUDED_TOOLS.get(d, frozenset())
+        ]
         for d in DOMAINS
     }
     with open(source.path("tau2_sft_final.jsonl", download), encoding="utf-8") as f:
@@ -298,11 +331,12 @@ DATASETS: list[DatasetInfo] = [
         decision="tool shortlisting (ranking, 67-tool dual-control catalog, one decision per task)",
         paper=_AGENT_PAPER,
         description=(
-            f"Tools the {agent} agent called in its successful official τ²-bench runs. As in the paper's "
-            "Table 2, the context text is the task's user scenario (the simulator's instructions), which the "
-            "agent itself never sees; use the tau2/<domain> tables for a deployment-realistic context."
+            f"Tools the {agent} agent called in its successful official τ²-bench runs. The context is the "
+            "customer's first message; load(..., context='user_scenario') rebuilds the pre-release tables, "
+            "whose context was the simulator's hidden task description."
         ),
         args={"agent": agent},
+        version=2,
     )
     for agent in AGENTS
 ] + [
@@ -320,6 +354,7 @@ DATASETS: list[DatasetInfo] = [
         paper=_DOMAIN_PAPER,
         description="Tools each tau2-sft-final trajectory called (outcome-agnostic; reward kept for eval).",
         args={"domain": d},
+        version=2,
     )
     for d in (*DOMAINS, None)
 ]
