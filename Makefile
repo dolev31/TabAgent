@@ -1,4 +1,4 @@
-.PHONY: setup hooks lint format test guard check
+.PHONY: setup hooks lint format test guard check docs reproduce
 
 setup:
 	uv sync --group dev
@@ -20,3 +20,9 @@ guard:
 	uv run python scripts/privacy_guard.py --all-commits
 
 check: lint test guard
+
+docs:
+	uv run --group docs mkdocs build --strict
+
+reproduce:
+	uv run python experiments/reproduce.py

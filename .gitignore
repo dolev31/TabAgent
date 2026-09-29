@@ -35,3 +35,5 @@ catboost_info/
 *.pt
 *.safetensors
 !tests/fixtures/**
+
+/site/

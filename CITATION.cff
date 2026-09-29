@@ -1,0 +1,44 @@
+cff-version: 1.2.0
+message: "If you use TabAgent, please cite the paper."
+title: "TabAgent"
+type: software
+license: Apache-2.0
+repository-code: "https://github.com/dolev31/TabAgent"
+authors:
+  - family-names: Levy
+    given-names: Ido
+  - family-names: Shlomov
+    given-names: Segev
+  - family-names: Yaeli
+    given-names: Avi
+  - family-names: Mashkif
+    given-names: Nir
+  - family-names: Adi
+    given-names: Asaf
+  - family-names: Goldshtein
+    given-names: Yinon
+  - family-names: Shapira
+    given-names: Eilam
+  - family-names: Choshen
+    given-names: Leshem
+preferred-citation:
+  type: article
+  title: "TabAgent: Distilling LLM Agent Components into Cheap Classifiers"
+  authors:
+    - family-names: Levy
+      given-names: Ido
+    - family-names: Shlomov
+      given-names: Segev
+    - family-names: Yaeli
+      given-names: Avi
+    - family-names: Mashkif
+      given-names: Nir
+    - family-names: Adi
+      given-names: Asaf
+    - family-names: Goldshtein
+      given-names: Yinon
+    - family-names: Shapira
+      given-names: Eilam
+    - family-names: Choshen
+      given-names: Leshem
+  year: 2026
