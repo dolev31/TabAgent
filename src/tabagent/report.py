@@ -37,6 +37,7 @@ class Report:
     llm_cost_per_call_usd: float | None = None
     importance: pd.Series | None = None
     notes: list[str] = field(default_factory=list)
+    cv: Any = field(default=None, repr=False)  # the CVResult behind the numbers
 
     def to_dict(self) -> dict[str, Any]:
         d = {
@@ -202,4 +203,4 @@ def evaluate(
         importance = feature_importance(fitted)
     except Exception:  # non-CatBoost heads
         importance = None
-    return Report(kind, dataset, results, latency, cost, llm_cost_per_call, importance, notes)
+    return Report(kind, dataset, results, latency, cost, llm_cost_per_call, importance, notes, res)

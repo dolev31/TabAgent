@@ -131,6 +131,18 @@ class GenericJsonAdapter:
             if step.get(self.step_name_key) == target
         ]
 
+    def components(self, trajs: list[Trajectory]) -> dict[str, int]:
+        """Step name -> number of successful trajectories containing it (the replaceable components)."""
+        counts: dict[str, int] = {}
+        drop = set(self.outcome_steps)
+        for t in trajs:
+            if not t.success:
+                continue
+            names = {s.get(self.step_name_key) for s in t.raw.get(self.steps_key, [])} - drop - {None}
+            for n in names:
+                counts[str(n)] = counts.get(str(n), 0) + 1
+        return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
+
     def candidates(self, dp: DecisionPoint) -> list[Candidate]:
         if self.candidates_fn is None:
             raise NotImplementedError("pass candidates_fn= to GenericJsonAdapter or use a dedicated adapter")

@@ -8,7 +8,7 @@ The framework has three parts, named as in the paper:
 """
 
 from tabagent.agent import TabAgent
-from tabagent.artifact import load
+from tabagent.api import TabAgentHead, load, onboard
 from tabagent.evaluation import cross_validate
 from tabagent.sklearn import TabAgentClassifier, TabAgentRanker, TabAgentRouter, pointwise, scorer
 from tabagent.tabhead import TabHead
@@ -26,6 +26,7 @@ __all__ = [
     "LeakageError",
     "TabAgent",
     "TabAgentClassifier",
+    "TabAgentHead",
     "TabAgentRanker",
     "TabAgentRouter",
     "TabHead",
@@ -34,6 +35,7 @@ __all__ = [
     "TabSynth",
     "cross_validate",
     "load",
+    "onboard",
     "pointwise",
     "scorer",
 ]
