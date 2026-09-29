@@ -13,7 +13,7 @@ from tabagent.evaluation import cross_validate
 from tabagent.sklearn import TabAgentClassifier, TabAgentRanker, TabAgentRouter, pointwise, scorer
 from tabagent.tabhead import TabHead
 from tabagent.table import DecisionSpec, DecisionTable, LeakageError
-from tabagent.tabschema import Feature, FeatureCard
+from tabagent.tabschema import Feature, FeatureCard, TabSchema, TabSchemaConfig
 from tabagent.tabsynth import TabSynth
 
 __version__ = "0.1.0.dev0"
@@ -29,6 +29,8 @@ __all__ = [
     "TabAgentRanker",
     "TabAgentRouter",
     "TabHead",
+    "TabSchema",
+    "TabSchemaConfig",
     "TabSynth",
     "cross_validate",
     "load",

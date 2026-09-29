@@ -1,0 +1,93 @@
+Based on the classification analysis from a single trajectory, write Python code to extract all identified features from this multi-agent trajectory data.
+
+Canonical features extracted from this trajectory:
+${potential_features}
+
+The schema of the trajectory data is given to you:
+${trajectory_schema}
+
+The schema of the potential features is given to you:
+${features_schema}
+
+Your task is to create a comprehensive feature extraction function that:
+1. Extract Basic Features: Write code to extract all identified features from the analysis.
+2. Engineer Computed Features: Implement the computations specified in the feature descriptions.
+3. Handle Multiple Data Sources: Process features from user inputs, system prompts, context, agent thoughts, etc.
+4. Create Classification Dataset: Extract relevant features and target labels for this trajectory.
+
+Note: The classification suitable component is given to you: ${target_name}
+In your code, you should only use the data that can be taken from the trajectory before the classification suitable component.
+The classification suitable component is in the step after the trajectory given to you ends.
+
+Requirements:
+- Create a main function
+    `extract_features_for_classification(trajectory_data)`
+- Include helper functions for each feature type (text processing, numeric extraction, etc.)
+- Return features in a structured dictionary named `features`.
+- Do not use `dict.get()` to access data, instead use `dict['key']`.
+- If an error occurs, you should throw an exception.
+- Do not use `exit()` or any command that will crash the program.
+- Do not include any logging or use of loggers.
+- Run the function in the global scope after all definitions.
+- The current trajectory data is available in the global `trajectory` variable.
+
+${retry_block}
+
+Code Structure Expected:
+```
+import json
+from typing import Dict, List, Any, Optional
+import re
+from collections import Counter
+
+def extract_features_for_classification(
+        trajectory_data: Dict) -> Dict[str, Any]:
+    """Main feature extraction function"""
+    pass
+
+def extract_text_features(text_data: str) -> Dict[str, Any]:
+    """Extract features from text fields"""
+    pass
+
+def extract_context_features(
+        trajectory_data: Dict,
+        current_step: int) -> Dict[str, Any]:
+    """Extract features from previous steps and context"""
+    pass
+
+def engineer_computed_features(
+        base_features: Dict) -> Dict[str, Any]:
+    """
+    Create engineered features
+    based on analysis suggestions
+    """
+    pass
+
+def calculate_features(
+        trajectory_data: Dict) -> Dict[str, Any]:
+    """Calculate features for the classification task"""
+    pass
+
+# use flatten_json to flatten every dict
+# that goes into the final csv file
+def flatten_json(obj, prefix=''):
+    flattened = {}
+    for key, value in obj.items():
+        if isinstance(value, dict):
+            flattened.update(
+                flatten_json(value, f"{prefix}{key}_"))
+        else:
+            flattened[f"{prefix}{key}"] = value
+    return flattened
+
+features = extract_features_for_classification(trajectory)
+```
+
+Output format:
+<thoughts>
+Your thoughts should only be placed here
+</thoughts>
+<code>
+Only the code you produce, not in any clauses.
+Should be ready to be run.
+</code>
