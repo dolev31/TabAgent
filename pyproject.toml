@@ -57,3 +57,7 @@ markers = [
   "gpu: needs a CUDA GPU",
   "network: needs network access (dataset downloads, live LLM endpoints)",
 ]
+
+[tool.ruff.lint.isort]
+known-first-party = ["tabagent"]
+known-local-folder = ["conftest"]
