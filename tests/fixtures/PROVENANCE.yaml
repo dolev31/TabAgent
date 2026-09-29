@@ -1,0 +1,4 @@
+# Every data-like fixture under tests/fixtures/ must be declared here, one per line:
+#   <path relative to tests/fixtures>: fabricated            (hand-made, contains no real agent data)
+#   <path relative to tests/fixtures>: <source>@<revision>   (a tiny sample of a public, redistributable benchmark)
+# scripts/privacy_guard.py rejects undeclared fixtures.
