@@ -81,7 +81,10 @@ class Featurizer:
         for col, kind, state in self.parts:
             s = X[col]
             if kind == "text":
-                blocks.append(state.transform(s.fillna("").astype(str)).toarray())
+                # Vectorize each distinct text once: a decision's context text repeats on every candidate row.
+                text = s.fillna("").astype(str)
+                codes, uniques = pd.factorize(text)
+                blocks.append(state.transform(uniques).toarray()[codes])
             elif kind == "num":
                 blocks.append(
                     pd.to_numeric(s, errors="coerce").fillna(state).to_numpy(dtype=float).reshape(-1, 1)

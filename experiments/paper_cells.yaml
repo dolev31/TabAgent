@@ -1,0 +1,99 @@
+# Every result of the paper that public data can reproduce, with the value the paper reports (percent).
+# Source: "TabAgent: Distilling LLM Agent Components into Cheap Classifiers", Table 1 (tab:master_new) and
+# Table 2 (tab:transfer_new). `python experiments/reproduce.py` recomputes each cell with the released code
+# and writes the paper-vs-released comparison to results/paper_cells.{json,md}.
+#
+# Protocol (paper Sec. 4.3, App. E): the paper's task-level folds (datasets.folds), three seeds, every
+# data-dependent statistic fitted inside the training folds, macro average over decisions, 95% bootstrap CI.
+# The +synth column is nested: TabSynth off / k=2 / k=4 is chosen by inner CV on each training fold.
+
+seeds: [20260720, 20260726, 20260727]
+
+cells:
+  # ---------------------------------------------------------------- set retrieval
+  - id: tau2-airline
+    row: "τ²-bench airline, tool shortlisting"
+    dataset: tau2/airline
+    metric: p@r
+    synth: true
+    paper: {tabagent: 71, synth: 75, recall@9: 96, chance: 21, bm25: 26, dsr_zs: 30, dsr_ft: 45, fewshot: 44, ft_slm: 60}
+  - id: tau2-retail
+    row: "τ²-bench retail, tool shortlisting"
+    dataset: tau2/retail
+    metric: p@r
+    synth: true
+    paper: {tabagent: 76, synth: 75, recall@9: 96, chance: 28, bm25: 39, dsr_zs: 48, dsr_ft: 42, fewshot: 59, ft_slm: 57}
+  - id: tau2-telecom
+    row: "τ²-bench telecom, tool shortlisting"
+    dataset: tau2/telecom
+    metric: p@r
+    synth: true
+    paper: {tabagent: 84, synth: 85, recall@9: 100, chance: 26, bm25: 41, dsr_zs: 46, dsr_ft: 27, fewshot: 55, ft_slm: 71}
+  - id: tau2-combined
+    row: "τ²-bench combined (airline, retail, telecom)"
+    dataset: tau2/all-domains
+    metric: p@r
+    synth: true
+    paper: {tabagent: 75, synth: 78, recall@9: 94, chance: 10, bm25: 29, dsr_zs: 34, dsr_ft: 42, fewshot: 31, ft_slm: 57}
+  - id: skill-selection
+    row: "SkillsBench skill selection"
+    dataset: skillsbench/skill-select
+    metric: p@r
+    variants: [skillsbench_skill_select, skillsbench_skill_select_noprior]
+    nested_variants: true  # also report the prior / no-prior choice made by inner CV on training folds
+    paper: {tabagent: 74, recall@9: 87, chance: 16, bm25: 60, dsr_zs: 17, dsr_ft: 38, fewshot: 35, ft_slm: 49}
+
+  # ---------------------------------------------------------------- classification
+  - id: operation-selection
+    row: "Mind2Web operation selection (3-way)"
+    dataset: mind2web/operation
+    metric: macro_f1
+    paper: {tabagent: 92, chance: 30, bm25: 55, dsr_zs: 48, dsr_ft: 54, fewshot: 70, ft_slm: 85}
+  - id: element-selection
+    row: "Mind2Web GUI element selection (R@3 per web domain; R@5 in the R@k column)"
+    dataset: mind2web/element-150
+    metric: recall@3
+    per_domain: true
+    synth: domain_matched  # one model per web domain, paraphrasing only that domain's rows (paper L1177)
+    synth_k: 2
+    paper:
+      tabagent: {Entertainment: 58, Shopping: 65, Travel: 64}
+      synth: {Entertainment: 68, Shopping: 74, Travel: 72}
+      recall@5: {Entertainment: 73, Shopping: 78, Travel: 75}
+      chance: 6
+      bm25: {Entertainment: 61, Shopping: 53, Travel: 59}
+      dsr_zs: {Entertainment: 15, Shopping: 16, Travel: 15}
+      dsr_ft: {Entertainment: 15, Shopping: 18, Travel: 23}
+
+  # ---------------------------------------------------------------- policy / reward
+  - id: subagent-routing
+    row: "AppWorld sub-agent routing (14 systems)"
+    dataset: appworld/subagent-routing
+    metric: route@1
+    requires: APPWORLD_ROOT
+    paper: {tabagent: 38, best_fixed: 36, chance: 16, oracle: 58, dsr_ft: 31, fewshot: 23, ft_slm: 35}
+  - id: model-routing
+    row: "LLMRouterBench model routing (12 models)"
+    dataset: llmrouterbench/tau2
+    metric: route@1
+    accept_license: true
+    paper: {tabagent: 68, best_fixed: 70, chance: 43, oracle: 94, bm25: 38, dsr_zs: 49, dsr_ft: 60, fewshot: 50, ft_slm: 70}
+  - id: skill-gating
+    row: "SkillsBench skill gating (activate the skill?)"
+    dataset: skillsbench/skill-gating
+    metric: route@1
+    paper: {tabagent: 49, best_fixed: 50, chance: 46, oracle: 56, fewshot: 43, ft_slm: 43}
+
+# ---------------------------------------------------------------- Table 2: cross-backbone transfer (P@R)
+transfer:
+  row: "τ²-bench cross-agent transfer (train on the row agent, test on the column agent's held-out tasks)"
+  agents:
+    claude-3.7-sonnet: tau2/claude-3-7-sonnet-20250219
+    gpt-4.1: tau2/gpt-4.1-2025-04-14
+    gpt-4.1-mini: tau2/gpt-4.1-mini-2025-04-14
+    o4-mini: tau2/o4-mini-2025-04-16
+  paper:
+    claude-3.7-sonnet: {claude-3.7-sonnet: 83.5, gpt-4.1: 79.7, gpt-4.1-mini: 80.7, o4-mini: 77.5}
+    gpt-4.1: {claude-3.7-sonnet: 80.2, gpt-4.1: 82.6, gpt-4.1-mini: 80.6, o4-mini: 78.0}
+    gpt-4.1-mini: {claude-3.7-sonnet: 83.0, gpt-4.1: 80.1, gpt-4.1-mini: 79.0, o4-mini: 77.6}
+    o4-mini: {claude-3.7-sonnet: 82.0, gpt-4.1: 81.5, gpt-4.1-mini: 80.9, o4-mini: 81.2}

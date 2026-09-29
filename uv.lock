@@ -4699,6 +4699,10 @@ dev = [
 docs = [
     { name = "mkdocs-material" },
 ]
+repro = [
+    { name = "matplotlib", version = "3.10.9", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.11'" },
+    { name = "matplotlib", version = "3.11.2", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.11'" },
+]
 
 [package.metadata]
 requires-dist = [
@@ -4726,6 +4730,7 @@ dev = [
     { name = "ruff", specifier = ">=0.6" },
 ]
 docs = [{ name = "mkdocs-material", specifier = ">=9.5" }]
+repro = [{ name = "matplotlib", specifier = ">=3.7" }]
 
 [[package]]
 name = "threadpoolctl"

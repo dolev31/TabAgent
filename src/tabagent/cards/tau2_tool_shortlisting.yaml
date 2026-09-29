@@ -9,7 +9,8 @@ features:
 - name: instruction
   family: state
   type: text
-  description: The task's user scenario (the repr of its key-sorted dict, as in the pre-release tables).
+  description: What the agent sees before acting - the customer's first message, or the ticket in the solo
+    (no-user) modes (context='user_scenario' rebuilds the pre-release tables).
 - name: instr_word_count
   family: state
   type: num

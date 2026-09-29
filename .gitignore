@@ -24,7 +24,7 @@ catboost_info/
 
 # Data, results and run artifacts never live in the repo (see scripts/privacy_guard.py).
 /data/
-/results/
+/results*/
 /runs/
 *.csv
 *.tsv

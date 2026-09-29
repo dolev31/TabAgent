@@ -80,3 +80,18 @@ def test_max_source_rows_subsample_is_seeded():
     a, _ = TabSynth(k=1, text_cols=["intent"], max_source_rows=10, seed=1).augment(X, y)
     b, _ = TabSynth(k=1, text_cols=["intent"], max_source_rows=10, seed=1).augment(X, y)
     assert len(a) == 10 and a.equals(b)
+
+
+def test_domain_matched_synthesis_L1177():
+    X = pd.DataFrame(
+        {
+            "intent": ["buy shoes now", "book a hotel", "buy a hat"],
+            "domain": ["Shopping", "Travel", "Shopping"],
+        }
+    )
+    Xs, ys = TabSynth(k=2, text_cols=["intent"], where={"domain": "Shopping"}).augment(X, np.array([1, 0, 1]))
+    assert len(Xs) == 4 and set(Xs["domain"]) == {"Shopping"} and ys.tolist() == [1, 1, 1, 1]
+    Xc, _ = TabSynth(k=1, text_cols=["intent"], where=lambda f: f["domain"] == "Travel").augment(
+        X, np.zeros(3)
+    )
+    assert Xc["intent"].tolist() == ["Task: book a hotel"]

@@ -55,6 +55,9 @@ class TabSynth:
     paraphrase: ``(text, j) -> text``; the default is the paper's deterministic rule-based paraphraser.
     max_source_rows: optionally paraphrase a seeded random subset of the real rows (for very large cards).
     seed: seeds only the ``max_source_rows`` subsample; the paraphrases themselves are deterministic.
+    where: paraphrase only the source rows matching ``{column: value}`` or a ``frame -> bool mask`` callable.
+        This is domain-matched synthesis (paper L1177): e.g. ``where={"domain": "Shopping"}`` adds
+        paraphrases of Shopping rows only, for the model evaluated on Shopping.
     """
 
     def __init__(
@@ -64,6 +67,7 @@ class TabSynth:
         paraphrase: Callable[[str, int], str] = det_paraphrase_v1,
         max_source_rows: int | None = None,
         seed: int = 20260720,
+        where=None,
     ):
         if k < 1:
             raise ValueError("k must be at least 1")
@@ -72,6 +76,7 @@ class TabSynth:
         self.paraphrase = paraphrase
         self.max_source_rows = max_source_rows
         self.seed = seed
+        self.where = where
         self.stats_: dict = {}
 
     def augment(
@@ -92,6 +97,14 @@ class TabSynth:
             return X.iloc[0:0].copy(), y[:0]
 
         src_idx = np.arange(len(X))
+        if self.where is not None:
+            if callable(self.where):
+                mask = np.asarray(self.where(X), dtype=bool)
+            else:
+                mask = np.ones(len(X), dtype=bool)
+                for col, value in self.where.items():
+                    mask &= (X[col] == value).to_numpy()
+            src_idx = src_idx[mask]
         if self.max_source_rows and len(X) > self.max_source_rows:
             src_idx = np.sort(
                 np.random.default_rng(self.seed).choice(len(X), self.max_source_rows, replace=False)

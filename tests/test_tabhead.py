@@ -120,3 +120,12 @@ def test_confidence_margin_and_largest_gap_L2347():
 def test_risk_coverage_defers_least_confident_first():
     rc = risk_coverage([0.9, 0.1, 0.5], [1, 0, 1])
     assert rc["selective_quality"].tolist() == pytest.approx([1.0, 1.0, 2 / 3])
+
+
+def test_featurizer_dedups_text_without_changing_output():
+    from sklearn.feature_extraction.text import TfidfVectorizer
+
+    X = pd.DataFrame({"t": ["alpha beta", "alpha gamma", "alpha beta", None, "beta gamma"] * 3})
+    fz = Featurizer({"t": "text"}).fit(X)
+    ref = TfidfVectorizer(max_features=400, ngram_range=(1, 2), min_df=2).fit(X["t"].fillna("").astype(str))
+    assert np.array_equal(fz.transform(X), ref.transform(X["t"].fillna("").astype(str)).toarray())
