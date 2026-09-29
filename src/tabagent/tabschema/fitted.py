@@ -36,6 +36,14 @@ class FittedFeature:
             raise RuntimeError(f"{type(self).__name__} is not fitted")
         return self._transform(df, spec)
 
+    # Pickle-free persistence: JSON-able scalars/maps plus named numpy arrays (see tabagent.artifact).
+    def state(self) -> tuple[dict[str, Any], dict[str, np.ndarray]]:
+        return {"seen_groups": sorted(map(str, self.seen_groups_ or ()))}, {}
+
+    def restore(self, meta: dict[str, Any], arrays: dict[str, np.ndarray]) -> FittedFeature:
+        self.seen_groups_ = set(meta.get("seen_groups", []))
+        return self
+
     def _fit(self, df: pd.DataFrame, spec: DecisionSpec) -> None:  # pragma: no cover - abstract
         raise NotImplementedError
 
@@ -66,6 +74,23 @@ class CandidatePrior(FittedFeature):
 
     def _transform(self, df, spec):
         return df[self.key_].map(self.map_).fillna(self.fill_).astype(float)
+
+    def state(self):
+        meta, arrays = super().state()
+        meta.update(
+            key=self.key_,
+            fill=self.fill_,
+            global_mean=self.global_,
+            keys=[str(k) for k in self.map_.index],
+            values=[float(v) for v in self.map_.to_numpy()],
+        )
+        return meta, arrays
+
+    def restore(self, meta, arrays):
+        super().restore(meta, arrays)
+        self.key_, self.fill_, self.global_ = meta["key"], meta["fill"], meta["global_mean"]
+        self.map_ = pd.Series(meta["values"], index=meta["keys"], dtype=float)
+        return self
 
 
 # --------------------------------------------------------------------------- text encoders
@@ -183,6 +208,15 @@ class EmbeddingCosine(FittedFeature):
         Y = X - self.mu_
         return Y / np.clip(np.linalg.norm(Y, axis=1, keepdims=True), 1e-9, None)
 
+    def state(self):
+        meta, arrays = super().state()
+        return meta, {**arrays, "mu": self.mu_}
+
+    def restore(self, meta, arrays):
+        super().restore(meta, arrays)
+        self.mu_ = arrays["mu"]
+        return self
+
     def _transform(self, df, spec):
         enc = encoder(self.args.get("encoder", "e5-small-v2"))
         Q = self._center(enc.encode(_text(df, self.args["query"]).tolist(), "query: "))
@@ -205,13 +239,32 @@ class KnnOutcome(FittedFeature):
         self.V_ = self.V_.reindex(self.tasks_)
         self.colmean_ = self.V_.mean(axis=0)
 
+    def state(self):
+        meta, arrays = super().state()
+        meta.update(tasks=[str(t) for t in self.tasks_], candidates=[str(c) for c in self.V_.columns])
+        arrays = {
+            **arrays,
+            "E": self.E_,
+            "V": self.V_.to_numpy(dtype=float),
+            "colmean": self.colmean_.to_numpy(),
+        }
+        return meta, arrays
+
+    def restore(self, meta, arrays):
+        super().restore(meta, arrays)
+        self.tasks_ = np.asarray(meta["tasks"], dtype=object)
+        self.E_ = arrays["E"]
+        self.V_ = pd.DataFrame(arrays["V"], index=self.tasks_, columns=meta["candidates"])
+        self.colmean_ = pd.Series(arrays["colmean"], index=meta["candidates"])
+        return self
+
     def _transform(self, df, spec):
         enc = encoder(self.args.get("encoder", "e5-small-v2"))
         k = int(self.args.get("k", 15))
         per_task = df.groupby(spec.group, sort=False)[self.args["query"]].first()
         Eq = enc.encode(per_task.fillna("").astype(str).tolist(), "query: ")
         sim = Eq @ self.E_.T
-        same = per_task.index.to_numpy()[:, None] == self.tasks_[None, :]
+        same = per_task.index.astype(str).to_numpy()[:, None] == np.asarray(self.tasks_, dtype=str)[None, :]
         sim[same] = -np.inf  # a training task never counts as its own neighbour
         kk = max(1, min(k, len(self.tasks_) - 1))
         idx = np.argpartition(sim, -kk, axis=1)[:, -kk:]

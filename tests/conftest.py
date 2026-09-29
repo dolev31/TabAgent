@@ -34,7 +34,7 @@ def make_table(n_tasks: int = 60, seed: int = 0) -> DecisionTable:
     rng = np.random.default_rng(seed)
     rows = []
     for t in range(n_tasks):
-        used, template = INTENTS[t % len(INTENTS)]
+        used, template = INTENTS[rng.integers(len(INTENTS))]
         text = template.format(c=CITIES[rng.integers(len(CITIES))])
         for tool, desc in TOOLS.items():
             rows.append(

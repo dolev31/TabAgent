@@ -8,10 +8,13 @@ The framework has three parts, named as in the paper:
 """
 
 from tabagent.agent import TabAgent
+from tabagent.artifact import load
 from tabagent.evaluation import cross_validate
+from tabagent.sklearn import TabAgentClassifier, TabAgentRanker, TabAgentRouter, pointwise, scorer
 from tabagent.tabhead import TabHead
 from tabagent.table import DecisionSpec, DecisionTable, LeakageError
 from tabagent.tabschema import Feature, FeatureCard
+from tabagent.tabsynth import TabSynth
 
 __version__ = "0.1.0.dev0"
 
@@ -22,6 +25,13 @@ __all__ = [
     "FeatureCard",
     "LeakageError",
     "TabAgent",
+    "TabAgentClassifier",
+    "TabAgentRanker",
+    "TabAgentRouter",
     "TabHead",
+    "TabSynth",
     "cross_validate",
+    "load",
+    "pointwise",
+    "scorer",
 ]

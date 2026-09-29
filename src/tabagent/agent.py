@@ -122,3 +122,16 @@ class TabAgent:
                     rows = table.df[table.decision_ids.isin(deferred).to_numpy()]
                     out.attrs["fallback"] = fallback(rows)
         return out
+
+    # ------------------------------------------------------------------ persistence
+    def save(self, path, metrics: dict | None = None):
+        """Write a portable, pickle-free artifact directory (see ``tabagent.artifact``)."""
+        from tabagent import artifact
+
+        return artifact.save(self, path, metrics)
+
+    @classmethod
+    def load(cls, path, verify: bool = True) -> TabAgent:
+        from tabagent import artifact
+
+        return artifact.load(path, verify)
