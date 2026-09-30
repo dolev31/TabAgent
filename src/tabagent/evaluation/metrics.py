@@ -12,10 +12,16 @@ chosen arm (L1181). ``normalized`` is the headroom score Norm = (m - chance) / (
 
 Every per-decision function returns a ``pd.Series`` indexed by decision id, so that seeds can be averaged
 per decision and tasks can be resampled for confidence intervals (see ``stats``).
+
+Ranking metrics take ``tie_break``: ``"candidate"`` (default, the rule above), ``"expected"`` (the exact
+expectation over a uniformly random order of tied scores; the paper reports BM25 this way, since BM25 gives
+most candidates the same score of 0) and ``"legacy"`` (the pre-release code's sort, for the equivalence
+harness).
 """
 
 from __future__ import annotations
 
+import math
 import re
 
 import numpy as np
@@ -23,7 +29,7 @@ import pandas as pd
 
 from tabagent.table import DecisionTable, LeakageError
 
-TIE_BREAKS = ("candidate", "legacy")
+TIE_BREAKS = ("candidate", "expected", "legacy")
 
 
 def _frame(table: DecisionTable, scores: np.ndarray) -> pd.DataFrame:
@@ -54,8 +60,10 @@ def ranked(table: DecisionTable, scores: np.ndarray, tie_break: str = "candidate
     ``tie_break="candidate"`` is the paper's rule (ties broken by sort on candidate id, L448).
     ``tie_break="legacy"`` reproduces the pre-release code, which sorted each decision with
     ``DataFrame.sort_values(ascending=False)`` and left ties in an implementation-defined order; it exists
-    only for the equivalence harness.
+    only for the equivalence harness. ``tie_break="expected"`` averages over orders and has no single ranking.
     """
+    if tie_break == "expected":
+        raise ValueError('tie_break="expected" averages over tie orders; it has no single ranking')
     if tie_break not in TIE_BREAKS:
         raise ValueError(f"tie_break must be one of {TIE_BREAKS}")
     f = _frame(table, scores)
@@ -74,37 +82,69 @@ def _per_decision(r: pd.DataFrame, fn) -> pd.Series:
     return pd.Series({d: v for d, v in vals.items() if v is not None}, dtype=float, name="value")
 
 
+def _rows(table: DecisionTable, scores: np.ndarray, tie_break: str) -> pd.DataFrame:
+    """Ranked rows, or the unranked rows when the metric takes the expectation over tie orders."""
+    return _frame(table, scores) if tie_break == "expected" else ranked(table, scores, tie_break)
+
+
+def _cutoff(s: np.ndarray, k: int) -> tuple[np.ndarray, np.ndarray]:
+    """Candidates scored strictly above the k-th best score, and those tied with it (who share the rest)."""
+    cut = np.sort(s)[::-1][k - 1]
+    return s > cut, s == cut
+
+
+def _top_k_hits(g: pd.DataFrame, k: int, tie_break: str) -> float:
+    """Relevant candidates in the top k; under ``"expected"``, their mean over random orders of ties."""
+    y = g["y"].to_numpy(dtype=float)
+    if tie_break != "expected":
+        return float(y[:k].sum())
+    s = g["score"].to_numpy(dtype=float)
+    if k >= len(s):
+        return float(y.sum())
+    above, tie = _cutoff(s, k)
+    return float(y[above].sum() + (k - above.sum()) * y[tie].sum() / tie.sum())
+
+
 def recall_at_k(table: DecisionTable, scores: np.ndarray, k: int, tie_break: str = "candidate") -> pd.Series:
     """Per-decision Recall@k. Decisions with an empty relevant set are skipped."""
-    r = ranked(table, scores, tie_break)
+    r = _rows(table, scores, tie_break)
 
     def fn(g: pd.DataFrame):
-        y = g["y"].to_numpy(dtype=float)
-        tot = y.sum()
-        return None if tot == 0 else float(y[:k].sum() / tot)
+        tot = g["y"].to_numpy(dtype=float).sum()
+        return None if tot == 0 else _top_k_hits(g, k, tie_break) / tot
 
     return _per_decision(r, fn)
 
 
 def p_at_r(table: DecisionTable, scores: np.ndarray, tie_break: str = "candidate") -> pd.Series:
     """Per-decision R-precision (P@R): precision of the top-R_t candidates, R_t = |G(t)|."""
-    r = ranked(table, scores, tie_break)
+    r = _rows(table, scores, tie_break)
 
     def fn(g: pd.DataFrame):
-        y = g["y"].to_numpy(dtype=float)
-        big_r = int(y.sum())
-        return None if big_r == 0 else float(y[:big_r].sum() / big_r)
+        big_r = int(g["y"].to_numpy(dtype=float).sum())
+        return None if big_r == 0 else _top_k_hits(g, big_r, tie_break) / big_r
 
     return _per_decision(r, fn)
 
 
 def hit_at_k(table: DecisionTable, scores: np.ndarray, k: int, tie_break: str = "candidate") -> pd.Series:
     """Per-decision indicator that at least one relevant candidate is in the top k."""
-    r = ranked(table, scores, tie_break)
+    r = _rows(table, scores, tie_break)
 
     def fn(g: pd.DataFrame):
         y = g["y"].to_numpy(dtype=float)
-        return None if y.sum() == 0 else float(y[:k].sum() > 0)
+        if y.sum() == 0:
+            return None
+        if tie_break != "expected":
+            return float(y[:k].sum() > 0)
+        s = g["score"].to_numpy(dtype=float)
+        if k >= len(s):
+            return 1.0
+        above, tie = _cutoff(s, k)
+        if y[above].sum() > 0:
+            return 1.0
+        slots, m, q = int(k - above.sum()), int(tie.sum()), int(y[tie].sum())
+        return 1.0 - math.comb(m - q, slots) / math.comb(m, slots)  # 1 - P(no relevant tie is drawn)
 
     return _per_decision(r, fn)
 
@@ -113,6 +153,10 @@ def route_at_1(table: DecisionTable, scores: np.ndarray, tie_break: str = "candi
     """Per-decision realized reward of the top-scored arm (policy decisions, L1181)."""
     if not table.spec.reward:
         raise ValueError("route@1 needs a reward column")
+    if tie_break == "expected":  # the mean reward of the arms tied for the top score
+        f = _frame(table, scores)
+        top = f[f["score"] == f.groupby("decision")["score"].transform("max")]
+        return top.groupby("decision", sort=True)["reward"].mean().astype(float).rename("value")
     r = ranked(table, scores, tie_break)
     return r[r["rank"] == 0].set_index("decision")["reward"].sort_index().astype(float).rename("value")
 

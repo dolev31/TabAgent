@@ -6,7 +6,6 @@ import copy
 import sys
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import pytest
 
@@ -18,8 +17,6 @@ from experiments.reproduce import (  # noqa: E402
     PaperElementSynth,
     as_read_from_csv,
     bm25_scores,
-    evaluator_recall,
-    random_tie_recall,
 )
 from tabagent import TabAgent, TabHead, datasets  # noqa: E402
 from tabagent.table import DecisionTable  # noqa: E402
@@ -112,13 +109,6 @@ def test_as_read_from_csv_empties_missing_value_literals():
     assert out["elem_x"].tolist() == df["elem_x"].tolist()
 
 
-def test_evaluator_recall_per_domain():
-    t = element_table({"e1": "Shopping", "e3": "Travel"})
-    scores = np.array([0.9, 0.5, 0.1, 0.1, 0.9, 0.5])  # e1: target first; e3: target last
-    assert evaluator_recall(t, scores, 1) == {"Shopping": 1.0, "Travel": 0.0, "overall": 0.5}
-    assert evaluator_recall(t, scores, 3)["overall"] == 1.0
-
-
 def test_cell_bm25_uses_its_columns_and_cuts_documents():
     t = element_table({"e1": "Shopping"})
     df = t.df.copy()
@@ -130,10 +120,11 @@ def test_cell_bm25_uses_its_columns_and_cuts_documents():
     assert full[0] > 0 and cut[0] == 0
 
 
-def test_random_tie_recall_shares_tied_slots():
-    t = element_table({"e1": "Shopping", "e3": "Travel"})
-    # e1: all three tied (target among them); e3: target strictly first.
-    scores = np.array([0.0, 0.0, 0.0, 0.9, 0.1, 0.1])
-    out = random_tie_recall(t, scores, 1)
-    assert out["Shopping"] == pytest.approx(1 / 3) and out["Travel"] == 1.0
-    assert random_tie_recall(t, scores, 2)["Shopping"] == pytest.approx(2 / 3)
+def test_cell_bm25_cuts_queries():
+    t = element_table({"e1": "Shopping"})
+    df = t.df.copy()
+    df["instruction"] = "x " * 250 + "item"  # the only matching query term lies beyond 400 characters
+    t = t.with_df(df)
+    spec = {"query": ["instruction"], "doc": ["elem_attr_text"]}
+    assert bm25_scores({"bm25": spec}, t, CARD)[0] > 0
+    assert bm25_scores({"bm25": {**spec, "query_chars": 400}}, t, CARD)[0] == 0

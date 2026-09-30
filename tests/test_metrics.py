@@ -110,3 +110,61 @@ def test_legacy_tie_break_matches_pre_release_sort():
         lab = gr.sort_values("_p", ascending=False)["used"].to_numpy()
         legacy.append(lab[: int(lab.sum())].sum() / lab.sum())
     assert M.p_at_r(t, s, tie_break="legacy").to_numpy() == pytest.approx(np.array(legacy))
+
+
+def test_expected_tie_break_averages_over_random_orders_of_ties():
+    """tie_break="expected": the exact expectation over a uniformly random order of tied scores."""
+    t, s = _one([0.5, 0.5, 0.5, 0.5], used=(0, 1, 0, 0))  # four tied, one relevant
+    assert M.recall_at_k(t, s, 1, tie_break="expected").iloc[0] == pytest.approx(1 / 4)
+    assert M.recall_at_k(t, s, 2, tie_break="expected").iloc[0] == pytest.approx(2 / 4)
+    assert M.hit_at_k(t, s, 2, tie_break="expected").iloc[0] == pytest.approx(1 - 3 / 6)  # 1 - C(3,2)/C(4,2)
+    t, s = _one([0.9, 0.0, 0.0, 0.0], used=(1, 0, 1, 0))  # R = 2: one sure hit, one slot among three ties
+    assert M.p_at_r(t, s, tie_break="expected").iloc[0] == pytest.approx((1 + 1 / 3) / 2)
+    assert M.hit_at_k(t, s, 1, tie_break="expected").iloc[0] == 1.0
+    assert M.recall_at_k(t, s, 9, tie_break="expected").iloc[0] == 1.0  # k beyond the slate
+
+
+def test_expected_tie_break_matches_the_paper_rule_without_ties():
+    rng = np.random.default_rng(2)
+    rows = [
+        {"task": f"t{d}", "tool": f"x{i}", "used": int(rng.random() < 0.3 or i == 0)}
+        for d in range(15)
+        for i in range(9)
+    ]
+    t = DecisionTable(pd.DataFrame(rows), RANK)
+    s = rng.random(len(t))
+    for metric in ("p@r", "recall@3", "hit@2"):
+        pd.testing.assert_series_equal(
+            M.per_decision(t, s, metric, tie_break="expected"), M.per_decision(t, s, metric)
+        )
+
+
+def test_expected_tie_break_is_the_monte_carlo_limit():
+    rng = np.random.default_rng(3)
+    rows = [{"task": f"t{d}", "tool": f"x{i}", "used": int(i % 3 == 0)} for d in range(10) for i in range(7)]
+    t = DecisionTable(pd.DataFrame(rows), RANK)
+    s = np.round(rng.random(len(t)), 1)
+    exact = M.p_at_r(t, s, tie_break="expected")
+    draws = []
+    for _ in range(3000):  # random tie order: a random secondary key, then the paper's rule
+        u = rng.random(len(t))
+        order = np.lexsort((u, -s, t.df["task"].to_numpy()))
+        g = t.df.iloc[order].assign(r=lambda d: d.groupby("task").cumcount())
+        big_r = g.groupby("task")["used"].transform("sum")
+        draws.append(
+            (g["used"] * (g["r"] < big_r)).groupby(g["task"]).sum() / g.groupby("task")["used"].sum()
+        )
+    assert exact.to_numpy() == pytest.approx(pd.concat(draws, axis=1).mean(axis=1).to_numpy(), abs=0.02)
+
+
+def test_expected_route_at_1_averages_tied_best_arms():
+    spec = DecisionSpec(kind="policy", group="task", candidate="model", label="ok", reward="r")
+    df = pd.DataFrame({"task": "t", "model": ["m1", "m2", "m3"], "ok": [1, 0, 1], "r": [0.2, 0.9, 0.6]})
+    t = DecisionTable(df, spec)
+    assert M.route_at_1(t, np.array([0.8, 0.8, 0.1]), tie_break="expected").iloc[0] == pytest.approx(0.55)
+
+
+def test_expected_has_no_single_ranking():
+    t, s = _one([0.5, 0.5, 0.5, 0.5])
+    with pytest.raises(ValueError, match="ranking"):
+        M.ranked(t, s, "expected")

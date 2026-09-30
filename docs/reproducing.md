@@ -48,10 +48,18 @@ of train-split tasks outside the 150 evaluated tasks, which the real-only model 
 57.0 / 68.5 / 64.0 real, 58.5 / 67.1 / 65.0 +synth). The paper's scripts give exactly the released values on
 the same machine. The paper's run, on an x86-64 CPU with the same library versions, gave 57.9 / 65.4 / 63.6
 and 68.4 / 74.3 / 71.7: floating-point differences between CPU architectures move these fits by up to 0.8
-points. The paper's element BM25 (61 / 53 / 59, reproduced exactly in this mode) depends on tie order: BM25
-scores the demonstrated element 0 in 78% of steps, and the evaluator's sort keeps tied candidates in table
-order, where the demonstrated element comes first. With tied candidates in random order, BM25 reaches
-13.2 / 17.5 / 21.8.
+points.
+
+**BM25** is computed as in the paper: each row's own query and document text (τ²: the first 400 characters
+of the customer's message against the tool name; SkillsBench: the task against the skill name and the first
+200 characters of its description; Mind2Web element: the instruction against the first 200 characters of the
+attribute text), scored in expectation over a uniformly random order of tied scores
+(`metrics.p_at_r(..., tie_break="expected")`). BM25 gives most candidates the same score of 0 (the
+demonstrated element in 78% of Mind2Web steps), so a fixed tie order would decide much of its result.
+Released: τ² airline / retail / telecom / combined P@R 28.0 / 33.0 / 40.8 / 28.3 (paper 28 / 33 / 41 / 28),
+skill selection 61.0 (paper 60; the released skill descriptions come from each `SKILL.md`), Mind2Web element
+R@3 13.2 / 17.5 / 21.8 (paper 13 / 18 / 22). Under the pre-release evaluator's sort, which kept tied
+candidates in table order with the demonstrated element first, element BM25 was 60.9 / 52.7 / 59.0.
 
 Policy rows against their strong default (paired task-level bootstrap, 2,000 resamples): sub-agent routing
 +2.3 pp [−0.5, +5.1], model routing +0.4 pp [−3.5, +4.6], skill gating −1.3 pp [−3.8, +0.7]: parity in every

@@ -5,6 +5,7 @@
 #
 # Protocol (paper Sec. 4.3, App. E): the paper's task-level folds (datasets.folds), three seeds, every
 # data-dependent statistic fitted inside the training folds, macro average over decisions, 95% bootstrap CI.
+# BM25 is reported in expectation over a uniformly random order of tied scores, as in the paper.
 # The +synth column is nested: TabSynth off / k=2 / k=4 is chosen by inner CV on each training fold (Mind2Web
 # element follows the paper's own recipe; see that cell).
 
@@ -17,31 +18,36 @@ cells:
     dataset: tau2/airline
     metric: p@r
     synth: true
-    paper: {tabagent: 71, synth: 75, recall@9: 96, chance: 21, bm25: 26, dsr_zs: 30, dsr_ft: 45, fewshot: 44, ft_slm: 60}
+    bm25: {query: [instruction], query_chars: 400, doc: [tool_name]}  # the paper's BM25 (e45b card)
+    paper: {tabagent: 71, synth: 75, recall@9: 96, chance: 21, bm25: 28, dsr_zs: 30, dsr_ft: 45, fewshot: 44, ft_slm: 60}
   - id: tau2-retail
     row: "τ²-bench retail, tool shortlisting"
     dataset: tau2/retail
     metric: p@r
     synth: true
-    paper: {tabagent: 76, synth: 75, recall@9: 96, chance: 28, bm25: 39, dsr_zs: 48, dsr_ft: 42, fewshot: 59, ft_slm: 57}
+    bm25: {query: [instruction], query_chars: 400, doc: [tool_name]}  # the paper's BM25 (e45b card)
+    paper: {tabagent: 76, synth: 75, recall@9: 96, chance: 28, bm25: 33, dsr_zs: 48, dsr_ft: 42, fewshot: 59, ft_slm: 57}
   - id: tau2-telecom
     row: "τ²-bench telecom, tool shortlisting"
     dataset: tau2/telecom
     metric: p@r
     synth: true
+    bm25: {query: [instruction], query_chars: 400, doc: [tool_name]}  # the paper's BM25 (e45b card)
     paper: {tabagent: 84, synth: 85, recall@9: 100, chance: 26, bm25: 41, dsr_zs: 46, dsr_ft: 27, fewshot: 55, ft_slm: 71}
   - id: tau2-combined
     row: "τ²-bench combined (airline, retail, telecom)"
     dataset: tau2/all-domains
     metric: p@r
     synth: true
-    paper: {tabagent: 75, synth: 78, recall@9: 94, chance: 10, bm25: 29, dsr_zs: 34, dsr_ft: 42, fewshot: 31, ft_slm: 57}
+    bm25: {query: [instruction], query_chars: 400, doc: [tool_name]}  # the paper's BM25 (e45b card)
+    paper: {tabagent: 75, synth: 78, recall@9: 94, chance: 10, bm25: 28, dsr_zs: 34, dsr_ft: 42, fewshot: 31, ft_slm: 57}
   - id: skill-selection
     row: "SkillsBench skill selection"
     dataset: skillsbench/skill-select
     metric: p@r
     variants: [skillsbench_skill_select, skillsbench_skill_select_noprior]
     nested_variants: true  # also report the prior / no-prior choice made by inner CV on training folds
+    bm25: {query: [task_text], doc: [skill_name, skill_desc], doc_chars: 200}  # the paper's BM25 (e32)
     paper: {tabagent: 74, recall@9: 87, chance: 16, bm25: 60, dsr_zs: 17, dsr_ft: 38, fewshot: 35, ft_slm: 49}
 
   # ---------------------------------------------------------------- classification
@@ -69,7 +75,7 @@ cells:
       synth: {Entertainment: 68, Shopping: 74, Travel: 72}
       recall@5: {Entertainment: 73, Shopping: 78, Travel: 75}
       chance: 6
-      bm25: {Entertainment: 61, Shopping: 53, Travel: 59}
+      bm25: {Entertainment: 13, Shopping: 18, Travel: 22}
       dsr_zs: {Entertainment: 15, Shopping: 16, Travel: 15}
       dsr_ft: {Entertainment: 15, Shopping: 18, Travel: 23}
 

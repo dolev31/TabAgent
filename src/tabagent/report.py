@@ -171,15 +171,15 @@ def evaluate(
             if card is not None:
                 q, d = _context_and_candidate_text(card)
                 if q and d:
-                    s = B.bm25(table, q, d)
-                    rows["BM25"] = {
-                        m: _fmt(S.bootstrap_ci(M.per_decision(table, s, m).to_numpy())) for m in metrics
-                    }
+                    # Retrieval baselines tie often (BM25 scores most candidates 0), so they are scored in
+                    # expectation over a random order of tied scores, as in the paper.
+                    def baseline(s):
+                        per = {m: M.per_decision(table, s, m, tie_break="expected") for m in metrics}
+                        return {m: _fmt(S.bootstrap_ci(v.to_numpy())) for m, v in per.items()}
+
+                    rows["BM25"] = baseline(B.bm25(table, q, d))
                     if e5:
-                        s = B.embedding_zero_shot(table, q, d)
-                        rows["e5 zero-shot"] = {
-                            m: _fmt(S.bootstrap_ci(M.per_decision(table, s, m).to_numpy())) for m in metrics
-                        }
+                        rows["e5 zero-shot"] = baseline(B.embedding_zero_shot(table, q, d))
     elif kind == "policy":
         rows["TabAgent"] = {"route@1": _fmt(res.ci("route@1", level="decision"))}
         rows["chance"] = {"route@1": f"{M.chance_route(table).mean():.3f}"}

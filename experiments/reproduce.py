@@ -140,64 +140,30 @@ class PaperElementSynth:
         return X_syn[keep].reset_index(drop=True), y_syn[keep]
 
 
-def evaluator_recall(table, scores, k: int) -> dict[str, float]:
-    """Recall@k per web domain as the paper's evaluator computed it: each step's candidates sorted with
-    pandas' default sort, which leaves tied scores in an implementation-defined order. The library breaks
-    ties by candidate id (paper L448); the two differ only where tied scores straddle the cutoff."""
-    spec = table.spec
-    d = table.df.reset_index(drop=True).assign(_s=np.asarray(scores))
-    out = {}
-    for dom, sub in [*d.groupby("domain"), ("overall", d)]:
-        rec = []
-        for _, g in sub.groupby(list(spec.decision)):
-            y = g.sort_values("_s", ascending=False)[spec.label].to_numpy()
-            if y.sum():
-                rec.append(y[:k].sum() / y.sum())
-        out[dom] = float(np.mean(rec))
-    return out
-
-
-def random_tie_recall(table, scores, k: int) -> dict[str, float]:
-    """Recall@k per web domain in expectation over a uniformly random order of tied scores: candidates that
-    tie at the cutoff share the remaining slots in proportion. Unlike any fixed tie order, this cannot favor
-    the demonstrated element, which the table lists first in its step."""
-    spec = table.spec
-    d = table.df.reset_index(drop=True).assign(_s=np.asarray(scores))
-    out = {}
-    for dom, sub in [*d.groupby("domain"), ("overall", d)]:
-        rec = []
-        for _, g in sub.groupby(list(spec.decision)):
-            s, y = g["_s"].to_numpy(), g[spec.label].to_numpy()
-            if not y.sum():
-                continue
-            if len(s) <= k:
-                rec.append(1.0)
-                continue
-            cut = np.sort(s)[::-1][k - 1]
-            above, tie = s > cut, s == cut
-            hits = y[above].sum() + (k - above.sum()) * y[tie].sum() / tie.sum()
-            rec.append(hits / y.sum())
-        out[dom] = float(np.mean(rec))
-    return out
-
-
 def bm25_scores(cell, table, card) -> np.ndarray | None:
     """BM25 over the cell's own query and document columns when it names them (the paper's baseline for that
-    row, e.g. Mind2Web element: instruction against the first 200 characters of the attribute text), else
-    the card's state text against its candidate text."""
+    row: e.g. Mind2Web element scores the instruction against the first 200 characters of the attribute
+    text; tau2 the first 400 characters of the customer's message against the tool name), else the card's
+    state text against its candidate text."""
     spec = cell.get("bm25")
     if spec:
         query, docs = spec["query"], spec["doc"]
-        if spec.get("doc_chars"):
-            df = table.df.copy()
-            for c in docs:
-                df[c] = df[c].fillna("").astype(str).str[: spec["doc_chars"]]
-            table = table.with_df(df)
+        df = table.df.copy()
+        for cols, chars in ((query, spec.get("query_chars")), (docs, spec.get("doc_chars"))):
+            for c in cols if chars else ():
+                df[c] = df[c].fillna("").astype(str).str[:chars]
+        table = table.with_df(df)
     else:
         query, docs = text_columns(card)
         if not (query and docs):
             return None
     return bm25(table, query, docs)
+
+
+#: BM25 tie orders reported for the Mind2Web element row: the paper's (expected over random orders), the
+#: evaluator's sort, which kept tied candidates in table order (the demonstrated element first), and
+#: candidate id.
+TIES = ("expected", "legacy", "candidate")
 
 
 def mean_by_domain(table, per_step: pd.Series) -> dict[str, float | None]:
@@ -209,8 +175,8 @@ def mean_by_domain(table, per_step: pd.Series) -> dict[str, float | None]:
 def element_cell_paper(cell, table, card, folds, preset) -> dict[str, Any]:
     """The Mind2Web element row exactly as the paper computed it (``element_synth: paper``): the evaluator's
     row order and CSV-read text, CatBoost seed 0, domain-matched TabSynth over the train split
-    (:class:`PaperElementSynth`), and the evaluator's Recall@k. Values with ties broken by candidate id are
-    reported alongside."""
+    (:class:`PaperElementSynth`), and the evaluator's Recall@k (ties in its sort order; values with ties
+    broken by candidate id are reported alongside). BM25 is the expectation over tie orders."""
     from tabagent.datasets.mind2web import evaluator_split, per_domain
 
     seeds, metric = tuple(cell["paper_seeds"]), cell["metric"]
@@ -219,9 +185,8 @@ def element_cell_paper(cell, table, card, folds, preset) -> dict[str, Any]:
     split = evaluator_split()
     pool = full.subset([g for g in full.groups if split.get(str(g)) == "train"])
 
-    def scored(res, k):
-        per_seed = [evaluator_recall(table, res.oof[s].to_numpy(), k) for s in res.seeds]
-        evaluator = pd.DataFrame(per_seed).mean()
+    def scored(res, k):  # the evaluator's sort, and the paper's candidate-id rule
+        evaluator = per_domain(res, f"recall@{k}", tie_break="legacy")
         return {d: pct(v) for d, v in evaluator.items()}, {
             d: pct(v) for d, v in per_domain(res, f"recall@{k}").items()
         }
@@ -233,15 +198,10 @@ def element_cell_paper(cell, table, card, folds, preset) -> dict[str, Any]:
     out["recall@5"], _ = scored(res, 5)
     out["chance"] = None
     scores = bm25_scores(cell, table, card)
-    if scores is not None:
-        bm25_r = evaluator_recall(table, scores, k_metric)
-        out["bm25"] = {d: pct(v) for d, v in bm25_r.items() if d != "overall"}
-        # BM25 scores most candidates 0, so the tie order decides much of its recall (docs/reproducing.md).
-        random_r = random_tie_recall(table, scores, k_metric)
-        out["bm25_tie_order"] = {
-            "candidate_id": mean_by_domain(table, M.per_decision(table, scores, metric)),
-            "random": {d: pct(v) for d, v in random_r.items() if d != "overall"},
-        }
+    if scores is not None:  # BM25 in expectation over tie orders, as the paper reports it
+        by_ties = {t: mean_by_domain(table, M.per_decision(table, scores, metric, tie_break=t)) for t in TIES}
+        out["bm25"] = by_ties.pop("expected")
+        out["bm25_tie_order"] = by_ties
     synth, ties_synth = {}, {}
     for dom in sorted(table.df["domain"].unique()):
         pool_synth = PaperElementSynth(pool, dom, table.groups, cell.get("synth_k", 2))
@@ -269,8 +229,8 @@ def ranking_cell(cell, table, card, folds, seeds, preset) -> dict[str, Any]:
         out["recall@9"] = pct(res.per_decision("recall@9").mean())
     out["chance"] = pct(M.chance_p_at_r(table).mean()) if metric == "p@r" else None
     scores = bm25_scores(cell, table, card)
-    if scores is not None:
-        per_step = M.per_decision(table, scores, metric)
+    if scores is not None:  # BM25 gives many candidates the same score: expectation over tie orders
+        per_step = M.per_decision(table, scores, metric, tie_break="expected")
         out["bm25"] = mean_by_domain(table, per_step) if cell.get("per_domain") else pct(per_step.mean())
     if cell.get("synth") == "domain_matched" and card.synth_text:
         # element_synth: in-fold. Paraphrase only the evaluated domain's rows of the training folds (k=2), one
@@ -446,7 +406,7 @@ def markdown(cells, results, transfer=None) -> str:
                     f"tie handling); ties broken by candidate id: {vals['ties_by_candidate_id']}"
                 )
                 if "bm25_tie_order" in vals:
-                    lines.append(f"BM25 under other tie orders: {vals['bm25_tie_order']}")
+                    lines.append(f"BM25 under fixed tie orders: {vals['bm25_tie_order']}")
     if transfer:
         lines += [
             "",
