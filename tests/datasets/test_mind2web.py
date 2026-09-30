@@ -195,3 +195,27 @@ def test_per_domain_slices_one_result():
     res = CVResult(table, pd.DataFrame({0: scores}), folds={"t1": 0, "t2": 1})
     out = m2w.per_domain(res, "recall@1")
     assert out.to_dict() == {"Shopping": 0.0, "Travel": 1.0, "overall": 0.5}
+
+
+def test_evaluator_split_is_bundled_and_covers_the_sample():
+    split = m2w.evaluator_split()
+    assert len(split) == 1009 and pd.Series(split).value_counts().to_dict() == {
+        "train": 706,
+        "test": 152,
+        "val": 151,
+    }
+    assert set(datasets.folds("mind2web/element")) == set(split)
+    assert set(datasets.folds("mind2web/element-150")) <= set(split)
+
+
+def test_element_rows_follow_the_evaluator_split(originals, monkeypatch):
+    # The fabricated trip task is a test task and the shop task a train task: the shop rows come first.
+    split = {m2w.task_uid("ann-trip"): "test", m2w.task_uid("ann-shop"): "train"}
+    monkeypatch.setattr(m2w, "evaluator_split", lambda: split)
+    df = m2w.build_element(m2w.SOURCE)
+    assert df["annotation_id"].drop_duplicates().tolist() == ["ann-shop", "ann-trip"]
+    unordered = m2w.element_rows(m2w.iter_tasks(m2w.actions_path(m2w.SOURCE)))
+    for ann, part in unordered.groupby("annotation_id", sort=False):  # rows within a task keep their order
+        pd.testing.assert_frame_equal(
+            df[df["annotation_id"] == ann].reset_index(drop=True), part.reset_index(drop=True)
+        )

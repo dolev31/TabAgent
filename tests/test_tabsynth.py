@@ -95,3 +95,24 @@ def test_domain_matched_synthesis_L1177():
         X, np.zeros(3)
     )
     assert Xc["intent"].tolist() == ["Task: book a hotel"]
+
+
+def test_source_rows_record_each_variants_real_row():
+    table = make_table(n_tasks=6)
+    card = make_card()
+    card.fit(table)
+    X = card.transform(table)
+    synth = TabSynth(k=2)
+    Xs, _ = synth.augment(X, table.labels, table, card)
+    assert len(synth.source_rows_) == len(Xs) == len(synth.source_groups_)
+    src = X.iloc[synth.source_rows_].reset_index(drop=True)
+    assert (Xs["tool"] == src["tool"]).all()  # each variant copies its source row's candidate
+    assert list(synth.source_groups_) == list(table.df["task"].to_numpy()[synth.source_rows_])
+
+
+def test_max_source_rows_samples_within_where():
+    X = pd.DataFrame({"intent": [f"request {i}" for i in range(20)], "domain": ["a", "b"] * 10})
+    synth = TabSynth(k=1, text_cols=["intent"], where={"domain": "a"}, max_source_rows=4)
+    Xs, _ = synth.augment(X, np.zeros(20, dtype=int))
+    assert len(Xs) == 4 and set(Xs["domain"]) == {"a"}
+    assert set(X["domain"].iloc[synth.source_rows_]) == {"a"}

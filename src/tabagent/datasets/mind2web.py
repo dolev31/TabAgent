@@ -16,7 +16,8 @@ Labels are the human demonstrations.
     One row per (action step, candidate element); ``is_target`` marks the demonstrated element. Each step
     keeps its positive candidates (at most 25) and a seeded sample of negatives, 50 candidates in all.
     Steps without a positive candidate are dropped (413 of 7,775). A decision is one step,
-    ``(task_uid, step_index)``, and Recall@k is computed per step.
+    ``(task_uid, step_index)``, and Recall@k is computed per step. Rows follow the paper evaluator's fixed
+    task split (:func:`evaluator_split`: 706 train, 151 val, 152 test tasks), train tasks first.
 ``mind2web/element-150``
     The 150 tasks (1,019 steps) on which the paper's element numbers were computed; the pre-release
     evaluator capped the 368K-row table to a seeded sample of whole tasks.
@@ -244,13 +245,37 @@ def build_operation(source: Source, download: bool = False) -> pd.DataFrame:
     return operation_rows(iter_tasks(actions_path(source, download)))
 
 
+def evaluator_split() -> dict[str, str]:
+    """The paper evaluator's fixed split of the 1,009 tasks: 706 train, 151 val, 152 test (seed 20260720).
+
+    The evaluator read the element table split by split, and the paper's element +synth column paraphrases
+    the train tasks (``experiments/reproduce.py``, ``element_synth: paper``).
+    """
+    res = resources.files("tabagent.datasets") / "folds" / "mind2web_split.json"
+    return json.loads(res.read_text())["by_group"]
+
+
+_SPLIT_ORDER = {"train": 0, "val": 1, "test": 2}
+
+
+def in_evaluator_order(df: pd.DataFrame) -> pd.DataFrame:
+    """Rows of train tasks first, then val, then test (tasks outside the split last), otherwise unchanged."""
+    split = df["task_uid"].map(evaluator_split()).map(_SPLIT_ORDER).fillna(len(_SPLIT_ORDER))
+    return df.iloc[np.argsort(split.to_numpy(), kind="stable")].reset_index(drop=True)
+
+
 def build_element(source: Source, download: bool = False, tasks: str | None = None) -> pd.DataFrame:
-    """``tasks`` names a bundled fold file; only its tasks are kept (e.g. the paper's 150-task sample)."""
+    """``tasks`` names a bundled fold file; only its tasks are kept (e.g. the paper's 150-task sample).
+
+    Rows are listed train tasks first, then val, then test, as the paper's evaluator read them. CatBoost
+    depends on row order, and the paper's element numbers were computed in this order.
+    """
     items = iter_tasks(actions_path(source, download))
     if tasks:
         keep = _fold_groups(tasks)
         items = (t for t in items if task_uid(t["annotation_id"]) in keep)
-    return element_rows(items)
+    df = element_rows(items)
+    return df if df.empty else in_evaluator_order(df)
 
 
 def box_area(df: pd.DataFrame, w: str = "elem_w", h: str = "elem_h") -> pd.Series:
@@ -294,6 +319,7 @@ DATASETS: list[DatasetInfo] = [
         decision="ranking",
         paper=_ELEMENT_PAPER,
         description="Target element among 50 candidate elements of each action step (all 1,009 tasks).",
+        version=2,  # v2: rows in the paper evaluator's split order
     ),
     DatasetInfo(
         name="mind2web/element-150",
@@ -305,5 +331,6 @@ DATASETS: list[DatasetInfo] = [
         paper=_ELEMENT_PAPER,
         description="The seeded 150-task sample of mind2web/element behind the paper's element numbers.",
         args={"tasks": "mind2web_element_150"},
+        version=2,
     ),
 ]

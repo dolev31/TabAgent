@@ -5,7 +5,8 @@
 #
 # Protocol (paper Sec. 4.3, App. E): the paper's task-level folds (datasets.folds), three seeds, every
 # data-dependent statistic fitted inside the training folds, macro average over decisions, 95% bootstrap CI.
-# The +synth column is nested: TabSynth off / k=2 / k=4 is chosen by inner CV on each training fold.
+# The +synth column is nested: TabSynth off / k=2 / k=4 is chosen by inner CV on each training fold (Mind2Web
+# element follows the paper's own recipe; see that cell).
 
 seeds: [20260720, 20260726, 20260727]
 
@@ -56,6 +57,13 @@ cells:
     per_domain: true
     synth: domain_matched  # one model per web domain, paraphrasing only that domain's rows (paper L1177)
     synth_k: 2
+    # The paper's protocol (pre-release scripts e40d/e40e): CatBoost seed 0, the evaluator's row order and
+    # tie handling, and TabSynth over the domain's rows of the whole 706-task train split (synth_pool), minus
+    # each test fold's tasks. `--element-synth in-fold` paraphrases only the training folds of the 150 tasks.
+    element_synth: paper
+    paper_seeds: [0]
+    synth_pool: mind2web/element
+    bm25: {query: [instruction], doc: [elem_attr_text], doc_chars: 200}  # the paper's element BM25
     paper:
       tabagent: {Entertainment: 58, Shopping: 65, Travel: 64}
       synth: {Entertainment: 68, Shopping: 74, Travel: 72}

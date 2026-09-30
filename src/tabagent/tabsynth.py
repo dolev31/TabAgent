@@ -78,6 +78,8 @@ class TabSynth:
         self.seed = seed
         self.where = where
         self.stats_: dict = {}
+        self.source_rows_: np.ndarray | None = None
+        self.source_groups_: np.ndarray | None = None
 
     def augment(
         self, X: pd.DataFrame, y: np.ndarray, table=None, card=None
@@ -86,6 +88,8 @@ class TabSynth:
 
         ``X`` is the card's feature frame of the real training rows; ``table`` and ``card`` supply the
         default text columns and the source group of each row (recorded in ``stats_`` for provenance).
+        After the call, ``source_rows_`` holds the row position in ``X`` that each synthetic row paraphrases,
+        and ``source_groups_`` its group (when ``table`` is given).
         """
         text_cols = self.text_cols if self.text_cols is not None else list(getattr(card, "synth_text", []))
         missing = [c for c in text_cols if c not in X.columns]
@@ -94,6 +98,8 @@ class TabSynth:
         y = np.asarray(y)
         if not text_cols:
             self.stats_ = {"n_source": 0, "n_synthetic": 0, "dropped_duplicates": 0}
+            self.source_rows_ = np.zeros(0, dtype=int)
+            self.source_groups_ = None if table is None else np.zeros(0, dtype=object)
             return X.iloc[0:0].copy(), y[:0]
 
         src_idx = np.arange(len(X))
@@ -105,10 +111,9 @@ class TabSynth:
                 for col, value in self.where.items():
                     mask &= (X[col] == value).to_numpy()
             src_idx = src_idx[mask]
-        if self.max_source_rows and len(X) > self.max_source_rows:
-            src_idx = np.sort(
-                np.random.default_rng(self.seed).choice(len(X), self.max_source_rows, replace=False)
-            )
+        if self.max_source_rows and len(src_idx) > self.max_source_rows:
+            pick = np.random.default_rng(self.seed).choice(len(src_idx), self.max_source_rows, replace=False)
+            src_idx = np.sort(src_idx[pick])
         src = X.iloc[src_idx]
 
         real_keys = set(map(tuple, X.astype(str).itertuples(index=False, name=None)))
@@ -129,11 +134,14 @@ class TabSynth:
         X_syn = pd.concat(parts)
         y_syn = pd.concat(labels)
         order = np.lexsort((X_syn["_j"].to_numpy(), X_syn["_src"].to_numpy()))
+        self.source_rows_ = src_idx[X_syn["_src"].to_numpy()[order]]
         X_syn = X_syn.iloc[order].drop(columns=["_src", "_j"]).reset_index(drop=True)
         y_syn = y_syn.iloc[order].to_numpy()
         groups = None
+        self.source_groups_ = None
         if table is not None:
             groups = table.df[table.spec.group].to_numpy()[src_idx]
+            self.source_groups_ = table.df[table.spec.group].to_numpy()[self.source_rows_]
         self.stats_ = {
             "generator": GENERATOR_VERSION,
             "k": self.k,

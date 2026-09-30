@@ -32,11 +32,26 @@ the bundled folds, every statistic fitted in-fold. Percentages; 95% bootstrap in
 | SkillsBench skill selection, P@R (no-prior card) | 74 | 79.6 [74.0, 85.4] |
 | … Recall@9 | 87 | 90.5 |
 | Mind2Web operation selection, macro-F1 | 92 | 91.9 |
-| Mind2Web element selection, R@3 (Entertainment / Shopping / Travel) | 58 / 65 / 64 | 56.7 / 67.3 / 63.9 |
-| … R@5 | 73 / 78 / 75 | 71.3 / 78.9 / 74.8 |
+| Mind2Web element selection, R@3 (Entertainment / Shopping / Travel)¹ | 58 / 65 / 64 | 57.9 / 65.7 / 63.6 |
+| … +synth (domain-matched, the paper's recipe)¹ | 68 / 74 / 72 | 68.4 / 74.6 / 70.9 |
+| … R@5 | 73 / 78 / 75 | 73.7 / 77.7 / 75.5 |
 | AppWorld sub-agent routing, route@1 (best fixed 35.6) | 38 | 37.9 [34.0, 41.7] |
 | LLMRouterBench model routing, route@1 (best fixed 70.1) | 68 | 70.5 [65.9, 75.3] |
 | SkillsBench skill gating, reward (always-activate 49.6) | 49 | 48.3 [40.0, 56.7] |
+
+¹ Mind2Web element follows the paper's own protocol by default (`element_synth: paper` in
+`experiments/paper_cells.yaml`): CatBoost seed 0, the evaluator's row order, and for +synth one model per web
+domain, trained on the fold's real rows plus paraphrases of that domain's rows from the evaluator's whole
+706-task train split (tasks of the test fold removed). The +synth model therefore also learns from paraphrases
+of train-split tasks outside the 150 evaluated tasks, which the real-only model does not see;
+`--element-synth in-fold` restricts TabSynth to the training folds of the 150 tasks (the paper's three seeds:
+57.0 / 68.5 / 64.0 real, 58.5 / 67.1 / 65.0 +synth). The paper's scripts give exactly the released values on
+the same machine. The paper's run, on an x86-64 CPU with the same library versions, gave 57.9 / 65.4 / 63.6
+and 68.4 / 74.3 / 71.7: floating-point differences between CPU architectures move these fits by up to 0.8
+points. The paper's element BM25 (61 / 53 / 59, reproduced exactly in this mode) depends on tie order: BM25
+scores the demonstrated element 0 in 78% of steps, and the evaluator's sort keeps tied candidates in table
+order, where the demonstrated element comes first. With tied candidates in random order, BM25 reaches
+13.2 / 17.5 / 21.8.
 
 Policy rows against their strong default (paired task-level bootstrap, 2,000 resamples): sub-agent routing
 +2.3 pp [−0.5, +5.1], model routing +0.4 pp [−3.5, +4.6], skill gating −1.3 pp [−3.8, +0.7]: parity in every
