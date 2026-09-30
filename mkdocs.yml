@@ -1,0 +1,22 @@
+site_name: TabAgent
+site_description: Replace an LLM agent's closed-set decisions with a cheap classifier trained on its own traces.
+theme:
+  name: material
+  features: [navigation.sections, content.code.copy]
+markdown_extensions:
+  - admonition
+  - tables
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+nav:
+  - Home: index.md
+  - Concepts: concepts.md
+  - Components: components.md
+  - Onboard an agent: onboarding.md
+  - Bring your own table: bring_your_own_data.md
+  - Deploy: deployment.md
+  - Datasets: datasets.md
+  - Reproducing the paper: reproducing.md

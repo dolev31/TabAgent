@@ -1,0 +1,81 @@
+card_version: 1
+name: skillsbench_skill_gating_enriched
+decision:
+  kind: policy
+  group: task_uid
+  label: passed
+  candidate: mode
+  reward: reward
+  eval:
+  - skill_gain
+  decision:
+  - task_uid
+  - model
+features:
+- name: task_text
+  family: state
+  type: text
+  description: the task instruction (task.md)
+- name: supplied_skills_text
+  family: schema
+  type: text
+  description: the bundle's skill names and SKILL.md openings (empty for the without arm)
+- name: n_supplied_skills
+  family: schema
+  type: num
+- name: task_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: task_text
+- name: skill_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: task_text
+    passage: supplied_skills_text
+    encoder: e5-small-v2
+- name: skill_task_lex_overlap
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: task_text
+    b: supplied_skills_text
+- name: mode
+  family: schema
+  type: cat
+- name: model
+  family: state
+  type: cat
+  description: the agent's backbone LLM
+- name: prior_pass_rate_model
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: model
+    value: passed
+    fill: global
+  description: the backbone's training pass rate
+- name: prior_skill_gain_model
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: model
+    value: skill_gain
+    fill: zero
+  description: the backbone's mean training reward gain from activating skills
+synth:
+  text_cols:
+  - task_text
+  k: 4
+provenance:
+  kind: frozen
+  paper: not reported in the paper (skill gating over three backbones)
+  note: >-
+    The skill-gating card plus the agent's backbone and two per-backbone priors (the training pass rate and
+    the mean reward gain from activating skills), fitted inside the training folds.

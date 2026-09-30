@@ -1,0 +1,71 @@
+{
+  "source_id": "mind2web_train",
+  "files": [
+    {
+      "path": "data/train/train_0.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_0.json",
+      "sha256": "c8b622901057bca813a6d171733c41e4fc266c2902a23d63b9094c0add3f8f2c",
+      "size_bytes": 616000823
+    },
+    {
+      "path": "data/train/train_1.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_1.json",
+      "sha256": "41084922c50174ec032185707ae43bb04d3e8d725788b2e95936db629ba59100",
+      "size_bytes": 627832230
+    },
+    {
+      "path": "data/train/train_10.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_10.json",
+      "sha256": "182542d7947b3fa9e90fc57a3d82d4d8f2997ca5a06664217720d7a78a956e33",
+      "size_bytes": 28366146
+    },
+    {
+      "path": "data/train/train_2.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_2.json",
+      "sha256": "3e8a77b835517a3b88d59d0afb3412448b3bbf7f6791db796459268f73106bdf",
+      "size_bytes": 533477466
+    },
+    {
+      "path": "data/train/train_3.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_3.json",
+      "sha256": "65077d1e9b89984e6fca2494c2a3137e4920a19161e5086b7aa88837b6188405",
+      "size_bytes": 649691492
+    },
+    {
+      "path": "data/train/train_4.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_4.json",
+      "sha256": "fcb8903310ffe43e3e1e9e50f8744b7a0ca0299e9772fef3fc124355e1eeeb0b",
+      "size_bytes": 609080191
+    },
+    {
+      "path": "data/train/train_5.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_5.json",
+      "sha256": "a6bf7490e3c8808363f829a6eb97a194578886ee7a73f3de65ec6d8c6cfca6dd",
+      "size_bytes": 605777777
+    },
+    {
+      "path": "data/train/train_6.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_6.json",
+      "sha256": "49b2764d8ce2d902448d024de0a7e3943169c3c4209d2fc6ddedcc353c4b3296",
+      "size_bytes": 519944349
+    },
+    {
+      "path": "data/train/train_7.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_7.json",
+      "sha256": "085e5bf60e0ba8a6bafb861bafc6a15660853f9408ca7f5817b11b6670bd9642",
+      "size_bytes": 600430861
+    },
+    {
+      "path": "data/train/train_8.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_8.json",
+      "sha256": "0cb825512cbc19a9ee0bd41b32f7b6cd2640ae0e91f3cb4263c70356600b6acf",
+      "size_bytes": 529172729
+    },
+    {
+      "path": "data/train/train_9.json",
+      "url": "https://huggingface.co/datasets/osunlp/Mind2Web/resolve/17ece8eb89862368edc0cc806acee6fca5163474/data/train/train_9.json",
+      "sha256": "07377a0c1a06c0aef22dd3c2ed400f393add51dc2cb727e859c0928acdaa5077",
+      "size_bytes": 611613709
+    }
+  ]
+}

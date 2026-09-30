@@ -1,0 +1,57 @@
+card_version: 1
+name: skillsbench_skill_gating
+decision:
+  kind: policy
+  group: task_uid
+  label: passed
+  candidate: mode
+  reward: reward
+  eval:
+  - skill_gain
+features:
+- name: task_text
+  family: state
+  type: text
+  description: the task instruction (task.md)
+- name: supplied_skills_text
+  family: schema
+  type: text
+  description: the bundle's skill names and SKILL.md openings (empty for the without arm)
+- name: n_supplied_skills
+  family: schema
+  type: num
+- name: task_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: task_text
+- name: skill_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: task_text
+    passage: supplied_skills_text
+    encoder: e5-small-v2
+- name: skill_task_lex_overlap
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: task_text
+    b: supplied_skills_text
+- name: mode
+  family: schema
+  type: cat
+synth:
+  text_cols:
+  - task_text
+  k: 4
+provenance:
+  kind: frozen
+  paper: Table 1 (skill gating); App. M, Table 20
+  note: >-
+    One decision per task over two arms, with and without the task's curated skill bundle. The bundle text
+    is encoded as a passage (as in skill selection), and the fitted task-bundle cosine is computed on both
+    arms.

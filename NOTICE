@@ -1,0 +1,20 @@
+TabAgent
+Copyright 2026 The TabAgent Authors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party benchmarks and models
+---------------------------------
+This repository does not redistribute benchmark data. Loaders in `tabagent.datasets` download each
+source from its upstream location at a pinned revision into a local cache, subject to its own license:
+
+  * tau2-bench (sierra-research/tau2-bench) ............ MIT
+  * tau2-sft-final (Hugging Face dataset) ............... Apache-2.0
+  * SkillsBench (benchflow-ai/skillsbench) .............. Apache-2.0
+  * Mind2Web (osunlp/Mind2Web) .......................... CC-BY-4.0 (attribution required)
+  * LLMRouterBench ...................................... MIT, as declared in the upstream README (the
+                                                          repository ships no LICENSE file); opt-in download
+  * AppWorld ............................................ Apache-2.0 with an encrypted-redistribution
+                                                          condition; obtained only via the official CLI
+  * intfloat/e5-small-v2 (text encoder) ................. MIT
+  * CatBoost ............................................ Apache-2.0

@@ -1,0 +1,4 @@
+# False positives of gitleaks' generic-api-key rule: the text `outcome_keys, max_failure_rate=...` in
+# tabschema/compile.py (a list of JSON field names, not a credential).
+a9303cad62929af8a524988f2b2701246ab64d15:src/tabagent/tabschema/compile.py:generic-api-key:116
+18b31d3c77180e98025d8be5c1a634146fe5b19a:src/tabagent/tabschema/compile.py:generic-api-key:116

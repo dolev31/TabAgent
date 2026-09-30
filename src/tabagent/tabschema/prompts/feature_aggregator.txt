@@ -1,0 +1,37 @@
+Your task is to aggregate the features extracted from the multiple trajectories.
+
+The features extracted from the multiple trajectories are given to you:
+${potential_features}
+
+The schema of the features is given to you:
+${features_schema}
+
+You should look at the features and decide if they are relevant to the classification task.
+
+Remove features that are not relevant to the classification task, or are unobtainable using a trajectory that stops before the classification task.
+
+Output Format:
+{
+  "filtered_features": [
+    {
+      "feature_name": "descriptive name",
+      "feature_type": "text/numeric/categorical/computed",
+      "description": "what this feature represents",
+      "extraction_source": "where in the data this comes from",
+      "computation": "how to compute this feature",
+      "classification_relevance": "how this helps with the classification task",
+      "rationale": "why this would be useful",
+    }
+  ],
+  "rejected_features": [
+    {
+      "feature_name": "descriptive name",
+      "feature_type": "text/numeric/categorical/computed",
+      "description": "what this feature represents",
+      "extraction_source": "where in the data this comes from",
+      "computation": "how to compute this feature",
+      "classification_relevance": "how this helps with the classification task",
+      "rationale": "why this was rejected",
+    }
+  ]
+}

@@ -1,0 +1,35 @@
+Analyze this single multi-agent trajectory and architecture to identify features that are suitable to insert into a classification model to replace certain nodes.
+
+TRAJECTORY DATA:
+${trajectory_json}
+
+The schema of the trajectory data is given to you:
+${trajectory_schema}
+
+Your task is to:
+1. The classification suitable component is given to you: ${target_name}
+2. For this classification node, extract potential features that could be used to train a replacement model using past steps.
+3. Consider features from: user inputs, system prompts, context from previous steps, available options, thoughts of previous steps etc.
+4. Do not try to solve classification with embeddings, classification should only be based on data that can be taken from the trajectory using code.
+
+The classification suitable component full step is given to you, but in your analysis, you should only use the data that can be taken from the trajectory before this component:
+
+${target_json}
+
+Return your analysis in this JSON format:
+{
+  "potential_features": [
+    {
+      "feature_name": "descriptive name",
+      "feature_type": "text/numeric/categorical/computed",
+      "description": "what this feature represents",
+      "extraction_source": "where in the data this comes from",
+      "computation": "how to compute this feature",
+      "classification_relevance": "how this helps with the classification task",
+      "rationale": "why this would be useful",
+      "trajectory_file": "${trajectory_file}"
+    }
+  ]
+}
+
+Focus on features that would actually help a model learn to make the same decisions as the original agents, and are obtained from the trajectory before the classification suitable component.

@@ -1,0 +1,102 @@
+{
+  "source_id": "llmrouterbench_tau2_dense",
+  "release_id": "hf-0e5af1b84bf73437a01a1849c0f1d2468baa93fc",
+  "upstream_url": "https://huggingface.co/datasets/NPULH/LLMRouterBench",
+  "revision": "0e5af1b84bf73437a01a1849c0f1d2468baa93fc",
+  "code_url": "https://github.com/ynulihao/LLMRouterBench",
+  "code_revision": "c77cb0506949d8f959e97967d2fefca0e8ff1b05",
+  "license": "MIT (declared in the upstream README; the repository ships no LICENSE file)",
+  "notes": "Only the archive has a URL. The 12 tau2-bench test files are extracted from it (member = path inside the archive) and verified one by one.",
+  "files": [
+    {
+      "path": "bench-release.tar.gz",
+      "url": "https://huggingface.co/datasets/NPULH/LLMRouterBench/resolve/0e5af1b84bf73437a01a1849c0f1d2468baa93fc/bench-release.tar.gz",
+      "sha256": "b79f8cde1a6f029c2efa663a3a3b6f7748defb22341fe59f328cebef6648c8f1",
+      "size_bytes": 1283503080
+    },
+    {
+      "path": "claude-sonnet-4/tau2-test-claude-sonnet-4-20251030_003123.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/claude-sonnet-4/tau2-test-claude-sonnet-4-20251030_003123.json",
+      "sha256": "1939d51a887fe817f30bf811e4a8b25df5fd4b78441cae0cbf6222c54083f4e0",
+      "size_bytes": 5847152
+    },
+    {
+      "path": "deepseek-r1-0528/tau2-test-deepseek-r1-0528-20251030_003123.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/deepseek-r1-0528/tau2-test-deepseek-r1-0528-20251030_003123.json",
+      "sha256": "117a4d258cbb1b42189988a57a33ef385116d53581c29bdf1b8ceda9285bc45e",
+      "size_bytes": 5544497
+    },
+    {
+      "path": "deepseek-v3-0324/tau2-test-deepseek-v3-0324-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/deepseek-v3-0324/tau2-test-deepseek-v3-0324-20251030_003124.json",
+      "sha256": "ffff2725cfadcde282cdb2b533851fc85b9cc9e28e29c161139421f01f08876a",
+      "size_bytes": 2367469
+    },
+    {
+      "path": "deepseek-v3.1-terminus/tau2-test-deepseek-v3.1-terminus-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/deepseek-v3.1-terminus/tau2-test-deepseek-v3.1-terminus-20251030_003124.json",
+      "sha256": "7b4cd0dc897ebe41fda63d36359c84707a3a37cb75811a4f53a3e28e46e67576",
+      "size_bytes": 6298097
+    },
+    {
+      "path": "gemini-2.5-flash/tau2-test-gemini-2.5-flash-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/gemini-2.5-flash/tau2-test-gemini-2.5-flash-20251030_003124.json",
+      "sha256": "d9212145b296862577a8555f866388d9e5bf9781132edc2913d6f398863b201d",
+      "size_bytes": 3757162
+    },
+    {
+      "path": "gemini-2.5-pro/tau2-test-gemini-2.5-pro-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/gemini-2.5-pro/tau2-test-gemini-2.5-pro-20251030_003124.json",
+      "sha256": "f6340393d12961ad426f9736827fa899aa0c86a8136c215bb558131e07b7f68c",
+      "size_bytes": 5196008
+    },
+    {
+      "path": "glm-4.6/tau2-test-glm-4.6-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/glm-4.6/tau2-test-glm-4.6-20251030_003124.json",
+      "sha256": "bdc461709b2f60065c83cbf68c9c12935c0b925fd853def0311083569c97e649",
+      "size_bytes": 6719540
+    },
+    {
+      "path": "gpt-5/tau2-test-gpt-5-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/gpt-5/tau2-test-gpt-5-20251030_003124.json",
+      "sha256": "7a4757830dfa86f74d1b00029de04e5564da7d42cd64298d498844dec2ebe4b5",
+      "size_bytes": 6087519
+    },
+    {
+      "path": "intern-s1/tau2-test-intern-s1-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/intern-s1/tau2-test-intern-s1-20251030_003124.json",
+      "sha256": "ee4fd56aef32bf50b19f54bf0eb495982789ae4fb4c261047477827a6b5c28f3",
+      "size_bytes": 5375167
+    },
+    {
+      "path": "kimi-k2-0905/tau2-test-kimi-k2-0905-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/kimi-k2-0905/tau2-test-kimi-k2-0905-20251030_003124.json",
+      "sha256": "85803df8619f457b628dee56d97b16f2db3aee3eb76138e5fcd46dca2b8fb43e",
+      "size_bytes": 6256300
+    },
+    {
+      "path": "qwen3-235b-a22b-2507/tau2-test-qwen3-235b-a22b-2507-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/qwen3-235b-a22b-2507/tau2-test-qwen3-235b-a22b-2507-20251030_003124.json",
+      "sha256": "14f3bd05ea2cb86f9640d17f00650991306d65849f049b8d6841b94fd566037a",
+      "size_bytes": 5979019
+    },
+    {
+      "path": "qwen3-235b-a22b-thinking-2507/tau2-test-qwen3-235b-a22b-thinking-2507-20251030_003124.json",
+      "archive": "bench-release.tar.gz",
+      "member": "bench-release/tau2/test/qwen3-235b-a22b-thinking-2507/tau2-test-qwen3-235b-a22b-thinking-2507-20251030_003124.json",
+      "sha256": "980f39eae8379035ebe91a63992b309150de9c576b08b78b0f7176f4b0e9ac1f",
+      "size_bytes": 6230862
+    }
+  ]
+}

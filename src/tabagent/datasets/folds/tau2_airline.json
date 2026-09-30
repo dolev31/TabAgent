@@ -1,0 +1,29 @@
+{
+"by_group": {
+"airline|0": 3,
+"airline|1": 4,
+"airline|10": 2,
+"airline|11": 1,
+"airline|12": 1,
+"airline|15": 3,
+"airline|17": 4,
+"airline|28": 0,
+"airline|3": 3,
+"airline|34": 0,
+"airline|36": 0,
+"airline|38": 1,
+"airline|39": 0,
+"airline|4": 2,
+"airline|40": 0,
+"airline|41": 4,
+"airline|42": 2,
+"airline|43": 2,
+"airline|46": 1,
+"airline|47": 4,
+"airline|49": 3,
+"airline|5": 3,
+"airline|7": 1,
+"airline|9": 2
+},
+"group_col": "task_id"
+}

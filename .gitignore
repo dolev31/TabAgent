@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+.venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+catboost_info/
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
+
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Data, results and run artifacts never live in the repo.
+/data/
+/results*/
+/runs/
+*.csv
+*.tsv
+*.jsonl
+*.parquet
+*.pkl
+*.cbm
+*.pt
+*.safetensors
+!tests/fixtures/**
+
+/site/

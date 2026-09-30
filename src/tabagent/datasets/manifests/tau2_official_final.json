@@ -1,0 +1,185 @@
+{
+ "source_id": "tau2_official_final",
+ "files": [
+  {
+   "path": "LICENSE",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/LICENSE",
+   "sha256": "e67c5aa0074dfcaefd3c3a1aedb94cb539234aecd15d5a972574e3200e6252fe",
+   "size_bytes": 1072
+  },
+  {
+   "path": "data/tau2/results/final/claude-3-7-sonnet-20250219_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/claude-3-7-sonnet-20250219_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "40a2c6a246eab27db5cdefda895fbe7f44be78a23d300817248534aa606d66de",
+   "size_bytes": 10551448
+  },
+  {
+   "path": "data/tau2/results/final/claude-3-7-sonnet-20250219_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/claude-3-7-sonnet-20250219_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "ed41dbd18c080154156484e3a0122c095e324a11367a640d88e15956daed7b9d",
+   "size_bytes": 24908843
+  },
+  {
+   "path": "data/tau2/results/final/claude-3-7-sonnet-20250219_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/claude-3-7-sonnet-20250219_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "f49e540896fe91ab8631647f02eb777ef6fed5a6ebec545f43e71d0504e227b2",
+   "size_bytes": 41190190
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "31d19e79b8ddc5934a60701f913ff5fefb41dee5e68f7b813c26254ab2e2d5c8",
+   "size_bytes": 8790399
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "5fc5b96ada0fe46a463eaed98d1bfed9947fe073bac052290162dae18d71394e",
+   "size_bytes": 22044059
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "edf9d65e122c850966615488e181a51a7c9ff1d7244e6f908aced9dbc5e56960",
+   "size_bytes": 36650395
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "ae28ecfe2a3870fb739e4d1a2ebd0fc8ade9571e38b4a4c167e5c3716800e749",
+   "size_bytes": 18979307
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "c2a5208ee3c9dc68f4c539a66244d032b8adb2ac5f33e3339246c3dca8af6c47",
+   "size_bytes": 21830832
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom-workflow_op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "3d6a5b58e89dc13fd71829ba53000c80768ea36da1851b6ea96a212a116ba7a0",
+   "size_bytes": 29914505
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "8e1793f57a9e216514dbce1f93b44b0592d5904f1c5b97ab711906782107a1f2",
+   "size_bytes": 37463627
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "2065bec4a0f9917af8e031624a8ccc3d69a014f7da6761840fc95c1262ce696a",
+   "size_bytes": 17661055
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "6dd63dc15ffe0b6e4e79434f4d292b1c0af10db3c91c08e152258795852f8dd1",
+   "size_bytes": 20424962
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-2025-04-14_telecom_op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-2025-04-14_telecom_op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "16c0bcb5fa4ad621b50141f5f93d73c46557adca86d1894d1686a57603c34f29",
+   "size_bytes": 27807798
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-mini-2025-04-14_airline_base_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-mini-2025-04-14_airline_base_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "41788956547a100fb8e34baf159f36dd1f07f0765798a5fdaf917576c5dba9d0",
+   "size_bytes": 9781836
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-mini-2025-04-14_retail_base_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-mini-2025-04-14_retail_base_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "6d6badb43b716adca31591b0b40e15fd493b49adddaa8e2c47035bb557549257",
+   "size_bytes": 23697012
+  },
+  {
+   "path": "data/tau2/results/final/gpt-4.1-mini-2025-04-14_telecom_base_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/gpt-4.1-mini-2025-04-14_telecom_base_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "04fad1a6fb3ff8804be31c54cf5a993b64868e37683c226e014e7adbf60841d9",
+   "size_bytes": 51038687
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_airline_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "6a3a354c9bce42b52905af096e9cea6f555548acbb17b567fd403c356df7b4ec",
+   "size_bytes": 7599444
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_retail_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "7135f38bbbbd46d6babe830574c8623bb276d8fd6da316580b905cf513853f98",
+   "size_bytes": 22066527
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "918bea6c28adb6be4ce308d2897a6549ff06b6852fa2c784143a28c511c7b97f",
+   "size_bytes": 30948963
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "671b820995cd858a3e3abe3da0f6cf943ad9b95220fafa2c729f2e9d8b8c4160",
+   "size_bytes": 12643568
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "9fa6d8bd2dce2c53d3bf500a4ec914e6f13c9ee83827193301bc5fcfd285cdb0",
+   "size_bytes": 19507680
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom-workflow_op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "c6fc8f601d0bf398d2e06f21aa0b4d832dbfc0998d2b193cd27331578790177d",
+   "size_bytes": 21110370
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom_default_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "1f46a6f296694bdb3ae203e6b379cdada0b8f17b648a4cf90d6343de1f1fb070",
+   "size_bytes": 36801670
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom_no-user-op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "e4f0e4827bdd36438f6daf80ceecffe7f9fd175cef80ae1f821422cb4e5743c4",
+   "size_bytes": 12921123
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom_no-user_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "b9a1310bcd27fdbb04d1a095812791b12f97fde6b3586063613bcd521490e834",
+   "size_bytes": 19167803
+  },
+  {
+   "path": "data/tau2/results/final/o4-mini-2025-04-16_telecom_op_gpt-4.1-2025-04-14_4trials.json",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/data/tau2/results/final/o4-mini-2025-04-16_telecom_op_gpt-4.1-2025-04-14_4trials.json",
+   "sha256": "b7291c709a0ac3636306355656bcd5f81646b49dc1099454fc392937981a0380",
+   "size_bytes": 18335869
+  },
+  {
+   "path": "src/tau2/domains/airline/tools.py",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/src/tau2/domains/airline/tools.py",
+   "sha256": "3987f21c286314cb48764f97052934ff4fd60e27a0b2e4a43423911adf8eaa26",
+   "size_bytes": 28123
+  },
+  {
+   "path": "src/tau2/domains/retail/tools.py",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/src/tau2/domains/retail/tools.py",
+   "sha256": "34f4fe9702d36f0dd4697700fbcd63d0cf5386e6eb8e7499aaa336243bad8750",
+   "size_bytes": 29202
+  },
+  {
+   "path": "src/tau2/domains/telecom/tools.py",
+   "url": "https://raw.githubusercontent.com/sierra-research/tau2-bench/cf71a8070269883e38a365ffa85f78f46844c1f4/src/tau2/domains/telecom/tools.py",
+   "sha256": "388552434d1b8225e33e7958bdb6efccfe92b49e11d1838568d9b559514e9d01",
+   "size_bytes": 26442
+  }
+ ]
+}

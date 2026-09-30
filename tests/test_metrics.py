@@ -1,0 +1,178 @@
+"""Metrics follow the paper's definitions (Sec. 4.3; App. B.7, J and L); test names carry the paper anchor."""
+
+import numpy as np
+import pandas as pd
+import pytest
+
+from tabagent.evaluation import metrics as M
+from tabagent.table import DecisionSpec, DecisionTable
+
+RANK = DecisionSpec(kind="ranking", group="task", candidate="tool", label="used")
+
+
+def _one(scores, used=(1, 0, 1, 0), tools=("a", "b", "c", "d")):
+    df = pd.DataFrame({"task": "t", "tool": list(tools), "used": list(used)})
+    return DecisionTable(df, RANK), np.asarray(scores, dtype=float)
+
+
+def test_p_at_r_and_recall_at_k_sec4_3():
+    t, s = _one([0.9, 0.8, 0.7, 0.1])  # G = {a, c}; ranking a, b, c, d
+    assert M.p_at_r(t, s).iloc[0] == pytest.approx(0.5)
+    assert M.recall_at_k(t, s, 1).iloc[0] == pytest.approx(0.5)
+    assert M.recall_at_k(t, s, 3).iloc[0] == pytest.approx(1.0)
+    assert M.hit_at_k(t, s, 1).iloc[0] == 1.0
+
+
+def test_default_tie_break_is_the_expectation_over_tie_orders_appL():
+    t, s = _one([0.5, 0.5, 0.5, 0.5], used=(0, 1, 0, 0))  # four tied, one relevant
+    assert M.recall_at_k(t, s, 1).iloc[0] == pytest.approx(1 / 4)
+    assert M.p_at_r(t, s).iloc[0] == pytest.approx(1 / 4)
+    assert M.per_decision(t, s, "recall@2").iloc[0] == pytest.approx(2 / 4)
+
+
+def test_candidate_tie_break_orders_ties_by_candidate_id():
+    t, s = _one([0.5, 0.5, 0.5, 0.5], used=(0, 1, 0, 0))  # all tied -> order a, b, c, d
+    assert M.recall_at_k(t, s, 1, tie_break="candidate").iloc[0] == 0.0
+    assert M.recall_at_k(t, s, 2, tie_break="candidate").iloc[0] == 1.0
+    assert M.ranked(t, s)["candidate"].tolist() == ["a", "b", "c", "d"]
+
+
+def test_unknown_tie_break_is_rejected():
+    t, s = _one([0.5, 0.5, 0.5, 0.5])
+    for metric in ("p@r", "recall@2", "hit@1", "ml_f1"):
+        with pytest.raises(ValueError, match="tie_break"):
+            M.per_decision(t, s, metric, tie_break="table-order")
+
+
+def test_p_at_r_equals_recall_at_r_sec4_3():
+    rng = np.random.default_rng(0)
+    rows = []
+    for d in range(30):
+        n = int(rng.integers(5, 15))
+        used = (rng.random(n) < 0.3).astype(int)
+        used[0] = 1
+        rows += [{"task": f"t{d}", "tool": f"x{i}", "used": int(u)} for i, u in enumerate(used)]
+    t = DecisionTable(pd.DataFrame(rows), RANK)
+    s = rng.random(len(t))
+    par = M.p_at_r(t, s)
+    r_of = t.df.groupby("task")["used"].sum()
+    for dec, v in par.items():
+        assert v == pytest.approx(M.recall_at_k(t.subset([dec]), s[t.df.task == dec], int(r_of[dec])).iloc[0])
+
+
+def test_decisions_without_relevant_candidates_are_skipped():
+    t, s = _one([0.9, 0.8, 0.7, 0.1], used=(0, 0, 0, 0))
+    assert M.p_at_r(t, s).empty
+
+
+def test_chance_p_at_r_is_r_over_n():
+    t, _ = _one([0, 0, 0, 0])
+    assert M.chance_p_at_r(t).iloc[0] == pytest.approx(2 / 4)
+
+
+def test_route_at_1_is_reward_of_chosen_arm_appB7():
+    spec = DecisionSpec(kind="policy", group="task", candidate="model", label="ok", reward="r")
+    df = pd.DataFrame({"task": "t", "model": ["m1", "m2", "m3"], "ok": [1, 0, 1], "r": [0.2, 0.9, 0.6]})
+    t = DecisionTable(df, spec)
+    assert M.route_at_1(t, np.array([0.1, 0.3, 0.8])).iloc[0] == pytest.approx(0.6)
+    assert M.chance_route(t).iloc[0] == pytest.approx((0.2 + 0.9 + 0.6) / 3)
+    assert M.oracle_route(t).iloc[0] == pytest.approx(0.9)
+
+
+def test_multilabel_threshold_and_backoff_appJ():
+    spec = DecisionSpec(kind="multilabel", group="task", candidate="app", label="needed")
+    df = pd.DataFrame({"task": ["t1"] * 3 + ["t2"] * 3, "app": list("abc") * 2, "needed": [1, 0, 0, 0, 1, 1]})
+    t = DecisionTable(df, spec)
+    s = np.array([0.2, 0.1, 0.3, 0.9, 0.6, 0.1])  # t1: nothing >= .5 -> back off to top-1 ('c')
+    pred = M.multilabel_predict(t, s)
+    assert set(pred[(pred.decision == "t1") & (pred.pred == 1)].candidate) == {"c"}
+    prf = M.multilabel_prf(t, s)
+    assert prf.loc["t1", "precision"] == 0.0 and prf.loc["t1", "recall"] == 0.0
+    assert prf.loc["t2", "precision"] == pytest.approx(0.5)  # predicted {a, b}, relevant {b, c}
+    assert prf.loc["t2", "recall"] == pytest.approx(0.5)
+
+
+def test_single_class_accuracy_and_macro_f1_appL():
+    spec = DecisionSpec(kind="single", group="task", label="op")
+    df = pd.DataFrame({"task": ["t1", "t2", "t3", "t4"], "op": ["CLICK", "TYPE", "CLICK", "SELECT"]})
+    t = DecisionTable(df, spec)
+    pred = np.array(["CLICK", "TYPE", "TYPE", "SELECT"], dtype=object)
+    assert M.accuracy(t, pred).mean() == pytest.approx(0.75)
+    assert M.macro_f1(t, pred) == pytest.approx(np.mean([2 / 3, 2 / 3, 1.0]))
+
+
+def test_normalized_headroom():
+    assert M.normalized(0.68, 0.43, 0.94) == pytest.approx((0.68 - 0.43) / (0.94 - 0.43))
+
+
+def test_dispatch():
+    t, s = _one([0.9, 0.8, 0.7, 0.1])
+    assert M.per_decision(t, s, "recall@3").iloc[0] == 1.0
+    assert M.per_decision(t, s, "P@R").iloc[0] == 0.5
+    with pytest.raises(ValueError):
+        M.per_decision(t, s, "ndcg")
+
+
+def test_expected_tie_break_averages_over_random_orders_of_ties():
+    """tie_break="expected": the exact expectation over a uniformly random order of tied scores."""
+    t, s = _one([0.5, 0.5, 0.5, 0.5], used=(0, 1, 0, 0))  # four tied, one relevant
+    assert M.recall_at_k(t, s, 1, tie_break="expected").iloc[0] == pytest.approx(1 / 4)
+    assert M.recall_at_k(t, s, 2, tie_break="expected").iloc[0] == pytest.approx(2 / 4)
+    assert M.hit_at_k(t, s, 2, tie_break="expected").iloc[0] == pytest.approx(1 - 3 / 6)  # 1 - C(3,2)/C(4,2)
+    t, s = _one([0.9, 0.0, 0.0, 0.0], used=(1, 0, 1, 0))  # R = 2: one sure hit, one slot among three ties
+    assert M.p_at_r(t, s, tie_break="expected").iloc[0] == pytest.approx((1 + 1 / 3) / 2)
+    assert M.hit_at_k(t, s, 1, tie_break="expected").iloc[0] == 1.0
+    assert M.recall_at_k(t, s, 9, tie_break="expected").iloc[0] == 1.0  # k beyond the slate
+
+
+def test_tie_breaks_agree_when_no_scores_tie():
+    rng = np.random.default_rng(2)
+    rows = [
+        {"task": f"t{d}", "tool": f"x{i}", "used": int(rng.random() < 0.3 or i == 0)}
+        for d in range(15)
+        for i in range(9)
+    ]
+    t = DecisionTable(pd.DataFrame(rows), RANK)
+    s = rng.random(len(t))
+    for metric in ("p@r", "recall@3", "hit@2"):
+        pd.testing.assert_series_equal(
+            M.per_decision(t, s, metric, tie_break="expected"),
+            M.per_decision(t, s, metric, tie_break="candidate"),
+        )
+
+
+def test_expected_tie_break_is_the_monte_carlo_limit():
+    rng = np.random.default_rng(3)
+    rows = [{"task": f"t{d}", "tool": f"x{i}", "used": int(i % 3 == 0)} for d in range(10) for i in range(7)]
+    t = DecisionTable(pd.DataFrame(rows), RANK)
+    s = np.round(rng.random(len(t)), 1)
+    exact = M.p_at_r(t, s, tie_break="expected")
+    draws = []
+    for _ in range(3000):  # one random tie order per draw: a random secondary sort key
+        u = rng.random(len(t))
+        order = np.lexsort((u, -s, t.df["task"].to_numpy()))
+        g = t.df.iloc[order].assign(r=lambda d: d.groupby("task").cumcount())
+        big_r = g.groupby("task")["used"].transform("sum")
+        draws.append(
+            (g["used"] * (g["r"] < big_r)).groupby(g["task"]).sum() / g.groupby("task")["used"].sum()
+        )
+    assert exact.to_numpy() == pytest.approx(pd.concat(draws, axis=1).mean(axis=1).to_numpy(), abs=0.02)
+
+
+def test_expected_route_at_1_averages_tied_best_arms():
+    spec = DecisionSpec(kind="policy", group="task", candidate="model", label="ok", reward="r")
+    df = pd.DataFrame({"task": "t", "model": ["m1", "m2", "m3"], "ok": [1, 0, 1], "r": [0.2, 0.9, 0.6]})
+    t = DecisionTable(df, spec)
+    assert M.route_at_1(t, np.array([0.8, 0.8, 0.1]), tie_break="expected").iloc[0] == pytest.approx(0.55)
+
+
+def test_multilabel_backoff_in_expectation_over_tied_top_candidates():
+    spec = DecisionSpec(kind="multilabel", group="task", candidate="app", label="needed")
+    df = pd.DataFrame({"task": ["t"] * 3, "app": list("abc"), "needed": [0, 1, 0]})
+    t = DecisionTable(df, spec)
+    s = np.array([0.3, 0.3, 0.1])  # nothing >= .5; a and b tie for the top-1 back-off
+    exp = M.multilabel_prf(t, s)
+    assert exp.loc["t", "precision"] == pytest.approx(0.5) and exp.loc["t", "recall"] == pytest.approx(0.5)
+    assert exp.loc["t", "f1"] == pytest.approx(0.5)  # E[F1] = P(hit) * 2 / (1 + |Y|)
+    cand = M.multilabel_prf(t, s, tie_break="candidate")  # back off to 'a' (candidate id order)
+    assert cand.loc["t", "precision"] == 0.0

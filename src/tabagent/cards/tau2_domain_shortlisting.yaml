@@ -1,0 +1,85 @@
+card_version: 1
+name: tau2_domain_shortlisting
+decision:
+  kind: ranking
+  group: task_id
+  label: used
+  candidate: tool
+  decision:
+  - traj_uid
+  eval:
+  - reward
+features:
+- name: instruction
+  family: state
+  type: text
+  description: The customer's first message.
+- name: instr_word_count
+  family: state
+  type: num
+  source: word_count
+  args:
+    col: instruction
+- name: tool_name
+  family: schema
+  type: cat
+  description: The tool id with underscores as spaces.
+- name: tool_desc
+  family: schema
+  type: text
+  description: The tool's docstring summary from the domain toolkit.
+- name: tool_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: instruction
+    passage:
+    - tool_name
+    - tool_desc
+    - tool_args
+    encoder: e5-small-v2
+  description: Centered e5 cosine between the request and the tool's name, description and arguments.
+- name: tool_task_lex
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: instruction
+    b: tool_name
+- name: tool_desc_lex
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: instruction
+    b:
+    - tool_name
+    - tool_desc
+    - tool_args
+- name: domain_match
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: domain
+    b: tool_domain
+  description: 1 if the tool belongs to the conversation's domain toolkit, else 0 (constant within one domain).
+- name: tool_prior_usage
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: tool
+    fill: zero
+  description: Share of training trajectories that called the tool.
+synth:
+  text_cols:
+  - instruction
+  k: 4
+provenance:
+  kind: hand-authored
+  paper: Table 1 (tau2-bench rows); App. B.2, Table 11
+  note: >-
+    Request and candidate features only, since the traces expose no agent-internal state (App. B.2). Every
+    data-dependent statistic is fitted inside the training fold.

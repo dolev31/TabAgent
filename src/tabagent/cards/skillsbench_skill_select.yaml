@@ -1,0 +1,61 @@
+card_version: 1
+name: skillsbench_skill_select
+decision:
+  kind: ranking
+  group: task_uid
+  label: relevant
+  candidate: skill_name
+features:
+- name: task_text
+  family: state
+  type: text
+  description: the task instruction (task.md)
+- name: skill_name
+  family: schema
+  type: cat
+- name: skill_desc
+  family: schema
+  type: text
+  description: first 800 characters of the skill's SKILL.md
+- name: skill_name_len
+  family: schema
+  type: num
+  source: word_count
+  args:
+    col: skill_name
+- name: skill_global_freq
+  family: dependency
+  type: num
+  source: fitted:candidate_prior
+  args:
+    key: skill_name
+  description: share of training tasks whose bundle contains the skill (fitted in-fold)
+- name: skill_task_overlap
+  family: dependency
+  type: num
+  source: fitted:embedding_cosine
+  args:
+    query: task_text
+    passage: skill_desc
+    encoder: e5-small-v2
+- name: skill_task_lex_overlap
+  family: schema
+  type: num
+  source: jaccard
+  args:
+    a: task_text
+    b:
+    - skill_name
+    - skill_desc
+synth:
+  text_cols:
+  - task_text
+  k: 2
+provenance:
+  kind: frozen
+  paper: variant of the Table 1 skill-selection card (adds the candidate prior)
+  note: >-
+    skillsbench_skill_select_noprior plus skill_global_freq, the share of training tasks whose bundle
+    contains the skill, fitted inside the training folds. 180 of the 195 skills occur in a single bundle, so
+    the prior is 0 for a held-out task's own skills and positive for other tasks' skills; with CatBoost (paper
+    preset), the pinned folds and the paper's seeds it lowers P@R from 0.796 to 0.727.
