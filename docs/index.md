@@ -45,6 +45,27 @@ pip install "tabagent[embed]"           # + e5 context-candidate similarity feat
 pip install "tabagent[serve]"           # + HTTP decision service
 ```
 
+## Try it
+
+```bash
+git clone https://github.com/dolev31/TabAgent && cd TabAgent
+pip install -e ".[embed]"
+python examples/01_quickstart_skillsbench.py
+```
+
+The first run downloads the pinned SkillsBench release (about 6 MB, SHA-256 verified), then runs the paper's
+five-fold task-level cross-validation on CPU (about seven minutes on a laptop). It prints P@R ≈ 0.79 and
+Recall@9 ≈ 0.90 with 95% bootstrap intervals, then the five skills TabAgent would hand the agent for one task.
+[docs/reproducing.md](reproducing.md) compares this number with the paper's.
+
+| Example | What it shows | Needs |
+|---|---|---|
+| [01_quickstart_skillsbench.py](https://github.com/dolev31/TabAgent/blob/main/examples/01_quickstart_skillsbench.py) | the paper's components on a public benchmark, cross-validated | CPU; network on first run |
+| [02_bring_your_own_table.py](https://github.com/dolev31/TabAgent/blob/main/examples/02_bring_your_own_table.py) | scikit-learn estimators on your own decision table | CPU |
+| [03_onboard_agent_logs.py](https://github.com/dolev31/TabAgent/blob/main/examples/03_onboard_agent_logs.py) | onboarding a decision from your own agent logs | an LLM API key |
+| [04_deploy.py](https://github.com/dolev31/TabAgent/blob/main/examples/04_deploy.py) | live decisions in-process, the HTTP service, a tool filter in front of your LLM | a saved head (from 03) |
+| [05_tau2_cross_agent_transfer.py](https://github.com/dolev31/TabAgent/blob/main/examples/05_tau2_cross_agent_transfer.py) | training on one agent's traces and deploying on another's (paper Table 2) | CPU; network on first run |
+
 ## Three ways to use it
 
 ### 1. You have agent logs and an LLM key
@@ -109,6 +130,20 @@ through AppWorld's official CLI). See [docs/reproducing.md](reproducing.md) for 
 that recomputes it, and the value it produces. Results that rely on private agent trajectories (AppWorld tool
 shortlisting with CUGA, OAK/BPO, the in-loop hot swap) are reported in the paper; the CUGA trajectory adapter is
 included, so the pipeline can be rerun on your own CUGA traces.
+
+## Documentation
+
+| Guide | Covers |
+|---|---|
+| [Concepts](concepts.md) | the decision table, the four decision kinds, leakage safety, the evaluation protocol |
+| [Components](components.md) | TabSchema, TabSynth and TabHead in detail |
+| [Onboard an agent](onboarding.md) | log formats, privacy and cost controls, reviewing the generated extractor |
+| [Bring your own table](bring_your_own_data.md) | the scikit-learn estimators and automatic recipe selection |
+| [Deploy](deployment.md) | saved heads, the HTTP service, the tool filter, the confidence gate |
+| [Datasets](datasets.md) | every public dataset, its pinned source, license and the paper result it backs |
+| [Reproducing the paper](reproducing.md) | each paper cell, the command that recomputes it, paper vs released values |
+
+`make docs` builds these pages as a searchable site (mkdocs-material).
 
 ## Data policy
 

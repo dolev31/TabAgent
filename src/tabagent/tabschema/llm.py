@@ -16,6 +16,7 @@ import hashlib
 import json
 import os
 import re
+import threading
 import time
 from collections import defaultdict
 from collections.abc import Callable
@@ -168,6 +169,7 @@ class RecordingLLM:
     def __init__(self, inner: LLM, path: str | Path):
         self.inner, self.model, self.path = inner, inner.model, Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()  # stages call the LLM from worker threads
 
     def complete(self, system: str, *, role: str = "") -> LLMResponse:
         r = self.inner.complete(system, role=role)
@@ -179,7 +181,7 @@ class RecordingLLM:
             "input_tokens": r.input_tokens,
             "output_tokens": r.output_tokens,
         }
-        with self.path.open("a") as f:
+        with self._lock, self.path.open("a") as f:
             f.write(json.dumps(rec) + "\n")
         return r
 

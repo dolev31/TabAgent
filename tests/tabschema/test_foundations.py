@@ -1,6 +1,8 @@
 """TabSchema foundations: trajectories, LLM layer, sandbox, deterministic checks, prompts, run store."""
 
 import json
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
@@ -206,6 +208,22 @@ def test_runstore_cache_and_log(tmp_path):
     assert calls == [1]
     store.log_call({"stage": "x"})
     assert (tmp_path / "r1" / "llm_calls.jsonl").read_text().count("\n") == 1
+
+
+def test_runstore_cache_is_thread_safe(tmp_path):
+    # Threads that request one key never read a half-written entry, and the paid call runs once.
+    store = RunStore(tmp_path, run_id="r1")
+    calls = []
+
+    def slow():
+        calls.append(1)
+        time.sleep(0.05)
+        return {"text": "x" * 100_000}
+
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        out = list(pool.map(lambda _: store.cached("llm", {"k": 1}, slow), range(16)))
+    assert calls == [1] and all(o == {"text": "x" * 100_000} for o in out)
+    assert not list((tmp_path / "r1" / "cache").rglob("*.tmp"))
 
 
 # Pinned hashes of the prompt files. The seven paper prompts reproduce App. C word for word (verified against
