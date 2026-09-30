@@ -123,13 +123,14 @@ print(res.summary(["p@r", "recall@9"]))
 
 ## Reproducing the paper
 
-Everything that can be reproduced from public data is: τ²-bench (cross-backbone transfer and per-domain
+The release reproduces the following from public data: τ²-bench (cross-backbone transfer and per-domain
 shortlisting), SkillsBench (skill selection and gating), Mind2Web (operation and element selection),
 LLMRouterBench (model routing, opt-in license acknowledgement) and AppWorld sub-agent routing (data obtained
 through AppWorld's official CLI). See [docs/reproducing.md](reproducing.md) for each paper cell, the command
-that recomputes it, and the value it produces. Results that rely on private agent trajectories (AppWorld tool
-shortlisting with CUGA, OAK/BPO, the in-loop hot swap) are reported in the paper; the CUGA trajectory adapter is
-included, so the pipeline can be rerun on your own CUGA traces.
+that recomputes it, and the value it produces. The AppWorld tool-shortlisting results and the in-loop hot swap
+use the CUGA agent's own trajectories, which are not released; the CUGA trajectory adapter is included, so the
+pipeline can be rerun on your own CUGA traces. The OAK and BPO benchmarks are public; loaders for them are not
+included yet.
 
 ## Documentation
 

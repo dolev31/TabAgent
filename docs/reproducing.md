@@ -15,9 +15,10 @@ APPWORLD_ROOT=/path/to/appworld python experiments/reproduce.py --cells subagent
 Baselines that need a GPU (DSR fine-tuning, few-shot and fine-tuned small LLMs), the candidate-overload and
 head-ablation figures, and the efficiency benchmark live under `experiments/` with their own READMEs.
 
-Results that depend on private agent trajectories (AppWorld tool shortlisting with CUGA, application selection,
-OAK/BPO, the in-loop hot swap) are reported in the paper; the adapters and integration code to rerun them on
-your own CUGA traces are included.
+The AppWorld results that use the CUGA agent's own trajectories (tool shortlisting, application selection, the
+in-loop hot swap) are reported in the paper; those trajectories are not released, and the adapters and
+integration code to rerun them on your own CUGA traces are included. The OAK and BPO benchmarks are public;
+loaders for them are not included yet.
 
 ## Results (released code, the paper's protocol)
 
