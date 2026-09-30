@@ -39,6 +39,7 @@ flowchart LR
 
 ```bash
 pip install tabagent                    # core: tables, TabSynth, TabHead, evaluation
+# until the PyPI release: pip install "tabagent @ git+https://github.com/dolev31/TabAgent"
 pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI-compatible LLM client)
 pip install "tabagent[embed]"           # + e5 context-candidate similarity features
 pip install "tabagent[serve]"           # + HTTP decision service
@@ -106,8 +107,8 @@ shortlisting), SkillsBench (skill selection and gating), Mind2Web (operation and
 LLMRouterBench (model routing, opt-in license acknowledgement) and AppWorld sub-agent routing (data obtained
 through AppWorld's official CLI). See [docs/reproducing.md](docs/reproducing.md) for each paper cell, the command
 that recomputes it, and the value it produces. Results that rely on private agent trajectories (AppWorld tool
-shortlisting with CUGA, OAK/BPO, the in-loop hot swap) are reported in the paper; the code that produced them
-(the CUGA adapter and hot-swap integration) is included so they can be rerun on your own CUGA traces.
+shortlisting with CUGA, OAK/BPO, the in-loop hot swap) are reported in the paper; the CUGA trajectory adapter is
+included, so the pipeline can be rerun on your own CUGA traces.
 
 ## Data policy
 

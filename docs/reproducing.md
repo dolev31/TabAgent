@@ -18,3 +18,37 @@ head-ablation figures, and the efficiency benchmark live under `experiments/` wi
 Results that depend on private agent trajectories (AppWorld tool shortlisting with CUGA, application selection,
 OAK/BPO, the in-loop hot swap) are reported in the paper; the adapters and integration code to rerun them on
 your own CUGA traces are included.
+
+## Results (released code, the paper's protocol)
+
+CatBoost TabHead (`tmlr-runs` preset: 300 iterations, learning rate 0.08, depth 6), the paper's three seeds,
+the bundled folds, every statistic fitted in-fold. Percentages; 95% bootstrap intervals over decisions.
+
+| decision | paper | released |
+|---|---|---|
+| τ²-bench airline / retail / telecom / combined, P@R | 71 / 76 / 84 / 75 | 71.9 / 75.4 / 84.7 / 76.8 |
+| … +synth (TabSynth chosen by nested inner CV) | 75 / 75 / 85 / 78 | 72.6 / 75.2 / 84.9 / 77.0 |
+| … Recall@9 | 96 / 96 / 100 / 94 | 98.1 / 95.7 / 100 / 97.0 |
+| SkillsBench skill selection, P@R (no-prior card) | 74 | 79.6 [74.0, 85.4] |
+| … Recall@9 | 87 | 90.5 |
+| Mind2Web operation selection, macro-F1 | 92 | 91.9 |
+| Mind2Web element selection, R@3 (Entertainment / Shopping / Travel) | 58 / 65 / 64 | 56.7 / 67.3 / 63.9 |
+| … R@5 | 73 / 78 / 75 | 71.3 / 78.9 / 74.8 |
+| AppWorld sub-agent routing, route@1 (best fixed 35.6) | 38 | 37.9 [34.0, 41.7] |
+| LLMRouterBench model routing, route@1 (best fixed 70.1) | 68 | 70.5 [65.9, 75.3] |
+| SkillsBench skill gating, reward (always-activate 49.6) | 49 | 48.3 [40.0, 56.7] |
+
+Policy rows against their strong default (paired task-level bootstrap, 2,000 resamples): sub-agent routing
++2.3 pp [−0.5, +5.1], model routing +0.4 pp [−3.5, +4.6], skill gating −1.3 pp [−3.8, +0.7]: parity in every
+case, as the paper states.
+
+**τ²-bench cross-agent transfer** (`experiments/tau2_studies.py --study transfer`, the context each agent
+actually sees): own-agent mean P@R 76.6, cross-agent mean 73.5. **Trajectories to 90% of full-pool quality**
+(`--study efficiency`, ten seeds): Claude-3.7 37 [32, 43], GPT-4.1 45 [40, 51], GPT-4.1-mini 45 [38, 53],
+o4-mini 51 [45, 58].
+
+Notes on differences from the pre-release code, all deliberate: candidate priors and embedding centering are
+fitted inside the training folds (the paper's protocol; the pre-release skill-selection prior was computed on a
+fixed split that included test tasks, which is why the released no-prior card is the default); the τ² per-agent
+context is the customer's first message rather than the simulator's hidden task description; SkillsBench skill
+descriptions are read from each skill's `SKILL.md`.

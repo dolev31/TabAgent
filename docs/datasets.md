@@ -31,6 +31,8 @@ the upstream release at a pinned revision, verifies every file by SHA-256, and c
 * **AppWorld**: redistribution is restricted, so TabAgent never downloads it. Install it with AppWorld's
   official CLI (`pip install appworld && appworld install && appworld download data`, plus
   `appworld download experiment-outputs` for the baseline systems) and point `APPWORLD_ROOT` at it.
-* **Mind2Web** (CC-BY-4.0): attribution to the Mind2Web authors is required for derived work.
+* **Mind2Web** (CC-BY-4.0): attribution to the Mind2Web authors is required for derived work. The first build
+  downloads the original training files (11 files, about 5.9 GB; parsing one needs about 2 GB of RAM) and keeps a
+  reduced, HTML-free copy in the cache.
 * **τ²-bench per-agent tables**: as in the paper's Table 2, the context text is the task's user scenario, which
   the evaluated agent itself never sees; the per-domain tables use the first user message instead.
