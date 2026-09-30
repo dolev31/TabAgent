@@ -2,19 +2,20 @@
 
 The paper uses two public trace sources, each matched to the question it answers:
 
-``tau2/<agent>`` (cross-backbone transfer, Table 2 / ``tab:transfer_new``; trajectory efficiency)
+``tau2/<agent>`` (cross-backbone transfer, Table 2; trajectory efficiency, App. F.1, Table 17)
     The official τ²-bench trajectory release: four agents that share one ReAct scaffold and differ only in
     the LLM backbone, run four trials per task against a GPT-4.1 user simulator. One decision per task. The
     candidates are the 67-tool dual-control catalog (agent tools and the telecom user's device tools), and a
     tool is relevant if the agent called it in a run that the benchmark's evaluator scored reward 1 (union
     over trials and result files). Tasks with no successful run that calls a tool are dropped.
 
-``tau2/airline``, ``tau2/retail``, ``tau2/telecom``, ``tau2/all-domains`` (Table 1, ``tab:taubench_new``)
+``tau2/airline``, ``tau2/retail``, ``tau2/telecom``, ``tau2/all-domains`` (Table 1; App. B.2, Table 11)
     The public tau2-sft-final release (416 trajectories, mostly from a GPT-5.2 agent). One decision per
     trajectory that calls at least one agent tool of its domain (airline 91, retail 153, telecom 82). The
     candidates are the agent tools of the domain's toolkit (``src/tau2/domains/<domain>/tools.py`` of the
-    official repository: 14 / 16 / 13 tools, 39 distinct tools for all domains once the shared
-    ``calculate``, ``transfer_to_human_agents`` and ``get_user_details`` are merged). A tool is relevant if
+    official repository) except retail's ``get_item_details``, which no agent calls: 14 / 15 / 13 tools,
+    38 distinct tools for all domains once the shared ``calculate``, ``transfer_to_human_agents`` and
+    ``get_user_details`` are merged (App. B.2). A tool is relevant if
     the trajectory called it. These labels are outcome-agnostic (App. B.2). The trajectory's reward, when the
     release records one, is kept as an evaluation-only column. Groups are τ² tasks, so all trajectories of
     one task stay in one fold.
@@ -108,13 +109,13 @@ DOMAIN_COLUMNS = [
 
 
 def canonical_hash(value: Any) -> str:
-    """SHA-256 of the canonical JSON of ``value`` (identical to the trajectory-corpus builder)."""
+    """SHA-256 of the canonical JSON of ``value`` (sorted keys, compact separators); used in task ids."""
     payload = json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
 
 
 def scenario_text(user_scenario: Any) -> str:
-    """The task's user scenario rendered as in the pre-release tables: the repr of the key-sorted dict."""
+    """The task's user scenario as text: the ``repr`` of the key-sorted dict (a string is kept as is)."""
     if user_scenario is None:
         return ""
     if isinstance(user_scenario, str):
@@ -138,11 +139,11 @@ def agent_decisions(
 
     ``context`` selects the decision context text: what the agent itself sees before it acts, i.e. the
     customer's first message in the task's first successful run, or the task's ``ticket`` for the solo
-    ("no-user") modes where no customer speaks (the default); or ``user_scenario``, the simulator's hidden
-    task description that the pre-release tables used (never visible to the agent).
+    ("no-user") modes where no customer speaks (the default); or ``user_scenario``, the user simulator's
+    hidden task description (never visible to the agent).
 
-    Task ids follow the trajectory-corpus builder: ``stable_uid("task", source, "<git commit>:<domain>:<id>",
-    canonical_hash(task))``, so a task embedded identically in several result files is one group.
+    Task ids are ``stable_uid("task", source, "<git commit>:<domain>:<id>", canonical_hash(task))``, so a
+    task embedded identically in several result files is one group.
     """
     if context not in CONTEXTS:
         raise ValueError(f"context must be one of {CONTEXTS}")
@@ -318,8 +319,8 @@ def build_domain(source: Source, download: bool = False, domain: str | None = No
 
 
 # --------------------------------------------------------------------------- registry
-_AGENT_PAPER = "Table 2 (tab:transfer_new); App. B.2; trajectory efficiency (tab:traj_per_tool)"
-_DOMAIN_PAPER = "Table 1 (τ²-bench rows); App. B.2 (tab:taubench_new)"
+_AGENT_PAPER = "Table 2; App. B.2; App. F.1, Table 17"
+_DOMAIN_PAPER = "Table 1 (τ²-bench rows); App. B.2, Table 11"
 
 DATASETS: list[DatasetInfo] = [
     DatasetInfo(
@@ -332,8 +333,8 @@ DATASETS: list[DatasetInfo] = [
         paper=_AGENT_PAPER,
         description=(
             f"Tools the {agent} agent called in its successful official τ²-bench runs. The context is the "
-            "customer's first message; load(..., context='user_scenario') rebuilds the pre-release tables, "
-            "whose context was the simulator's hidden task description."
+            "customer's first message; load(..., context='user_scenario') uses the user simulator's hidden "
+            "task description instead."
         ),
         args={"agent": agent},
         version=2,

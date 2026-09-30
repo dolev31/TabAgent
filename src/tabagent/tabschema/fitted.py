@@ -1,4 +1,4 @@
-"""Fitted (dependency) features: statistics learned from training rows only (paper L443).
+"""Fitted (dependency) features: statistics learned from training rows only (paper Sec. 4.3).
 
 The paper requires every data-dependent statistic, such as candidate priors, co-usage counts and
 embedding vocabularies, to be fitted inside the training portion of each fold. Each class here is fitted
@@ -10,13 +10,19 @@ groups a feature was fitted on, so tests can prove that no held-out task was eve
 from __future__ import annotations
 
 import hashlib
-from collections.abc import Callable
+import logging
+import warnings
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
 from tabagent.table import DecisionSpec
+from tabagent.tabschema.features import join_text
+
+logger = logging.getLogger(__name__)
 
 
 class FittedFeature:
@@ -27,11 +33,13 @@ class FittedFeature:
         self.seen_groups_: set | None = None
 
     def fit(self, df: pd.DataFrame, spec: DecisionSpec) -> FittedFeature:
+        """Fit on labeled training rows; records the groups seen in ``seen_groups_``."""
         self.seen_groups_ = set(pd.unique(df[spec.group]))
         self._fit(df, spec)
         return self
 
     def transform(self, df: pd.DataFrame, spec: DecisionSpec) -> pd.Series:
+        """The feature for any rows (training or held-out), reading only non-outcome columns."""
         if self.seen_groups_ is None:
             raise RuntimeError(f"{type(self).__name__} is not fitted")
         return self._transform(df, spec)
@@ -107,6 +115,7 @@ class HashingEncoder:
         self.dim = dim
 
     def encode(self, texts: list[str], prefix: str = "") -> np.ndarray:
+        """L2-normalized trigram-count vectors (``prefix`` is ignored)."""
         out = np.zeros((len(texts), self.dim), dtype="float32")
         for i, t in enumerate(texts):
             s = f"  {(t or '').lower()}  "
@@ -117,22 +126,70 @@ class HashingEncoder:
         return out / np.clip(norm, 1e-9, None)
 
 
+@contextmanager
+def _quiet_hub() -> Iterator[None]:
+    """Silence Hugging Face progress bars, info logs and advisory warnings while the encoder loads.
+
+    Settings are restored afterwards; exceptions propagate unchanged.
+    """
+    from huggingface_hub import utils as hub_utils
+    from transformers.utils import logging as hf_logging
+
+    verbosity, bars = hf_logging.get_verbosity(), hf_logging.is_progress_bar_enabled()
+    hub_bars_off = hub_utils.are_progress_bars_disabled()
+    hub_logger = logging.getLogger("huggingface_hub")
+    hub_level = hub_logger.level
+    hf_logging.set_verbosity_error()
+    hf_logging.disable_progress_bar()
+    hub_utils.disable_progress_bars()
+    hub_logger.setLevel(logging.ERROR)
+    try:
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", module=r"(huggingface_hub|transformers)(\..*)?$")
+            yield
+    finally:
+        hf_logging.set_verbosity(verbosity)
+        if bars:
+            hf_logging.enable_progress_bar()
+        if not hub_bars_off:
+            hub_utils.enable_progress_bars()
+        hub_logger.setLevel(hub_level)
+
+
 class E5Encoder:
     """intfloat/e5-small-v2 with mean pooling and L2 normalization (the encoder shared with the DSR
-    baselines, paper L389). Requires ``pip install "tabagent[embed]"``."""
+    baselines, paper Sec. 4.2). Requires ``pip install "tabagent[embed]"``; the weights (about 130 MB) are
+    downloaded from the Hugging Face Hub on first use and cached there."""
 
     model_id = "intfloat/e5-small-v2"
 
     def __init__(self, batch_size: int = 32, max_length: int = 256):
-        import torch
-        from transformers import AutoModel, AutoTokenizer
+        try:
+            import torch
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError as e:
+            raise ImportError(
+                f"embedding features ({self.model_id}) need the embed extra: pip install 'tabagent[embed]'. "
+                "Alternatively use a card without embedding features (pair_embeddings=False)."
+            ) from e
 
         self.torch = torch
         self.batch_size, self.max_length = batch_size, max_length
-        self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
-        self.model = AutoModel.from_pretrained(self.model_id).eval()
+        logger.info("loading the %s encoder", self.model_id)
+        try:
+            with _quiet_hub():
+                self.tokenizer = AutoTokenizer.from_pretrained(self.model_id)
+                self.model = AutoModel.from_pretrained(self.model_id).eval()
+        except OSError as e:
+            cause = str(e).splitlines()[0] if str(e) else type(e).__name__
+            raise OSError(
+                f"cannot load the {self.model_id} weights (about 130 MB) from the Hugging Face Hub or its "
+                "local cache. Run once with network access to cache them, or use a card without embedding "
+                f"features (pair_embeddings=False). Cause: {cause}"
+            ) from e
 
     def encode(self, texts: list[str], prefix: str = "query: ") -> np.ndarray:
+        """L2-normalized embeddings of ``prefix + text`` for each text (``query: `` or ``passage: ``)."""
         torch, out = self.torch, []
         for i in range(0, len(texts), self.batch_size):
             chunk = [prefix + (t or " ") for t in texts[i : i + self.batch_size]]
@@ -162,6 +219,7 @@ class CachedEncoder:
         self.memo: dict[tuple[str, str], np.ndarray] = {}
 
     def encode(self, texts: list[str], prefix: str) -> np.ndarray:
+        """Embeddings of ``texts``, encoding only those not seen before with this prefix."""
         todo = list(dict.fromkeys(t for t in texts if (prefix, t) not in self.memo))
         if todo:
             for t, v in zip(todo, self.encoder.encode(todo, prefix=prefix), strict=True):
@@ -173,34 +231,26 @@ _SHARED: dict[str, CachedEncoder] = {}
 
 
 def encoder(name: str) -> CachedEncoder:
+    """The process-wide cached encoder ``name`` (``e5-small-v2`` or ``hashing``)."""
     if name not in _SHARED:
         _SHARED[name] = CachedEncoder(name)
     return _SHARED[name]
 
 
-def _text(df: pd.DataFrame, cols) -> pd.Series:
-    cols = [cols] if isinstance(cols, str) else list(cols)
-    out = df[cols[0]].fillna("").astype(str)
-    for c in cols[1:]:
-        out = out + " " + df[c].fillna("").astype(str)
-    return out
-
-
 class EmbeddingCosine(FittedFeature):
     """Centered cosine between a context text (query) and a candidate text (passage).
 
-    E5 vectors occupy a narrow cone, so raw cosines barely vary. As in the pre-release code, the common
-    direction (the mean of the unique query and passage vectors) is removed and the vectors are
-    renormalized. Here that mean is fitted on the **training** rows only, so held-out tasks never
-    influence the representation (the pre-release code centered on all tasks).
+    E5 vectors occupy a narrow cone, so raw cosines barely vary. The common direction (the mean of the
+    unique query and passage vectors) is therefore removed and the vectors are renormalized. That mean is
+    fitted on the **training** rows only, so held-out tasks never influence the representation.
 
     args: ``query`` and ``passage`` (a column or list of columns), ``encoder`` (``e5-small-v2``).
     """
 
     def _fit(self, df, spec):
         enc = encoder(self.args.get("encoder", "e5-small-v2"))
-        q = list(dict.fromkeys(_text(df, self.args["query"])))
-        p = list(dict.fromkeys(_text(df, self.args["passage"])))
+        q = list(dict.fromkeys(join_text(df, self.args["query"])))
+        p = list(dict.fromkeys(join_text(df, self.args["passage"])))
         stacked = np.vstack([enc.encode(q, "query: "), enc.encode(p, "passage: ")])
         self.mu_ = stacked.mean(axis=0, keepdims=True)
 
@@ -219,8 +269,8 @@ class EmbeddingCosine(FittedFeature):
 
     def _transform(self, df, spec):
         enc = encoder(self.args.get("encoder", "e5-small-v2"))
-        Q = self._center(enc.encode(_text(df, self.args["query"]).tolist(), "query: "))
-        P = self._center(enc.encode(_text(df, self.args["passage"]).tolist(), "passage: "))
+        Q = self._center(enc.encode(join_text(df, self.args["query"]).tolist(), "query: "))
+        P = self._center(enc.encode(join_text(df, self.args["passage"]).tolist(), "passage: "))
         return pd.Series((Q * P).sum(axis=1).astype(float), index=df.index)
 
 

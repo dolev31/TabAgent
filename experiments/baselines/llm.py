@@ -1,8 +1,6 @@
-"""Small-LLM baselines (paper L385-396; Table 1 columns Few-shot and FT-SLM; the SLM family).
+"""Small-LLM baselines (paper Sec. 4.2; Table 1 columns Few-shot and FT-SLM; the SLM family, App. F, Fig. 8).
 
-Every prompt below is ported from the pre-release script that produced the corresponding published number
-(named in each task's ``source``); the protocol is the one those scripts ran, with the leakage guards they
-added. Four task shapes cover the paper's rows:
+Each task's ``source`` names the paper result its prompt reproduces. Four task shapes cover the paper's rows:
 
 ``ListwiseTask`` (set retrieval: skill selection, tau2 tool shortlisting)
     The model reads the task and the numbered candidate catalog and generates the relevant candidate
@@ -12,7 +10,7 @@ added. Four task shapes cover the paper's rows:
     random order, so P@R and Recall@k are computed exactly as for TabAgent.
 ``PointwiseTask`` (Mind2Web element selection, about 50 candidates per step)
     Generative ranking is impractical, so every (instruction, element) pair is scored. Few-shot: the
-    next-token probability of "yes" against "no" (no demonstrations; the pre-release run had none).
+    next-token probability of "yes" against "no" (zero-shot: the prompt carries no demonstrations).
     FT-SLM: a LoRA cross-encoder (sequence classification, class-balanced BCE) fitted per fold.
 ``ClassifyTask`` (Mind2Web operation, CLICK / TYPE / SELECT)
     Few-shot: two demonstrations per class drawn from the training folds of each test fold. FT-SLM: per
@@ -22,8 +20,8 @@ added. Four task shapes cover the paper's rows:
     any OpenAI-compatible endpoint. Undecidable replies are excluded, not counted as "no".
 
 Models run with Hugging Face transformers (bfloat16 on CUDA). LoRA is ``lora.apply_lora`` (r=16, alpha=32,
-dropout 0.05 on q_proj/v_proj, AdamW 2e-4, batch 1 for generation, as in the pre-release runs), so ``peft``
-is not needed. ``DryRunLM`` builds and records every prompt without loading weights.
+dropout 0.05 on q_proj/v_proj, AdamW 2e-4, batch 1 for generation), so ``peft`` is not needed.
+``DryRunLM`` builds and records every prompt without loading weights.
 """
 
 from __future__ import annotations
@@ -40,7 +38,7 @@ from tabagent.table import DecisionTable
 from .common import TextCols, fold_array, free_memory, pick_device, seed_everything, text_view
 from .lora import apply_lora
 
-# Ungated mirrors of the paper's checkpoints, as used by the pre-release runs; any Hugging Face id works too.
+# Ungated mirrors of the paper's checkpoints; any Hugging Face id works too.
 MODELS = {
     "llama-3.2-1b": "unsloth/Llama-3.2-1B-Instruct",
     "llama-3.2-3b": "unsloth/Llama-3.2-3B-Instruct",
@@ -299,8 +297,8 @@ class HFCausalLM:
         return self.tok.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
 
     def _ids(self, prompt: str, max_input: int):
-        # The rendered template already carries the BOS token and the tokenizer adds another; the
-        # pre-release runs tokenized this way, so it is kept for parity.
+        # The rendered template already carries the BOS token and the tokenizer adds another; the paper's
+        # runs tokenized this way, so it is kept.
         return self.tok(prompt, return_tensors="pt", truncation=True, max_length=max_input).input_ids
 
     def generate(
@@ -720,7 +718,7 @@ def fewshot_gate(table: DecisionTable, task: GateTask, client, log=print) -> np.
         for attempt in range(1 if _dry(client) else task.retries):
             try:
                 choice = parse_yes_no(client.complete(prompt).text)
-            except Exception as e:  # transient endpoint errors: retry, as the pre-release run did
+            except Exception as e:  # transient endpoint errors: retry
                 if log:
                     log(f"  retry {attempt + 1}: {str(e)[:120]}")
                 time.sleep(4)

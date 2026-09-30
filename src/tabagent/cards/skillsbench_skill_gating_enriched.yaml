@@ -75,8 +75,7 @@ synth:
   k: 4
 provenance:
   kind: frozen
-  paper: not reported (pre-release three-backbone variant)
-  note: Pre-release skills_enriched card. The pre-release build encoded the bundle text with the e5 query prefix
-    and set skill_task_overlap to 0 on the without arm; here the bundle is a passage (as in skill selection) and
-    the fitted cosine is computed on both arms. Its backbone priors were fitted once on folds 1-4; here they are
-    fitted in each training fold.
+  paper: not reported in the paper (skill gating over three backbones)
+  note: >-
+    The skill-gating card plus the agent's backbone and two per-backbone priors (the training pass rate and
+    the mean reward gain from activating skills), fitted inside the training folds.

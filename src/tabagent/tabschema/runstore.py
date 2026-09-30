@@ -18,8 +18,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from tabagent.defaults import cache_root
+
 
 def digest(obj: Any) -> str:
+    """SHA-256 of the canonical JSON of ``obj`` (the cache key of a stage call)."""
     return hashlib.sha256(json.dumps(obj, sort_keys=True, default=str).encode()).hexdigest()
 
 
@@ -36,9 +39,11 @@ def atomic_write(p: Path, text: str) -> None:
 
 
 class RunStore:
+    """One run directory, ``<root>/<run_id>`` (default root ``$TABAGENT_CACHE/runs``, default id the UTC
+    start time). Pass an existing run id to resume a run from its cache."""
+
     def __init__(self, root: str | Path | None = None, run_id: str | None = None):
-        default = Path(os.environ.get("TABAGENT_CACHE", Path.home() / ".cache" / "tabagent")) / "runs"
-        base = Path(root) if root else default
+        base = Path(root) if root else cache_root() / "runs"
         self.run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.dir = base / self.run_id
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -46,19 +51,23 @@ class RunStore:
         self._key_locks: dict[Path, threading.Lock] = {}
 
     def path(self, *parts: str) -> Path:
+        """A path inside the run directory (its parent directories are created)."""
         p = self.dir.joinpath(*parts)
         p.parent.mkdir(parents=True, exist_ok=True)
         return p
 
     def write_json(self, rel: str, obj: Any) -> Path:
+        """Write ``obj`` as JSON to ``rel`` atomically."""
         p = self.path(rel)
         atomic_write(p, json.dumps(obj, indent=1, default=str))
         return p
 
     def read_json(self, rel: str) -> Any:
+        """Read the JSON file ``rel``."""
         return json.loads((self.dir / rel).read_text())
 
     def write_text(self, rel: str, text: str) -> Path:
+        """Write ``text`` to ``rel`` atomically."""
         p = self.path(rel)
         atomic_write(p, text)
         return p
@@ -81,6 +90,7 @@ class RunStore:
             return value
 
     def log_call(self, record: dict[str, Any]) -> None:
+        """Append one LLM call record to ``llm_calls.jsonl``."""
         line = json.dumps(record, default=str) + "\n"
         with self._lock, self.path("llm_calls.jsonl").open("a") as f:
             f.write(line)

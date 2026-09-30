@@ -82,5 +82,7 @@ synth:
   k: 2
 provenance:
   kind: hand-authored
-  ported_from: pre-release Mind2Web adapter (columns of the paper runs)
-  paper: Table 1
+  paper: Table 1 (GUI element selection); App. B.6
+  note: >-
+    The step's context (instruction, website, domain, earlier actions) and each candidate element's tag,
+    attribute text, type, clickability and bounding box.

@@ -1,4 +1,4 @@
-.PHONY: setup hooks lint format test guard check docs reproduce
+.PHONY: setup hooks lint format test check docs data reproduce
 
 setup:
 	uv sync --group dev
@@ -15,14 +15,13 @@ format:
 test:
 	uv run pytest -m "not slow and not gpu and not network"
 
-guard:
-	uv run python scripts/privacy_guard.py
-	uv run python scripts/privacy_guard.py --all-commits
-
-check: lint test guard
+check: lint test
 
 docs:
 	uv run --group docs mkdocs build --strict
 
+data:
+	uv run tabagent datasets --all --download
+
 reproduce:
-	uv run python experiments/reproduce.py
+	uv run --extra embed --group repro python experiments/reproduce.py --download

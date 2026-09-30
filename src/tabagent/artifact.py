@@ -1,8 +1,9 @@
 """Portable, pickle-free TabAgent artifacts.
 
-A fitted TabAgent is saved as a directory that can be inspected, diffed, shared and loaded safely (no
-pickle, so loading an artifact from someone else never executes code, except a TabSchema ``extract.py``,
-which is only run in-process when explicitly trusted):
+A fitted TabAgent is saved as a directory that can be inspected, diffed, shared and loaded safely. There is
+no pickle, so loading an artifact from someone else runs none of their code: card features that import a
+module outside ``tabagent`` need ``trust_code=True``, and a TabSchema ``extract.py`` runs in the sandbox
+unless explicitly trusted.
 
     card.yaml        the feature card (features, decision roles, provenance)
     fitted.json      fitted dependency statistics (priors, ...) and their training-group footprint
@@ -35,6 +36,7 @@ def _sha256(path: Path) -> str:
 
 # --------------------------------------------------------------------------- featurizer
 def featurizer_state(fz) -> dict[str, Any]:
+    """The JSON-able state of a fitted ``Featurizer``."""
     parts = []
     for col, kind, state in fz.parts:
         if kind == "text":
@@ -57,6 +59,7 @@ def featurizer_state(fz) -> dict[str, Any]:
 
 
 def featurizer_from_state(d: dict[str, Any]):
+    """Rebuild a fitted ``Featurizer`` from :func:`featurizer_state` output."""
     from sklearn.feature_extraction.text import TfidfVectorizer
 
     from tabagent.tabhead import Featurizer
@@ -138,8 +141,12 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
     return out
 
 
-def load(path: str | Path, verify: bool = True):
-    """Load a ``TabAgent`` saved with :func:`save`. With ``verify``, file hashes must match the manifest."""
+def load(path: str | Path, verify: bool = True, trust_code: bool = False):
+    """Load a ``TabAgent`` saved with :func:`save`.
+
+    With ``verify``, every file must match the manifest's SHA-256. ``trust_code`` allows card features that
+    import a module outside ``tabagent`` (see ``FeatureCard.load``).
+    """
     from catboost import CatBoostClassifier
 
     from tabagent.agent import TabAgent
@@ -156,7 +163,7 @@ def load(path: str | Path, verify: bool = True):
             if _sha256(src / f) != digest:
                 raise ValueError(f"{f} does not match the manifest hash (modified or corrupted artifact)")
 
-    card = FeatureCard.load(src / "card.yaml")
+    card = FeatureCard.load(src / "card.yaml", trust_code=trust_code)
     arrays = dict(np.load(src / "fitted.npz", allow_pickle=False))
     card._fitted = {}
     classes = {cls.__name__: cls for cls in FITTED.values()}

@@ -41,6 +41,25 @@ def _frame(X) -> pd.DataFrame:
 
 
 class _TabAgentBase(BaseEstimator):
+    """Shared implementation of the three estimators.
+
+    Parameters
+    ----------
+    group_col: the decision-group (task) column; rows of one group never straddle folds.
+    candidate_col: the candidate id column (not used by ``TabAgentClassifier``).
+    text_cols: columns to treat as free text (otherwise inferred, see ``tabagent.auto.infer_type``).
+    pair_embeddings: add the e5 context-candidate similarity; None adds it when the embed extra is installed.
+    synth: TabSynth variants per row, ``0``/``"off"``, or ``"auto"`` (chosen by nested validation).
+    prior: the in-fold candidate prior: ``True``, ``False`` or ``"auto"`` (chosen by nested validation).
+    preset: the CatBoost preset with ``search="fast"`` (default ``paper``, the paper's configuration);
+        ``search="full"`` chooses the preset itself, so passing one there is an error.
+    search: ``fast`` or ``full`` recipe grid (``tabagent.auto.recipes``).
+    inner_folds: folds of the nested selection.
+    threshold: the multi-label decision threshold of ``TabAgentRanker.predict``.
+    iterations: override the CatBoost iteration count (for quick runs).
+    random_state: seed of the head and of the inner folds.
+    """
+
     _kind = "ranking"
 
     def __init__(
@@ -52,7 +71,7 @@ class _TabAgentBase(BaseEstimator):
         pair_embeddings: bool | None = None,
         synth: str | int = "auto",
         prior: str | bool = "auto",
-        preset: str = "paper",
+        preset: str | None = None,
         search: str = "fast",
         inner_folds: int = 3,
         threshold: float = 0.5,
@@ -106,6 +125,13 @@ class _TabAgentBase(BaseEstimator):
 
     # ------------------------------------------------------------------ fit
     def fit(self, X, y, groups=None):
+        """Infer the card from ``X``, select the recipe by nested validation and fit the head.
+
+        ``X`` has one row per (decision, candidate) (one row per decision for the classifier); ``groups``
+        overrides ``group_col``. Sets ``card_``, ``recipe_``, ``selection_``, ``agent_`` and ``classes_``.
+        """
+        if self.preset is not None and self.search != "fast":
+            raise ValueError(f"search={self.search!r} chooses the preset itself; do not also pass preset=")
         X = _frame(X)
         y = np.asarray(y)
         table = self._table(X, y, groups)
@@ -138,7 +164,8 @@ class _TabAgentBase(BaseEstimator):
             recipe.synth_k = 0 if self.synth in (0, "off", False) else int(self.synth)
         if self.prior in (True, False):
             recipe.prior = bool(self.prior)
-        recipe.preset = self.preset if self.search == "fast" else recipe.preset
+        if self.search == "fast":
+            recipe.preset = self.preset or "paper"
         self.recipe_ = recipe
         self.agent_ = auto.build_agent(card, recipe, self.random_state, **overrides).fit(table)
         self.agent_.head_.threshold = self.threshold
@@ -168,12 +195,13 @@ class _TabAgentBase(BaseEstimator):
         *,
         n_splits: int = 5,
         llm_cost_per_call: float | None = None,
-        e5: bool = False,
+        embedding_baseline: bool = False,
     ):
-        """Grouped-CV evaluation report of the fitted recipe on ``X, y`` (see ``tabagent.report``).
+        """Grouped-CV evaluation report of the fitted recipe on ``X, y`` (see ``tabagent.report.evaluate``).
 
         The recipe (TabSynth, prior, preset) was selected on the data passed to ``fit``; if that is the same
         data, the report is slightly optimistic about the selection step (noted in the report).
+        ``embedding_baseline`` adds the zero-shot e5 baseline; ``llm_cost_per_call`` reports the savings.
         """
         from tabagent.report import evaluate
 
@@ -181,14 +209,23 @@ class _TabAgentBase(BaseEstimator):
         table = self._table(X, np.asarray(y), groups)
         overrides = {} if self.iterations is None else {"iterations": self.iterations}
         agent = auto.build_agent(self.card_.clone(), self.recipe_, self.random_state, **overrides)
-        rep = evaluate(agent, table, n_splits=n_splits, llm_cost_per_call=llm_cost_per_call, e5=e5)
+        rep = evaluate(
+            agent,
+            table,
+            n_splits=n_splits,
+            llm_cost_per_call=llm_cost_per_call,
+            embedding_baseline=embedding_baseline,
+        )
         rep.notes.append(f"recipe: {self.recipe_.label()} (selected by nested inner validation during fit)")
         return rep
 
     def decision_function(self, X, groups=None) -> np.ndarray:
+        """p(candidate is chosen) per row (rankings and policies)."""
         return self._scores(X, groups)[0]
 
     def predict_proba(self, X, groups=None) -> np.ndarray:
+        """Class probabilities: ``[p(not chosen), p(chosen)]`` per row, or one column per class of
+        ``classes_`` for the classifier."""
         if self._kind == "single":
             X = _frame(X)
             feats = self.agent_.features(self._table(X, None, groups))
@@ -203,7 +240,8 @@ class TabAgentRanker(_TabAgentBase):
     _kind = "ranking"
 
     def rank(self, X, groups=None, k: int | None = None) -> pd.DataFrame:
-        """Top-``k`` candidates per decision: columns decision, candidate, score, rank."""
+        """Top-``k`` candidates per decision: columns decision, candidate, score, rank (ties ordered by
+        candidate id)."""
         p, table = self._scores(X, groups)
         return decode("ranking", p, table.decision_ids.to_numpy(), table.df[_C].to_numpy(), k=k)
 
@@ -218,7 +256,7 @@ class TabAgentRanker(_TabAgentBase):
         return np.array([int(pair in keys) for pair in pairs])
 
     def score(self, X, y, groups=None) -> float:
-        """Mean P@R over decisions (the paper's headline shortlisting metric)."""
+        """Mean P@R over decisions (the paper's headline shortlisting metric; ties in expectation, App. L)."""
         X = _frame(X)
         p = self._scores(X, groups)[0]
         return float(M.p_at_r(self._table(X, y, groups), p).mean())
@@ -230,17 +268,19 @@ class TabAgentRouter(_TabAgentBase):
     _kind = "policy"
 
     def route(self, X, groups=None) -> pd.DataFrame:
+        """The chosen arm per decision: columns decision, candidate, score, rank."""
         p, table = self._scores(X, groups)
         return decode("policy", p, table.decision_ids.to_numpy(), table.df[_C].to_numpy())
 
     def predict(self, X, groups=None) -> np.ndarray:
+        """1 for the chosen arm of each decision, 0 elsewhere."""
         p, table = self._scores(X, groups)
-        chosen = self.route(X, groups)
+        chosen = decode("policy", p, table.decision_ids.to_numpy(), table.df[_C].to_numpy())
         keys = set(zip(chosen["decision"], chosen["candidate"], strict=True))
         return np.array([int(pair in keys) for pair in zip(table.decision_ids, table.df[_C], strict=True)])
 
     def score(self, X, y, groups=None) -> float:
-        """Mean route@1: the realized reward of the chosen arm."""
+        """Mean route@1: the realized reward of the chosen arm (App. B.7)."""
         X = _frame(X)
         p = self._scores(X, groups)[0]
         return float(M.route_at_1(self._table(X, y, groups), p).mean())
@@ -252,12 +292,23 @@ class TabAgentClassifier(ClassifierMixin, _TabAgentBase):
     _kind = "single"
 
     def predict(self, X, groups=None) -> np.ndarray:
+        """The predicted class per row."""
         return self._scores(X, groups)[0]
+
+    def decision_function(self, X, groups=None) -> np.ndarray:
+        """Class scores in the sklearn convention: p(``classes_[1]``) per row for two classes, else one
+        probability column per class of ``classes_``."""
+        proba = self.predict_proba(X, groups)
+        return proba[:, 1] if proba.shape[1] == 2 else proba
 
 
 # --------------------------------------------------------------------------- helpers
 def scorer(metric: str = "p@r"):
-    """A ``scoring=`` callable for sklearn model selection, using the estimator's ``group_col``."""
+    """A ``scoring=`` callable for sklearn model selection, using the estimator's ``group_col``.
+
+    ``metric`` is any name of ``tabagent.evaluation.metrics.per_decision`` (``p@r``, ``recall@K``,
+    ``route@1``, ``accuracy``, ...); the score is its mean over decisions, ties in expectation (App. L).
+    """
 
     def _score(estimator, X, y) -> float:
         X = _frame(X)

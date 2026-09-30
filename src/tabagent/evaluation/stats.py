@@ -1,11 +1,12 @@
-"""Confidence intervals and multiple-comparison control (paper App. E, L1804-1851 and L2290-2309).
+"""Confidence intervals and multiple-comparison control (paper App. E, Tables 12-13; App. M, Table 20).
 
 Protocol: the resampling unit is the task (or decision group); an A-versus-B comparison is a paired
 task-level bootstrap with 2,000 resamples of the difference; an improvement is claimed only when the 95%
 interval excludes zero; significance within a metric across applications is Holm-Bonferroni controlled.
 
-``method="percentile"`` reproduces the pre-release scripts exactly (a loop of ``rng.integers(0, n, n)``
-draws from ``numpy.random.default_rng(seed)``); ``method="BCa"`` uses ``scipy.stats.bootstrap``.
+``method="percentile"`` (default) draws the resamples one at a time, ``rng.integers(0, n, n)`` from
+``numpy.random.default_rng(seed)``, so a given seed always yields the same interval bit for bit (the
+intervals of App. M). ``method="BCa"`` uses ``scipy.stats.bootstrap`` (the BCa intervals of App. E).
 """
 
 from __future__ import annotations
@@ -14,12 +15,15 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from tabagent.defaults import DEFAULT_SEED
+
 DEFAULT_RESAMPLES = 2000
-DEFAULT_SEED = 20260720
 
 
 @dataclass(frozen=True)
 class Interval:
+    """A point estimate with its confidence interval, the method that produced it and the number of units."""
+
     estimate: float
     low: float
     high: float
@@ -29,6 +33,7 @@ class Interval:
 
     @property
     def excludes_zero(self) -> bool:
+        """True when the interval lies strictly above or below zero (the paper's significance rule)."""
         return self.low > 0 or self.high < 0
 
     def __str__(self) -> str:
@@ -38,7 +43,7 @@ class Interval:
 def _percentile_draws(values: np.ndarray, n_resamples: int, seed: int) -> np.ndarray:
     rng = np.random.default_rng(seed)
     n = len(values)
-    # One call per resample, as in the original scripts, so the random stream is reproduced exactly.
+    # One draw per resample: the random stream, and so every interval, depends only on the seed.
     return np.array([values[rng.integers(0, n, n)].mean() for _ in range(n_resamples)])
 
 
@@ -50,7 +55,10 @@ def bootstrap_ci(
     seed: int = DEFAULT_SEED,
     method: str = "percentile",
 ) -> Interval:
-    """CI of the mean of per-unit values (one value per task or decision)."""
+    """Bootstrap confidence interval of the mean of per-unit values (one value per task or decision).
+
+    NaN values are dropped. ``method`` is ``"percentile"`` (default) or ``"BCa"``; see the module docstring.
+    """
     v = np.asarray(values, dtype=float)
     v = v[~np.isnan(v)]
     if len(v) < 2:
@@ -58,7 +66,7 @@ def bootstrap_ci(
     alpha = (1 - confidence) / 2
     if method == "percentile":
         draws = _percentile_draws(v, n_resamples, seed)
-        q = round(100 * alpha, 10)  # exactly 2.5 for a 95% interval, as in the original scripts
+        q = round(100 * alpha, 10)  # exactly 2.5 for a 95% interval (no floating-point residue)
         lo, hi = np.percentile(draws, [q, 100 - q])
     elif method == "BCa":
         from scipy.stats import bootstrap

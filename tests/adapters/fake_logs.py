@@ -230,7 +230,7 @@ def _prompt_block(app):
     return f'`Available APIs`:\n"""\n{json.dumps({app: cuga_api_docs(app)}, indent=2)}\n"""'
 
 
-def _round(app, intent, offered, calls, old_format, with_block):
+def _round(app, intent, offered, calls, merged_prompts, with_block):
     planner = {
         "thoughts": [f"we need {app}"],
         "action": "ApiShortlistingAgent",
@@ -239,7 +239,7 @@ def _round(app, intent, offered, calls, old_format, with_block):
     result = {"thoughts": ["ranked"], "result": [{"name": a, "relevance_score": 0.9} for a in offered]}
     human = f"`User Intent`: **Input task**: find APIs\n\n`Current Application`: {app}\n\n"
     human += _prompt_block(app) if with_block else "`Available APIs`: (omitted)"
-    if old_format:  # the original convert2tabular layout: [system+human, generation]
+    if merged_prompts:  # one system message holding the system and human text, then the generation
         planner_prompts = [
             {
                 "role": "system",
@@ -269,12 +269,12 @@ def _round(app, intent, offered, calls, old_format, with_block):
         {
             "name": "APIPlannerAgent",
             "prompts": planner_prompts,
-            "data": "" if old_format else json.dumps(planner),
+            "data": "" if merged_prompts else json.dumps(planner),
         },
         {
             "name": "ShortlisterAgent",
             "prompts": short_prompts,
-            "data": "" if old_format else json.dumps(result),
+            "data": "" if merged_prompts else json.dumps(result),
         },
         {"name": "APIPlannerAgent", "prompts": [], "data": json.dumps({"action": "CoderAgent"})},
         {"name": "CodeAgent", "prompts": [], "data": json.dumps({"code": code, "execution_output": "ok"})},
@@ -284,7 +284,7 @@ def _round(app, intent, offered, calls, old_format, with_block):
 
 
 def cuga_trajectory(
-    task_id, rounds, score=1.0, old_format=False, with_block=True, intent="pay my roommate back"
+    task_id, rounds, score=1.0, merged_prompts=False, with_block=True, intent="pay my roommate back"
 ):
     """rounds: list of (app, offered APIs, APIs called as written in call_api)."""
     steps = [
@@ -292,7 +292,7 @@ def cuga_trajectory(
         {"name": "PlanControllerAgent", "prompts": [], "data": json.dumps({"next_subtask": "use the apps"})},
     ]
     for app, offered, calls in rounds:
-        steps += _round(app, intent, offered, calls, old_format, with_block)
+        steps += _round(app, intent, offered, calls, merged_prompts, with_block)
     steps += [
         {"name": "FinalAnswerAgent", "prompts": [], "data": json.dumps({"final_answer": "FINAL: all done"})},
         {"name": "EvaluationResult", "prompts": [], "data": json.dumps({"score": score})},

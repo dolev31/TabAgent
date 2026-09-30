@@ -2,14 +2,17 @@
 
 ``evaluate`` runs grouped cross-validation of a TabAgent on a decision table and compares it with the
 training-free baselines, then measures the per-decision latency of the fitted head and prices it with the
-paper's CPU cost model (L1192, L1946): ``C_cpu = threads * t / 3600 * p_vCPU-h`` with 4 threads and
-$0.07 per vCPU-hour. Pass the cost of one call of the LLM component you replace to see the savings.
+paper's CPU cost model (App. C, "CPU cost"; App. F): ``C_cpu = threads * t / 3600 * p_vCPU-h`` with 4
+threads and $0.063 per vCPU-hour, the on-demand rate of an AWS EC2 r6i.xlarge ($0.252 per hour for 4 vCPU).
+At the paper's 2.682 ms per decision this is about $1.9e-7, which the paper rounds up to $2.0e-7. Pass the
+cost of one call of the LLM component you replace to see the savings.
 """
 
 from __future__ import annotations
 
 import json
 import time
+import warnings
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -21,14 +24,26 @@ from tabagent import baselines as B
 from tabagent.evaluation import metrics as M
 from tabagent.evaluation import stats as S
 from tabagent.evaluation.cv import cross_validate
+from tabagent.tabhead import CATBOOST_RUNTIME
 from tabagent.table import DecisionTable
 
-VCPU_HOUR_USD = 0.07
-THREADS = 4
+VCPU_HOUR_USD = 0.063  # AWS EC2 r6i.xlarge on demand: $0.252 per hour for 4 vCPU (App. C, App. F)
+THREADS = CATBOOST_RUNTIME["thread_count"]
+
+
+def cpu_cost_usd(latency_ms: float, threads: int = THREADS, vcpu_hour_usd: float = VCPU_HOUR_USD) -> float:
+    """CPU cost of one decision (App. C): ``threads * t / 3600 * p_vCPU-h`` with ``t`` in seconds."""
+    return threads * latency_ms / 1000 / 3600 * vcpu_hour_usd
 
 
 @dataclass
 class Report:
+    """An evaluation report: quality against baselines, latency and cost per decision, feature importance.
+
+    ``results`` has one row per method and one column per metric (estimate and 95% bootstrap interval).
+    Print it, or write ``report.md`` and ``report.json`` with ``save``.
+    """
+
     kind: str
     dataset: dict[str, Any]
     results: pd.DataFrame
@@ -40,6 +55,7 @@ class Report:
     cv: Any = field(default=None, repr=False)  # the CVResult behind the numbers
 
     def to_dict(self) -> dict[str, Any]:
+        """The report as a JSON-able dict (``report.json``)."""
         d = {
             "kind": self.kind,
             "dataset": self.dataset,
@@ -54,6 +70,7 @@ class Report:
         return d
 
     def to_markdown(self) -> str:
+        """The report as Markdown (``report.md``)."""
         ds = self.dataset
         lines = [
             "# TabAgent evaluation report",
@@ -99,6 +116,7 @@ class Report:
         return self.to_markdown()
 
     def save(self, path: str | Path) -> Path:
+        """Write ``report.md`` and ``report.json`` into the directory ``path``."""
         p = Path(path)
         p.mkdir(parents=True, exist_ok=True)
         (p / "report.md").write_text(self.to_markdown())
@@ -110,14 +128,12 @@ def _fmt(iv: S.Interval) -> str:
     return f"{iv.estimate:.3f} [{iv.low:.3f}, {iv.high:.3f}]"
 
 
-def _context_and_candidate_text(card) -> tuple[list[str], list[str]]:
-    query = [f.name for f in card.features if f.type == "text" and f.family == "state"]
-    doc = [f.name for f in card.features if f.family == "schema" and f.type in ("text", "cat")]
-    return query, doc
-
-
-def feature_importance(agent) -> pd.Series:
+def feature_importance(agent) -> pd.Series | None:
+    """CatBoost feature importance of a fitted agent, summed over each feature's columns (a text feature
+    spans its TF-IDF terms). None for heads without CatBoost's importance (``estimator=`` heads)."""
     head = agent.head_
+    if head.featurizer_ is None or not hasattr(head.model_, "get_feature_importance"):
+        return None
     raw = np.asarray(head.model_.get_feature_importance())
     sizes = [len(state.vocabulary_) if kind == "text" else 1 for _, kind, state in head.featurizer_.parts]
     names = [col for col, _, _ in head.featurizer_.parts]
@@ -149,9 +165,24 @@ def evaluate(
     seeds=(0,),
     ks=(3, 5, 9),
     baselines: bool = True,
-    e5: bool = False,
+    embedding_baseline: bool = False,
     llm_cost_per_call: float | None = None,
 ) -> Report:
+    """Evaluate ``agent`` on ``table`` and return a :class:`Report`.
+
+    Parameters
+    ----------
+    agent: an unfitted ``TabAgent`` (it is cross-validated, then refitted on all rows to time it).
+    table: the labeled decision table.
+    folds, n_splits, seeds: the grouped cross-validation (see ``cross_validate``).
+    ks: the Recall@k cutoffs reported for rankings.
+    baselines: add chance and BM25 (rankings) or chance, oracle and the best fixed arm (policies).
+    embedding_baseline: also add the zero-shot embedding baseline (e5-small-v2; needs the embed extra).
+    llm_cost_per_call: the replaced LLM call's cost in USD, to report the savings.
+
+    Retrieval baselines tie often (BM25 scores most candidates 0), so every ranking metric takes the
+    expectation over a random order of tied scores (App. L).
+    """
     kind = table.spec.kind
     res = cross_validate(agent, table, folds=folds, n_splits=n_splits, seeds=seeds)
     ids = table.decision_ids
@@ -169,17 +200,18 @@ def evaluate(
             rows["chance"] = {"p@r": f"{M.chance_p_at_r(table).mean():.3f}"}
             card = agent.card if hasattr(agent.card, "features") else None
             if card is not None:
-                q, d = _context_and_candidate_text(card)
+                q, d = card.context_text_columns(), card.candidate_text_columns()
                 if q and d:
-                    # Retrieval baselines tie often (BM25 scores most candidates 0), so they are scored in
-                    # expectation over a random order of tied scores, as in the paper.
+
                     def baseline(s):
                         per = {m: M.per_decision(table, s, m, tie_break="expected") for m in metrics}
                         return {m: _fmt(S.bootstrap_ci(v.to_numpy())) for m, v in per.items()}
 
                     rows["BM25"] = baseline(B.bm25(table, q, d))
-                    if e5:
-                        rows["e5 zero-shot"] = baseline(B.embedding_zero_shot(table, q, d))
+                    if embedding_baseline:
+                        rows["embedding zero-shot"] = baseline(B.embedding_zero_shot(table, q, d))
+                elif embedding_baseline:
+                    notes.append("no embedding baseline: the card has no context or candidate text")
     elif kind == "policy":
         rows["TabAgent"] = {"route@1": _fmt(res.ci("route@1", level="decision"))}
         rows["chance"] = {"route@1": f"{M.chance_route(table).mean():.3f}"}
@@ -198,9 +230,8 @@ def evaluate(
 
     fitted = agent.clone().fit(table)
     latency = measure_latency(fitted, table)
-    cost = THREADS * latency / 1000 / 3600 * VCPU_HOUR_USD
-    try:
-        importance = feature_importance(fitted)
-    except Exception:  # non-CatBoost heads
-        importance = None
+    cost = cpu_cost_usd(latency)
+    importance = feature_importance(fitted)
+    if importance is None:
+        warnings.warn("feature importance is reported for the CatBoost head only", UserWarning, stacklevel=2)
     return Report(kind, dataset, results, latency, cost, llm_cost_per_call, importance, notes, res)

@@ -11,7 +11,7 @@
 ``select`` chooses among a small grid of recipes (TabSynth off / k=2 / k=4, candidate prior on / off, head
 preset) by nested, grouped inner cross-validation on the **training data only**, and returns the winner and
 the full table of inner scores. This operationalizes the paper's rule of adopting +synth only where it beats
-the real-only head (L888) without ever looking at held-out data.
+the real-only head (App. A, "Where synthesis backfires") without ever looking at held-out data.
 """
 
 from __future__ import annotations
@@ -35,6 +35,7 @@ PRIOR = "candidate_prior"
 
 
 def infer_type(s: pd.Series) -> str:
+    """``num`` for numeric or boolean columns; for strings ``text`` when long or multi-word, else ``cat``."""
     if pd.api.types.is_bool_dtype(s) or pd.api.types.is_numeric_dtype(s):
         return "num"
     text = s.dropna().astype(str)
@@ -45,7 +46,8 @@ def infer_type(s: pd.Series) -> str:
     return "text" if long or wordy else "cat"
 
 
-def _embeddings_available() -> bool:
+def embeddings_available() -> bool:
+    """True when the embed extra (torch and transformers) is installed."""
     import importlib.util
 
     return all(importlib.util.find_spec(m) is not None for m in ("torch", "transformers"))
@@ -61,6 +63,11 @@ def infer_card(
     pair_embeddings: bool | None = None,
     name: str = "auto",
 ) -> FeatureCard:
+    """A feature card for the pointwise frame ``df`` over ``columns`` (see the module docstring).
+
+    ``add_prior`` adds the in-fold candidate prior; ``text_cols`` forces columns to ``text``;
+    ``pair_embeddings`` adds the e5 context-candidate similarity (None: when the embed extra is installed).
+    """
     features, synth_text = [], []
     for c in columns:
         if c in spec.structural_cols and c != spec.candidate:
@@ -73,14 +80,14 @@ def infer_card(
         features.append(Feature(c, family, kind))
         if kind == "text" and (is_context or spec.kind == "single"):
             synth_text.append(c)  # decision-context text only; candidate descriptions are never paraphrased
-    context = [f.name for f in features if f.type == "text" and f.family == "state"]
-    candidate_text = [f.name for f in features if f.family == "schema" and f.type in ("text", "cat")]
+    base = FeatureCard(name, spec, features)
+    context, candidate_text = base.context_text_columns(), base.candidate_text_columns()
     if spec.candidate and context and candidate_text:
-        # Context-candidate overlap, the signal every paper card carries (L321, L2364).
+        # Context-candidate overlap, the signal every paper card carries (Sec. 3.3; App. N.4, Table 21).
         pair = {"a": context, "b": candidate_text}
         features.append(Feature("context_candidate_lex", "schema", "num", "jaccard", pair))
         if pair_embeddings is None:
-            pair_embeddings = _embeddings_available()
+            pair_embeddings = embeddings_available()
         if pair_embeddings:
             args = {"query": context, "passage": candidate_text, "encoder": "e5-small-v2"}
             features.append(
@@ -113,17 +120,22 @@ def _without(card: FeatureCard, names: set[str]) -> FeatureCard:
 
 @dataclass
 class Recipe:
+    """One training recipe: TabSynth variants per row (0 = off), the candidate prior on or off, and the
+    CatBoost preset; ``scores`` holds its inner-validation scores."""
+
     synth_k: int = 0
     prior: bool = True
     preset: str = "paper"
     scores: dict = field(default_factory=dict)
 
     def label(self) -> str:
+        """A short description, for example ``synth=k2 prior=on paper``."""
         synth = f"k{self.synth_k}" if self.synth_k else "off"
         return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}"
 
 
 def build_agent(card: FeatureCard, recipe: Recipe, seed: int = 0, **head_overrides) -> TabAgent:
+    """The ``TabAgent`` of ``recipe`` on ``card`` (``head_overrides`` go to the CatBoost head)."""
     has_prior = any(f.name == PRIOR for f in card.features)
     c = card if (recipe.prior or not has_prior) else _without(card, {PRIOR})
     synth = TabSynth(k=recipe.synth_k) if recipe.synth_k and c.synth_text else None
@@ -132,9 +144,13 @@ def build_agent(card: FeatureCard, recipe: Recipe, seed: int = 0, **head_overrid
 
 
 def recipes(card: FeatureCard, search: str = "fast") -> list[Recipe]:
+    """The recipe grid: TabSynth off / k=2 / k=4 (when the card has text to paraphrase), prior on / off (when
+    it has one), and the ``paper`` preset (``fast``) or both presets (``full``)."""
+    if search not in ("fast", "full"):
+        raise ValueError(f"search must be 'fast' or 'full', got {search!r}")
     synth = [0, 2, 4] if card.synth_text else [0]
     prior = [True, False] if any(f.name == PRIOR for f in card.features) else [True]
-    presets = ["paper"] if search == "fast" else ["paper", "tmlr-runs"]
+    presets = ["paper"] if search == "fast" else ["paper", "catboost-default"]
     return [Recipe(k, p, s) for s, p, k in itertools.product(presets, prior, synth)]
 
 
@@ -148,7 +164,13 @@ def select(
     time_budget: float | None = None,
     **head_overrides,
 ) -> tuple[Recipe, pd.DataFrame]:
-    """Nested selection of the training recipe on ``table`` (training data only)."""
+    """Nested selection of the training recipe on ``table`` (training data only).
+
+    Every recipe of :func:`recipes` is scored by ``inner_folds``-fold grouped cross-validation with one
+    seed on the card's primary metric; the best wins, ties going to the simpler (earlier) recipe. With
+    ``time_budget`` (seconds), recipes left when it runs out are skipped. Returns the winner and a table of
+    every recipe's inner score.
+    """
     metric = PRIMARY_METRIC[card.spec.kind]
     grid = recipes(card, search)
     n_groups = len(table.groups)

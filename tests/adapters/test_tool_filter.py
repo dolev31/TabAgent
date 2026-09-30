@@ -33,7 +33,7 @@ def test_tool_filter_end_to_end(tmp_path):
     f = ToolFilter(tmp_path / "head", k=2, always=["send_email"])
     kept = f(messages, tools)
     names = [t["function"]["name"] for t in kept]
-    assert len(names) <= 3 and "send_email" in names and f.last["choice"]
+    assert len(names) <= 3 and "send_email" in names and f.last["candidates"]
     assert all(t in tools for t in kept)
     f.head.gate_threshold = float("inf")  # everything deferred -> the full list goes to the LLM
     assert len(f(messages, tools)) == len(tools)

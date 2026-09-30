@@ -53,7 +53,9 @@ synth:
   k: 2
 provenance:
   kind: frozen
-  paper: Table 1 skill selection; Fig. 2a; Fig. 3
-  note: Pre-release skill_select card with every statistic fitted inside the training fold. The pre-release build
-    fitted skill_global_freq once on a fixed 70% split that overlaps the cross-validation test folds. The prior
-    hurts on SkillsBench; skillsbench_skill_select_noprior drops it.
+  paper: variant of the Table 1 skill-selection card (adds the candidate prior)
+  note: >-
+    skillsbench_skill_select_noprior plus skill_global_freq, the share of training tasks whose bundle
+    contains the skill, fitted inside the training folds. 180 of the 195 skills occur in a single bundle, so
+    the prior is 0 for a held-out task's own skills and positive for other tasks' skills; with CatBoost (paper
+    preset), the pinned folds and the paper's seeds it lowers P@R from 0.796 to 0.727.

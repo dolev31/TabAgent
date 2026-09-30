@@ -1,16 +1,16 @@
-"""TabSTAR as a TabHead estimator (the neural head of the head ablation, paper App. ``head_alt``, L2261).
+"""TabSTAR as a TabHead estimator (the neural head of the head ablation, paper App. K.3).
 
 TabSTAR reads raw text and numeric columns itself, so it is used with ``TabHead(featurize=False)``: the
 card's feature frame goes to it unchanged. Settings follow the paper: LoRA fine-tuning with learning rate
 0.001, rank 16 and at most 50 epochs (the library default rank is 32, so it is set explicitly).
 
-The collapse guard is ported from the pre-release evaluation harness. Some folds fall into a
-constant-output attractor (every probability identical). After each fit the head probes the first
-``probe_rows`` training rows; if the standard deviation of p(positive) is at most ``collapse_std`` it
-refits once with a 5x lower LoRA learning rate (2e-4), best-checkpoint selection when the installed TabSTAR
-supports it, and a different row shuffle. A second collapse is kept and recorded (``collapsed_``), never
-silently dropped. Training sets under ``small_data_rows`` rows use the pre-release small-card schedule
-(15 epochs, patience 6, best-checkpoint selection); skill selection (about 13.5K rows per fold) never does.
+The collapse guard: some folds fall into a constant-output attractor (every probability identical). After
+each fit the head probes the first ``probe_rows`` training rows; if the standard deviation of p(positive) is
+at most ``collapse_std`` it refits once with a 5x lower LoRA learning rate (2e-4), best-checkpoint selection
+when the installed TabSTAR supports it, and a different row shuffle. A second collapse is kept and recorded
+(``collapsed_``), never silently dropped. Training sets under ``small_data_rows`` rows use a small-card
+schedule (15 epochs, patience 6, best-checkpoint selection); skill selection (about 13.5K rows per fold)
+never does.
 
 Constructor arguments are passed only if the installed TabSTAR accepts them (versions differ).
 """

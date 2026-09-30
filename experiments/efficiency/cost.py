@@ -1,11 +1,12 @@
-"""The paper's per-decision cost formulas (App. ``hardware``, cost estimation; App. ``cost_efficiency``).
+"""The paper's per-decision cost formulas (App. C, "Cost estimation" and "CPU cost"; App. F, Table 15).
 
 CPU heads (TabHead runs on CPU, no GPU), priced by vCPU-hours:
 
     C_cpu(t) = threads * t / 3600 * p_vCPU-h
 
-with 4 threads (CatBoost's ``thread_count``) and p_vCPU-h = $0.07, the on-demand AWS EC2 r6i price (about
-$0.063 per vCPU-hour: r6i.xlarge, 4 vCPU at about $0.252 per hour) rounded up.
+with 4 threads (CatBoost's ``thread_count``) and p_vCPU-h = $0.063, the on-demand AWS EC2 r6i price
+(r6i.xlarge, 4 vCPU at about $0.252 per hour). For the paper's 2.682 ms this gives 1.9e-7 dollars per
+decision, which Table 15 rounds up to 2.0e-7.
 
 GPU-served local models (the small LLM baselines), energy plus amortized GPU time on one V100-32GB:
 
@@ -25,14 +26,15 @@ from __future__ import annotations
 import argparse
 from collections.abc import Sequence
 
-CPU = {"threads": 4, "usd_per_vcpu_hour": 0.07}
+CPU = {"threads": 4, "usd_per_vcpu_hour": 0.063}
 GPU = {"power_w": 250.0, "pue": 1.4, "usd_per_kwh": 0.20, "usd_per_gpu_hour": 0.20}
 
-#: Table ``tab:cost-runtime`` of the paper: one AppWorld shortlisting decision (seconds, reported $, pricing).
+#: Table 15 of the paper: one AppWorld shortlisting decision (seconds, reported $, pricing).
 PAPER_TABLE = {
     "GPT-5.4 shortlister (API)": (7.50, 0.052, "api"),
     "Llama-3.1-8B-Instruct": (0.658, 4.9e-5, "gpu"),
     "Llama-3.2-3B-Instruct": (0.531, 4.0e-5, "gpu"),
+    "Qwen2.5-7B-Instruct": (0.474, 3.6e-5, "gpu"),
     "Llama-3.2-1B-Instruct": (0.278, 2.1e-5, "gpu"),
     "TabAgent (CatBoost)": (0.002682, 2.0e-7, "cpu"),
 }
@@ -69,7 +71,7 @@ def price(seconds: float, pricing: str) -> float | None:
 
 
 def check_paper_table() -> list[dict]:
-    """Recompute every locally priced row of ``tab:cost-runtime`` from its reported runtime."""
+    """Recompute every locally priced row of Table 15 from its reported runtime."""
     rows = []
     for name, (seconds, reported, pricing) in PAPER_TABLE.items():
         cost = price(seconds, pricing)

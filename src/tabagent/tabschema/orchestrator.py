@@ -1,4 +1,4 @@
-"""TabSchema, the FeatureOrchestrator (paper Sec. 3.1, App. C).
+"""TabSchema, the FeatureOrchestrator (paper Sec. 3.1; App. D).
 
 ``TabSchema.discover`` turns an agent's successful trajectories into a feature card for one decision
 component:
@@ -12,16 +12,21 @@ component:
    **MetaJudge** accepts, conditionally accepts or rejects each one;
 5. **compile**: one reusable extractor for the accepted features, run and quality-checked on every
    onboarding decision point;
-6. the **card**: extractor features (state), candidate name/description/argument hints (schema, L321),
-   and in-fold dependency statistics (priors, context-candidate similarity, L443).
+6. the **card**: extractor features (state), candidate name/description/argument hints (schema,
+   Sec. 3.3), and dependency statistics (priors, context-candidate similarity) that the card fits on the
+   training rows of each fold (Sec. 4.3).
 
-``card_factory`` runs the whole loop inside each training fold, which is how the paper's statement that the
-TabSchema loop is fitted inside the training portion of each fold (L443) is executed.
+Discovery runs once, on the onboarding trajectories it is given. The compiled extractor is a stateless
+function of one trajectory prefix, so applying it to held-out decisions leaks nothing; every label-derived
+statistic is fitted by the card inside ``cross_validate``'s training folds. Running discovery itself inside
+each fold means calling ``discover`` on that fold's trajectories.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import json
+import logging
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -30,6 +35,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+from tabagent.defaults import DEFAULT_SEED
 from tabagent.table import DecisionSpec, DecisionTable
 from tabagent.tabschema import prompts
 from tabagent.tabschema.agents import (
@@ -56,15 +62,37 @@ from tabagent.tabschema.trajectory import (
     union_paths,
 )
 
+logger = logging.getLogger(__name__)
+
 GROUP, DECISION, CANDIDATE, LABEL = "task", "decision_id", "candidate", "chosen"
 
 
 @dataclass
 class TabSchemaConfig:
-    model: str | None = None  # default: the paper's GPT-5.4 on OpenAI, or the provider found in the env
+    """Settings of a TabSchema discovery run.
+
+    Parameters
+    ----------
+    model: the LLM (default: the paper's GPT-5.4 on OpenAI, or the provider whose key is in the environment).
+    n_analyze: decision points the FeatureAnalyzer reads, sampled one per task first.
+    sample_seed: seed of that sample.
+    max_code_retries: CodeExecutor retries with the error fed back (three, App. D.1).
+    json_retries: re-asks when an answer is not parseable JSON.
+    accept: MetaJudge outcomes kept (add ``"conditional"`` to widen).
+    compile_min_success: share of onboarding decision points the compiled extractor must run on.
+    max_null_rate: extractor columns emptier than this are dropped.
+    dependency_features: dependency statistics added to the card.
+    pair_embeddings: add the e5 context-candidate similarity; None adds it when the embed extra is installed.
+    workers: parallel analyzer calls.
+    timeout_s: sandbox time limit per extractor run.
+    max_cost_usd: LLM budget; needs a price for the model in ``prices``.
+    prices: ``{model: (USD per 1M input tokens, USD per 1M output tokens)}``.
+    """
+
+    model: str | None = None
     n_analyze: int = 10
-    sample_seed: int = 20260720
-    max_code_retries: int = 3  # paper L1210
+    sample_seed: int = DEFAULT_SEED
+    max_code_retries: int = 3
     json_retries: int = 1
     accept: tuple[str, ...] = ("accept",)  # add "conditional" to widen
     compile_min_success: float = 0.95
@@ -74,8 +102,7 @@ class TabSchemaConfig:
         "context_candidate_lex",
         "context_candidate_sim",
     )
-    pair_embeddings: bool | None = None  # None: use e5 similarity when the embed extra is installed
-    analyzer_hints: list[str] | None = None  # the original pipeline's example list; off (paper prompt)
+    pair_embeddings: bool | None = None
     workers: int = 8
     timeout_s: float = 30
     max_cost_usd: float | None = None
@@ -84,6 +111,9 @@ class TabSchemaConfig:
 
 @dataclass
 class DiscoveryReport:
+    """What a discovery run did: the sampled and analyzed decision points, the aggregated, judged, compiled
+    and dropped features, the LLM cost and the run directory."""
+
     target: str
     n_trajectories: int
     n_successful: int
@@ -98,12 +128,18 @@ class DiscoveryReport:
     run_dir: str = ""
 
     def to_markdown(self) -> str:
+        """The report as Markdown (written to ``discovery.md``)."""
+        c = self.cost
+        usd = c.get("total_usd")
+        unpriced = ", ".join(c.get("unpriced_models") or []) or "the model"
+        cost = f"${usd:.2f}" if usd is not None else f"unknown (no price for {unpriced})"
+        tokens = f"{c.get('input_tokens', 0):,} input / {c.get('output_tokens', 0):,} output tokens"
         lines = [
             f"# TabSchema discovery: `{self.target}`",
             "",
             f"* trajectories: {self.n_trajectories} ({self.n_successful} successful); decision points: "
             f"{self.n_decision_points}; analyzed: {len(self.analyzed)}",
-            f"* LLM cost: ${self.cost.get('total_usd', 0):.2f}",
+            f"* LLM cost: {cost}; {c.get('calls', 0)} calls, {tokens}",
             "",
             "## Judged features",
             "",
@@ -125,21 +161,25 @@ class DiscoveryReport:
 
 @dataclass
 class DiscoveryResult:
+    """The output of ``TabSchema.discover``: the feature card, the compiled extractor and the report."""
+
     card: FeatureCard
     extractor: CompiledExtractor
     report: DiscoveryReport
 
     def save(self, path: str | Path) -> Path:
+        """Write ``extract.py``, ``card.yaml``, ``discovery.md`` and ``discovery.json`` to ``path``."""
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
         (out / "extract.py").write_text(self.extractor.code)
         self.card.save(out / "card.yaml")
         (out / "discovery.md").write_text(self.report.to_markdown())
-        (out / "discovery.json").write_text(json.dumps(self.report.__dict__, indent=1, default=str))
+        report = dataclasses.asdict(self.report)
+        (out / "discovery.json").write_text(json.dumps(report, indent=1, default=str))
         return out
 
 
-def _sample(dps: list[DecisionPoint], n: int, seed: int) -> list[DecisionPoint]:
+def sample_decision_points(dps: list[DecisionPoint], n: int, seed: int) -> list[DecisionPoint]:
     """Seeded sample that covers as many distinct tasks as possible before repeating one."""
     rng = np.random.default_rng(seed)
     by_group: dict[str, list[DecisionPoint]] = {}
@@ -158,6 +198,20 @@ def _sample(dps: list[DecisionPoint], n: int, seed: int) -> list[DecisionPoint]:
 
 
 class TabSchema:
+    """The FeatureOrchestrator: discovers a feature card for one decision component of an agent.
+
+    Parameters
+    ----------
+    llm: the model for every stage (default: ``auto_llm(config.model)``, from environment keys).
+    config: a ``TabSchemaConfig``.
+    adapter: reads the agent's logs into trajectories and decision points (default ``GenericJsonAdapter``).
+    store: the run directory (default: a new one under ``$TABAGENT_CACHE/runs``).
+    sandbox: runs LLM-written extraction code (default ``SubprocessSandbox``).
+
+    With ``config.max_cost_usd`` set, the model needs a price in ``config.prices``; otherwise the budget
+    could not be enforced and the constructor raises ``ValueError``.
+    """
+
     def __init__(
         self,
         llm: LLM | None = None,
@@ -172,6 +226,7 @@ class TabSchema:
         self.store = store
         self.sandbox = sandbox or SubprocessSandbox(timeout_s=self.config.timeout_s)
         self.meter = CostMeter(prices=dict(self.config.prices), max_cost_usd=self.config.max_cost_usd)
+        self.meter.require_price(self.llm.model)
 
     def _stage(self, cls, *args):
         return cls(*args, self.llm, self.meter, self.store, self.config.json_retries)
@@ -184,6 +239,12 @@ class TabSchema:
         kind: str = "ranking",
         name: str | None = None,
     ) -> DiscoveryResult:
+        """Run the discovery loop for the decision component ``target``.
+
+        ``trajectories`` are ``Trajectory`` objects or a path the adapter reads; only successful ones are
+        used. ``kind`` is the decision pattern and ``name`` the card name. Every intermediate artifact is
+        written to the run directory.
+        """
         cfg = self.config
         trajs = (
             self.adapter.load(trajectories) if isinstance(trajectories, (str, Path)) else list(trajectories)
@@ -208,15 +269,22 @@ class TabSchema:
             },
         )
 
-        sample = _sample(dps, cfg.n_analyze, cfg.sample_seed)
+        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed)
         store.write_json("sample.json", [dp.id for dp in sample])
+        logger.info(
+            "TabSchema: %d decision points in %d successful trajectories; analyzing %d (run directory %s)",
+            len(dps),
+            len(good),
+            len(sample),
+            store.dir,
+        )
         analyzer, extractor = self._stage(FeatureAnalyzer), self._stage(CodeExtractor)
         validator = self._stage(CodeValidator)
 
         def analyze(dp: DecisionPoint) -> dict[str, Any]:
             rec: dict[str, Any] = {"decision_point": dp.id, "proposed": [], "kept": [], "error": ""}
             try:
-                specs = analyzer(dp, target, cfg.analyzer_hints)
+                specs = analyzer(dp, target)
                 rec["proposed"] = [s.feature_name for s in specs]
                 executor = CodeExecutor(self.sandbox, known, outcome_keys)
                 attempt, history = extract_with_retries(
@@ -235,8 +303,16 @@ class TabSchema:
                 rec["error"] = str(e)
                 return {**rec, "specs": []}
 
-        with ThreadPoolExecutor(max_workers=cfg.workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=cfg.workers)
+        try:
             analyses = list(pool.map(analyze, sample))
+        finally:  # on an error (a spent budget, say) drop the decision points not yet started
+            pool.shutdown(wait=True, cancel_futures=True)
+        logger.info(
+            "TabSchema: analyzed %d decision points; %d feasible proposals",
+            len(analyses),
+            sum(len(a["specs"]) for a in analyses),
+        )
         report.analyzed = [{k: v for k, v in a.items() if k != "specs"} for a in analyses]
         store.write_json("analysis.json", analyses)
         proposals = premerge([FeatureSpec.from_dict(s) for a in analyses for s in a["specs"]])
@@ -244,6 +320,7 @@ class TabSchema:
             raise RuntimeError("no feasible feature proposals; see analysis.json in the run directory")
 
         filtered, rejected = self._stage(FeatureAggregator)(proposals)
+        logger.info("TabSchema: aggregated %d proposals into %d features", len(proposals), len(filtered))
         report.aggregated = [f.feature_name for f in filtered]
         report.rejected_by_aggregator = [f.feature_name for f in rejected]
         store.write_json(
@@ -260,6 +337,7 @@ class TabSchema:
             FeatureSpec(d["feature_name"]).key for d in decisions if d["final_decision"] in accept
         }
         accepted = [f for f in filtered if f.key in accepted_keys]
+        logger.info("TabSchema: judged %d features; the MetaJudge accepted %d", len(filtered), len(accepted))
         scores = {row["feature_name"]: row for row in table}
         for d in decisions:
             row = scores.get(d["feature_name"], {})
@@ -288,6 +366,12 @@ class TabSchema:
         store.write_text("extract.py", compiled.code)
         report.compiled, report.dropped = dict(compiled.features), dict(compiled.dropped)
         report.cost = self.meter.summary()
+        logger.info(
+            "TabSchema: compiled an extractor with %d features (%d dropped); LLM cost %s",
+            len(compiled.features),
+            len(compiled.dropped),
+            self.meter.describe(self.llm.model),
+        )
         card = self._card(compiled, decisions, kind, name or f"{target}_tabschema", len(dps))
         card.save(store.path("card.yaml"))
         store.write_text("report.md", report.to_markdown())
@@ -328,9 +412,9 @@ class TabSchema:
                 )
             use_emb = cfg.pair_embeddings
             if use_emb is None:
-                from tabagent.auto import _embeddings_available
+                from tabagent.auto import embeddings_available
 
-                use_emb = _embeddings_available()
+                use_emb = embeddings_available()
             if context and use_emb and "context_candidate_sim" in dep:
                 feats.append(
                     Feature(
@@ -369,18 +453,24 @@ class TabSchema:
         )
 
     def build_table(
-        self, result: DiscoveryResult, trajectories: list[Trajectory], target: str, trusted: bool = False
+        self,
+        result: DiscoveryResult,
+        trajectories: list[Trajectory],
+        target: str,
+        trust_extractor: bool = False,
     ) -> DecisionTable:
-        """Rows = decision point x candidate, extractor features computed on each prefix, labels from the
-        adapter (for tool shortlisting: the tools the successful run used, L371)."""
+        """The decision table: one row per decision point x candidate, with the extractor's features computed
+        on each prefix and labels from the adapter (for tool shortlisting, the tools the successful run
+        used; Sec. 4.1). The extractor runs in the sandbox unless ``trust_extractor``."""
         dps = [dp for t in trajectories if t.success for dp in self.adapter.decision_points(t, target)]
-        runner = ExtractorRunner(result.extractor.code, trusted, self.sandbox)
+        runner = ExtractorRunner(result.extractor.code, trust_extractor, self.sandbox)
         return rows_to_table(result.card, dps, runner.run([dp.prefix for dp in dps]), self.adapter)
 
 
 def rows_to_table(
     card: FeatureCard, dps: list[DecisionPoint], feats: list[dict | None], adapter
 ) -> DecisionTable:
+    """Assemble the decision table from decision points, their extracted features and the adapter's labels."""
     cols = [f.name for f in card.features if f.source == "extractor"]
     rows = []
     for dp, f in zip(dps, feats, strict=True):

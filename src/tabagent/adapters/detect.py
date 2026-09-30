@@ -8,7 +8,7 @@ from typing import Any
 
 from tabagent.adapters.common import SKIP_FILES, iter_files
 from tabagent.adapters.cuga import CUGA_STEPS, CugaAdapter
-from tabagent.adapters.openai_messages import ROLES, OpenAIMessagesAdapter, _role, _unwrap
+from tabagent.adapters.openai_messages import ROLES, OpenAIMessagesAdapter, message_role, unwrap_message
 from tabagent.adapters.tau2 import Tau2Adapter
 from tabagent.tabschema.trajectory import GenericJsonAdapter
 
@@ -39,8 +39,8 @@ def _first_record(f: Path) -> Any:
 def _is_message(m: Any) -> bool:
     if not isinstance(m, dict):
         return False
-    m = _unwrap(m)
-    return _role(m) in ROLES.values() or m.get("type") in ("function_call", "function_call_output")
+    m = unwrap_message(m)
+    return message_role(m) in ROLES.values() or m.get("type") in ("function_call", "function_call_output")
 
 
 def detect_format(record: Any) -> type | None:

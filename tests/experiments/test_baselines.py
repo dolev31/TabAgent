@@ -7,8 +7,7 @@ memory (no download). LLM prompts are checked through the dry-run recorder.
 from __future__ import annotations
 
 import json
-import sys
-from pathlib import Path
+from dataclasses import replace
 
 import numpy as np
 import pandas as pd
@@ -19,10 +18,6 @@ pytest.importorskip("transformers")
 pytest.importorskip("tokenizers")
 
 import torch  # noqa: E402
-
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
 
 from experiments.baselines import dsr as D  # noqa: E402
 from experiments.baselines import llm as L  # noqa: E402
@@ -234,16 +229,30 @@ def test_contrastive_finetune_lowers_the_loss_and_moves_only_adapters(tiny_loade
     t = ranking_table(20)
     q, d = text_view(t.df, ["intent"]), text_view(t.df, ["tool", "desc"])
     zs = D.dsr_scores(t, ["intent"], ["tool", "desc"], config=FAST, loader=tiny_loader, device="cpu")
-    pairs, rel = D.training_pairs(q, d, t.labels, t.decision_ids.to_numpy(), np.ones(len(t), bool), zs, FAST)
+    cfg = replace(FAST, hard_negatives=1, mask_false_negatives=True, epochs=6, lr=2e-2)
+    pairs, rel = D.training_pairs(q, d, t.labels, t.decision_ids.to_numpy(), np.ones(len(t), bool), zs, cfg)
     assert all(len(p.hard) > 0 for p in pairs)
     tok, model = tiny_loader()
     frozen = model.embeddings.word_embeddings.weight.detach().clone()
-    cfg = FAST.__class__(**{**FAST.__dict__, "epochs": 6, "lr": 2e-2})
     losses = D.contrastive_finetune(model, tok, pairs, rel, cfg, seed=0, device="cpu")
     assert np.mean(losses[-3:]) < np.mean(losses[:3]) - 0.3
     assert torch.equal(model.embeddings.word_embeddings.weight, frozen)
     lora_b = [m.lora_B for m in model.modules() if isinstance(m, LoRALinear)]
     assert lora_b and all(b.abs().sum() > 0 for b in lora_b)
+
+
+def test_recipes_in_batch_is_the_default():
+    assert D.DSRConfig() == D.RECIPES["in-batch"]
+    assert (D.DSRConfig().hard_negatives, D.DSRConfig().mask_false_negatives) == (0, False)
+    hard = D.RECIPES["hard-negatives"]
+    assert (hard.hard_negatives, hard.mask_false_negatives) == (1, True)
+
+
+def test_in_batch_recipe_mines_no_hard_negatives():
+    q = np.array(["q1", "q1", "q2", "q2"], dtype=object)
+    d = np.array(["a", "b", "a", "b"], dtype=object)
+    pairs, _ = D.training_pairs(q, d, np.array([1, 0, 0, 1]), q, np.ones(4, bool), np.ones(4), D.DSRConfig())
+    assert [p.hard for p in pairs] == [(), ()]
 
 
 def test_hard_negative_pools_come_from_the_decision_and_the_training_rows():
@@ -252,7 +261,7 @@ def test_hard_negative_pools_come_from_the_decision_and_the_training_rows():
     y = np.array([1, 0, 0, 0, 0, 1, 0, 0])
     dec = np.array(["q1"] * 4 + ["q2"] * 4, dtype=object)
     zs = np.array([0.9, 0.1, 0.5, 0.95, 0.9, 0.2, 0.3, 0.8])
-    cfg = D.DSRConfig(hard_pool=2)
+    cfg = replace(D.RECIPES["hard-negatives"], hard_pool=2)
     pairs, rel = D.training_pairs(q, d, y, dec, np.ones(8, bool), zs, cfg)
     by = {p.decision: p for p in pairs}
     assert by["q1"].hard == ("c", "b")  # "a" is q1's positive text, never its negative
@@ -306,7 +315,7 @@ LISTWISE = L.ListwiseTask(
 )
 
 
-def test_listwise_prompt_matches_the_pre_release_layout():
+def test_listwise_prompt_layout():
     msgs = L.listwise_messages(
         LISTWISE, "find a flight to rome", ["search_flights", "book"], [("hi", ["a", "b"], [0, 1])]
     )
@@ -321,8 +330,8 @@ def test_listwise_prompt_matches_the_pre_release_layout():
     assert L.listwise_target([1] * 20, 15) == ", ".join(str(i) for i in range(1, 16))
 
 
-def test_parse_ranking_matches_the_pre_release_parser():
-    def legacy(text, y):  # run_e23_llama_family.parse_rank, returning the order
+def test_parse_ranking_lists_parsed_numbers_first_then_a_seeded_order():
+    def reference(text, y):  # parsed 1-based numbers in order, deduplicated, then the rest shuffled (seed 0)
         seen, order = set(), []
         for k in [int(x) for x in __import__("re").findall(r"\d+", text)]:
             if 1 <= k <= len(y) and k not in seen:
@@ -333,7 +342,7 @@ def test_parse_ranking_matches_the_pre_release_parser():
         return order + rest
 
     for text in ["3, 1, 3, 99, 0", "", "none", "7 2 5"]:
-        assert list(L.parse_ranking(text, 8)) == legacy(text, list(range(8)))
+        assert list(L.parse_ranking(text, 8)) == reference(text, list(range(8)))
     s = L.order_scores(np.array([2, 0, 1]))
     assert list(np.argsort(-s)) == [2, 0, 1]
 
@@ -447,8 +456,23 @@ def test_gate_scores_the_chosen_arm_and_excludes_undecidable():
 def test_presets_cover_the_paper_rows():
     for name in ["skillsbench/skill-select", "mind2web/element-150", "mind2web/operation", "tau2/airline"]:
         p = P.PRESETS[name]
-        assert p.query and p.doc and p.llm is not None and p.paper
+        assert p.query and p.doc and p.llm is not None and p.paper and p.source.startswith("Table 1")
     assert P.PRESETS["skillsbench/skill-gating"].query is None
+    # Table 1 values (percent / 100)
+    assert P.PRESETS["skillsbench/skill-select"].paper == {
+        "dsr-zs": 0.51,
+        "dsr-ft": 0.74,
+        "fewshot": 0.33,
+        "ft-slm": 0.52,
+    }
+    assert [
+        P.PRESETS[f"tau2/{d}"].paper["dsr-ft"] for d in ("airline", "retail", "telecom", "all-domains")
+    ] == [
+        0.44,
+        0.42,
+        0.28,
+        0.42,
+    ]
     op = P.operation_context(
         {"instruction": "x" * 400, "target_tag": "a", "target_type": None, "op": "CLICK"}
     )
@@ -545,8 +569,13 @@ def test_cli_writes_per_decision_vectors(toy_dataset, tmp_path):
         ]
     )
     res = json.loads(out.read_text())
-    assert res["recipe"] == "paper" and set(res["per_seed"]["p@r"]) == {"0", "1"}
-    assert res["config"]["hard_negatives"] == 1
+    assert res["recipe"] == "in-batch" and set(res["per_seed"]["p@r"]) == {"0", "1"}
+    assert res["config"]["hard_negatives"] == 0 and not res["config"]["mask_false_negatives"]
+
+    out = tmp_path / "ft-hard.json"
+    R.main(["--dataset", "toy/tools", "--method", "dsr-ft", "--recipe", "hard-negatives", "--out", str(out)])
+    res = json.loads(out.read_text())
+    assert res["recipe"] == "hard-negatives" and res["config"]["hard_negatives"] == 1
 
 
 def test_cli_dry_run_reports_prompts(toy_dataset, tmp_path):

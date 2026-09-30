@@ -1,4 +1,4 @@
-"""TabHead follows paper Sec. 3.3 (L320-323), L384 (CatBoost configuration) and App. D (L2347, gate)."""
+"""TabHead follows paper Sec. 3.3, Sec. 4.2 (CatBoost configuration) and App. N.3 (confidence gate)."""
 
 import numpy as np
 import pandas as pd
@@ -54,23 +54,23 @@ def test_featurizer_skips_text_column_with_empty_vocabulary():
     assert [p[0] for p in fz.parts] == ["n"]
 
 
-def test_presets_match_paper_and_runs_L384():
-    paper = catboost_estimator("paper", "ranking", 0).get_params()
-    assert paper["iterations"] == 1000 and paper["depth"] == 6 and paper["l2_leaf_reg"] == 3.0
-    assert "learning_rate" not in paper  # automatically selected
-    assert paper["loss_function"] == "Logloss"
-    runs = catboost_estimator("tmlr-runs", "ranking", 7).get_params()
-    assert runs["iterations"] == 300 and runs["learning_rate"] == 0.08 and runs["random_seed"] == 7
+def test_paper_preset_is_the_configuration_the_paper_states():
+    paper = catboost_estimator("paper", "ranking", 7).get_params()
+    assert (paper["iterations"], paper["learning_rate"], paper["depth"]) == (300, 0.08, 6)
+    assert paper["loss_function"] == "Logloss" and paper["random_seed"] == 7
     assert catboost_estimator("paper", "single", 0).get_params()["loss_function"] == "MultiClass"
-    assert set(PRESETS) == {"paper", "tmlr-runs"}
+    default = catboost_estimator("catboost-default", "ranking", 0).get_params()
+    assert default["iterations"] == 1000 and default["l2_leaf_reg"] == 3.0
+    assert "learning_rate" not in default  # automatically selected
+    assert set(PRESETS) == {"paper", "catboost-default"} and TabHead().preset == "paper"
 
 
 def test_fit_score_learns_signal_and_is_seed_deterministic():
     X, y = _frame()
-    h = TabHead("ranking", preset="tmlr-runs").fit(X, y, TYPES)
+    h = TabHead("ranking", preset="paper").fit(X, y, TYPES)
     p = h.score(X)
     assert p.shape == (len(X),) and ((p > 0.5) == y).mean() > 0.9
-    p2 = TabHead("ranking", preset="tmlr-runs").fit(X, y, TYPES).score(X)
+    p2 = TabHead("ranking", preset="paper").fit(X, y, TYPES).score(X)
     assert np.array_equal(p, p2)
     assert h.clone(seed=3).model_ is None
 
@@ -78,7 +78,7 @@ def test_fit_score_learns_signal_and_is_seed_deterministic():
 def test_single_class_returns_labels():
     X, _ = _frame()
     y = X["intent"].str.split().str[0].to_numpy()  # the class is determined by the intent
-    h = TabHead("single", preset="tmlr-runs", iterations=50).fit(X, y, {"intent": "text", "prior": "num"})
+    h = TabHead("single", preset="paper", iterations=50).fit(X, y, {"intent": "text", "prior": "num"})
     pred = h.score(X)
     assert set(pred) <= set(y) and (pred == y).mean() > 0.5
 
@@ -91,12 +91,27 @@ def test_custom_estimator_plugs_in():
     assert h.fit(X, y, TYPES).score(X).shape == (len(X),)
 
 
-def test_decode_ranking_ties_by_candidate_L448():
+def test_conflicting_or_unknown_settings_are_rejected():
+    from sklearn.linear_model import LogisticRegression
+
+    with pytest.raises(ValueError, match="estimator"):
+        TabHead("ranking", estimator=lambda s: LogisticRegression(), iterations=50)
+    with pytest.raises(ValueError, match="kind"):
+        TabHead("rank")
+
+
+def test_no_usable_feature_is_an_error_not_a_constant_column():
+    X = pd.DataFrame({"t": ["only", "words", "once", "here"]})  # min_df=2 leaves no vocabulary
+    with pytest.raises(ValueError, match="no usable feature"):
+        TabHead("ranking", iterations=10).fit(X, np.array([0, 1, 0, 1]), {"t": "text"})
+
+
+def test_decode_orders_tied_scores_by_candidate_id():
     out = decode("ranking", np.array([0.5, 0.5, 0.9]), ["d"] * 3, ["b", "a", "c"], k=2)
     assert out["candidate"].tolist() == ["c", "a"]
 
 
-def test_decode_multilabel_backoff_L2168():
+def test_decode_multilabel_backoff_appJ():
     out = decode("multilabel", np.array([0.2, 0.4, 0.9, 0.6]), ["d1", "d1", "d2", "d2"], ["a", "b", "a", "b"])
     assert out[out.decision == "d1"]["candidate"].tolist() == ["b"]
     assert out[out.decision == "d2"]["candidate"].tolist() == ["a", "b"]
@@ -109,7 +124,7 @@ def test_decode_policy_with_cost_penalty():
     assert out["candidate"].tolist() == ["small"]
 
 
-def test_confidence_margin_and_largest_gap_L2347():
+def test_confidence_margin_and_largest_gap_appN3():
     s = np.array([0.9, 0.8, 0.3, 0.2])
     ids, cands = ["d"] * 4, list("abcd")
     assert confidence(s, ids, cands, "largest_gap")["d"] == pytest.approx(0.5)

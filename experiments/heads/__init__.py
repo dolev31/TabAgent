@@ -1,13 +1,12 @@
-"""Alternative TabHead estimators for the head ablation (paper Fig. 3, ``fig:card_new``; App. ``head_alt``).
+"""Alternative TabHead estimators for the head ablation (paper Fig. 3; App. K.3).
 
 Every entry of ``HEADS`` is a ``seed -> classifier`` factory that plugs into ``TabHead(estimator=...)``.
 The classical heads consume the featurized card matrix (TF-IDF text, numeric, categorical codes); TabSTAR
 reads the raw card columns itself, so it is used with ``TabHead(featurize=False)`` (see ``make_head``).
 
-Hyperparameters are those of the pre-release head-ablation runs that produced Fig. 3 (E28): 300 trees of
-depth 6 at learning rate 0.08 for the boosted heads, 300 trees for the random forest, a 256-256 MLP and an
-L2 logistic regression on max-abs-scaled features. CatBoost follows a ``tabagent.tabhead.PRESETS`` entry
-(``tmlr-runs`` reproduces the figure; ``paper`` is the configuration stated in Sec. 4, L384).
+Hyperparameters: 300 trees of depth 6 at learning rate 0.08 for the boosted heads, 300 trees for the random
+forest, a 256-256 MLP and an L2 logistic regression on max-abs-scaled features. CatBoost follows a
+``tabagent.tabhead.PRESETS`` entry (default ``paper``, the configuration of paper Sec. 4.2).
 
 XGBoost, LightGBM and TabSTAR are optional: ``available()`` lists the heads whose packages import.
 """
@@ -67,7 +66,7 @@ def lightgbm(seed: int) -> Any:
     )
 
 
-def catboost(preset: str = "tmlr-runs", kind: str = "ranking") -> Factory:
+def catboost(preset: str = "paper", kind: str = "ranking") -> Factory:
     """The main-paper head (CatBoost) as a factory, so it runs through the same code path as the others."""
 
     def factory(seed: int) -> Any:
@@ -77,7 +76,7 @@ def catboost(preset: str = "tmlr-runs", kind: str = "ranking") -> Factory:
 
 
 def tabstar(**kwargs) -> Factory:
-    """TabSTAR with the paper's LoRA settings and the pre-release collapse-retry guard (``heads.tabstar``)."""
+    """TabSTAR with the paper's LoRA settings and a collapse-retry guard (``heads.tabstar``)."""
     from experiments.heads.tabstar import TabSTARHead
 
     def factory(seed: int) -> Any:
@@ -125,7 +124,7 @@ def featurizes(name: str) -> bool:
     return HEADS[name][1]
 
 
-def factory(name: str, *, preset: str = "tmlr-runs", kind: str = "ranking", **kwargs) -> Factory:
+def factory(name: str, *, preset: str = "paper", kind: str = "ranking", **kwargs) -> Factory:
     """The ``seed -> classifier`` factory of a head."""
     builder = HEADS[name][0]
     if name == "catboost":
@@ -135,7 +134,7 @@ def factory(name: str, *, preset: str = "tmlr-runs", kind: str = "ranking", **kw
     return builder
 
 
-def make_head(name: str, kind: str = "ranking", *, preset: str = "tmlr-runs", **kwargs) -> TabHead:
+def make_head(name: str, kind: str = "ranking", *, preset: str = "paper", **kwargs) -> TabHead:
     """A ``TabHead`` running estimator ``name`` (``featurize=False`` for heads that read raw columns)."""
     if not is_available(name):
         raise ImportError(f"head {name!r} needs the {HEADS[name][2]!r} package")

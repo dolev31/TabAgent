@@ -1,4 +1,4 @@
-"""TabSchema: behavior-grounded feature cards for an agent's closed-set decisions (paper Sec. 3.1, App. C).
+"""TabSchema: behavior-grounded feature cards for an agent's closed-set decisions (paper Sec. 3.1; App. D).
 
 ``TabSchema(llm).discover(trajectories, target)`` runs the paper's FeatureOrchestrator: FeatureAnalyzer,
 CodeExtractor/CodeExecutor (three retries), CodeValidator, FeatureAggregator, three judges and the MetaJudge,

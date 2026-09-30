@@ -1,5 +1,5 @@
-"""Per-decision latency and cost of a fitted TabAgent on a public card (paper Sec. 5 efficiency; App.
-``cost_efficiency``).
+"""Per-decision latency and cost of a fitted TabAgent on a public card (paper Sec. 5, "The swap is far
+cheaper"; App. F, Tables 15-16).
 
 Protocol (paper): one decision scores the full candidate set of one decision in a single pass; the head runs
 on CPU with four worker threads; latency is the mean over N decisions; cost is ``cost.c_cpu`` of that time.
@@ -7,7 +7,7 @@ Here TabAgent is fitted on four of the five pinned folds and timed on decisions 
 nested levels:
 
 model       CatBoost ``predict_proba`` on the decision's already featurized matrix: the classifier pass
-            alone (the quantity of the pre-release E43 measurement)
+            alone
 head        ``TabHead.score`` on the card's feature frame: TF-IDF, categorical and numeric encoding + model
 agent       ``TabAgent.score`` on the decision's raw, label-free rows: every card feature (lexical overlap,
             fitted priors, embedding similarity) + head. ``agent_cold`` is each decision's first call, which
@@ -19,11 +19,11 @@ the mean (the median and minimum are more robust). Threads are capped at ``--thr
 BLAS/OpenMP (threadpoolctl) and torch, so the cost formula's thread count is honest. The held-out P@R of
 the same fitted model is recorded so that a (latency, cost, quality) point can be placed on the Pareto plot.
 
-The paper's headline (2.682 ms per decision, about 48 candidates) is on private AppWorld data; the public
-analog closest in shape is tau2-bench tool shortlisting over the merged catalog (``tau2/all-domains``, 39
-candidates per decision).
+The paper's headline (2.682 ms per decision, about 48 candidates) was measured on the CUGA agent's AppWorld
+shortlisting trajectories, which are not released; the public analog closest in shape is tau2-bench tool
+shortlisting over the merged catalog (``tau2/all-domains``, 38 candidates per decision).
 
-    python -m experiments.efficiency.latency                                    # tau2/all-domains
+    python -m experiments.efficiency.latency --download                         # tau2/all-domains
     python -m experiments.efficiency.latency --datasets skillsbench/skill-select mind2web/element-150
 """
 
@@ -80,7 +80,7 @@ def fit_holdout(
     card: FeatureCard,
     folds: dict,
     *,
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     threads: int = 4,
     holdout_fold: int = 0,
     seed: int = 0,
@@ -188,18 +188,19 @@ def run(
     table: DecisionTable | None = None,
     card: FeatureCard | None = None,
     folds: dict | None = None,
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     threads: int = 4,
     n: int = 200,
     repeats: int = 5,
     warmup: int = 5,
     holdout_fold: int = 0,
+    download: bool = False,
     log: Callable[[str], None] = print,
 ) -> dict:
     """Fit, time and price one dataset; returns the JSON record."""
     from tabagent import datasets
 
-    table = table if table is not None else datasets.load(dataset)
+    table = table if table is not None else datasets.load(dataset, download=download)
     card = card if card is not None else datasets.card(dataset)
     folds = folds if folds is not None else datasets.folds(dataset)
     with thread_limit(threads):
@@ -236,12 +237,15 @@ def run(
 def main(argv: Sequence[str] | None = None) -> dict:
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--datasets", nargs="+", default=list(DEFAULT_DATASETS))
-    ap.add_argument("--presets", nargs="+", default=["tmlr-runs", "paper"], help="CatBoost presets to time")
+    ap.add_argument(
+        "--presets", nargs="+", default=["paper", "catboost-default"], help="CatBoost presets to time"
+    )
     ap.add_argument("--threads", type=int, default=cost.CPU["threads"])
     ap.add_argument("--n", type=int, default=200, help="timed decisions (capped by the held-out fold)")
     ap.add_argument("--repeats", type=int, default=5)
     ap.add_argument("--warmup", type=int, default=5)
     ap.add_argument("--holdout-fold", type=int, default=0)
+    ap.add_argument("--download", action="store_true", help="fetch upstream releases that are not cached")
     ap.add_argument("--out", type=Path, default=None, help="output directory (default results/efficiency)")
     a = ap.parse_args(argv)
     out = C.out_dir("efficiency", a.out)
@@ -259,6 +263,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
                 repeats=a.repeats,
                 warmup=a.warmup,
                 holdout_fold=a.holdout_fold,
+                download=a.download,
             )
             C.write_json(path, state)
     print("wrote", path)

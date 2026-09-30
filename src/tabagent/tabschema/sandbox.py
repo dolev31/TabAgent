@@ -1,4 +1,4 @@
-"""CodeExecutor backend: run LLM-written extraction code in an isolated interpreter (paper L306, L1210).
+"""CodeExecutor backend: run LLM-written extraction code in an isolated interpreter (Sec. 3.1; App. D.1).
 
 ``SubprocessSandbox`` executes the code in a fresh ``python -I -S`` process (isolated mode, no site
 packages, standard library only) in a temporary directory, with an empty environment (so the code cannot
@@ -42,6 +42,8 @@ for item in payload["items"]:
 
 @dataclass
 class ExecResult:
+    """The outcome of running extraction code on one trajectory: the features, or the traceback."""
+
     ok: bool
     features: dict[str, Any] | None = None
     error: str | None = None
@@ -62,11 +64,14 @@ def _limits(cpu_s: int, file_mb: int):
 
 
 class SubprocessSandbox:
+    """Runs extraction code in a fresh isolated interpreter (see the module docstring)."""
+
     def __init__(self, timeout_s: float = 30, cpu_s: int = 60, file_mb: int = 16, python: str | None = None):
         self.timeout_s, self.cpu_s, self.file_mb = timeout_s, cpu_s, file_mb
         self.python = python or sys.executable
 
     def run_batch(self, code: str, trajectories: list[dict[str, Any]]) -> list[ExecResult]:
+        """Run ``code`` once per trajectory in one interpreter; one ``ExecResult`` per trajectory."""
         payload = json.dumps({"code": code, "items": trajectories}, default=str)
         workdir = tempfile.mkdtemp(prefix="tabschema_")
         try:
@@ -92,6 +97,7 @@ class SubprocessSandbox:
         return results
 
     def run(self, code: str, trajectory: dict[str, Any]) -> ExecResult:
+        """Run ``code`` on one trajectory."""
         return self.run_batch(code, [trajectory])[0]
 
 

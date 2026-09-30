@@ -131,14 +131,17 @@ def _calls(msg: dict) -> list[Call]:
     return [c for c in (_call(tc) for tc in raw if isinstance(tc, dict)) if c]
 
 
-def _role(msg: dict) -> str:
+def message_role(msg: dict) -> str:
+    """The normalized role of a message (``system``, ``user``, ``assistant``, ``tool``), from its ``role`` or,
+    for LangChain dumps, its ``type`` or class name."""
     r = str(msg.get("role") or msg.get("type") or "").lower()
     r = r.removesuffix("messagechunk").removesuffix("message")  # LangChain class names (AIMessage, ...)
     return ROLES.get(r, r)
 
 
-def _unwrap(m: dict) -> dict:
-    """LangChain ``messages_to_dict`` (``{"type", "data"}``) and ``dumpd`` (``{"lc", "id", "kwargs"}``)."""
+def unwrap_message(m: dict) -> dict:
+    """A message as a flat dict, unwrapping LangChain ``messages_to_dict`` (``{"type", "data"}``) and
+    ``dumpd`` (``{"lc", "id", "kwargs"}``) serializations; other messages are returned unchanged."""
     if isinstance(m.get("kwargs"), dict) and m.get("lc") and isinstance(m.get("id"), list):
         return {**m["kwargs"], "type": str(m["id"][-1])}
     if isinstance(m.get("data"), dict) and "content" in m["data"] and "type" in m:
@@ -160,7 +163,7 @@ def _normalize(messages: Any, system: Any, max_chars: int | None) -> tuple[list[
     for m in messages if isinstance(messages, list) else []:
         if not isinstance(m, dict):
             continue
-        m = _unwrap(m)
+        m = unwrap_message(m)
         kind = m.get("type")
         if kind == "function_call":  # OpenAI Responses API: a call item joins the assistant turn before it
             c = _call(m)
@@ -175,7 +178,7 @@ def _normalize(messages: Any, system: Any, max_chars: int | None) -> tuple[list[
         if kind == "function_call_output":
             add("tool", m.get("output"), (), names.get(str(m.get("call_id", "")), ""))
             continue
-        role = _role(m)
+        role = message_role(m)
         if not role or kind == "reasoning":
             continue
         content = m.get("content")

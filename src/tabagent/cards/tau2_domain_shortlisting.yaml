@@ -79,5 +79,7 @@ synth:
   k: 4
 provenance:
   kind: hand-authored
-  paper: Table 1 (tau2-bench rows), App. B.2 (tab:taubench_new)
-  note: Request and candidate features only; the traces expose no agent-internal state (App. B.2).
+  paper: Table 1 (tau2-bench rows); App. B.2, Table 11
+  note: >-
+    Request and candidate features only, since the traces expose no agent-internal state (App. B.2). Every
+    data-dependent statistic is fitted inside the training fold.

@@ -1,4 +1,4 @@
-"""CugaAdapter on fabricated CUGA-shaped trajectories (the shortlister decision of convert2tabular)."""
+"""CugaAdapter on fabricated CUGA-shaped trajectories (the API shortlister decision)."""
 
 import json
 
@@ -58,9 +58,9 @@ def test_shortlister_prefix_labels_and_candidates(tmp_path):
     assert {c.id for c in adapter.candidates(second)} == set(API_DOCS["venmo"])
 
 
-def test_original_prompt_layout(tmp_path):
+def test_merged_system_and_human_prompt_layout(tmp_path):
     adapter = CugaAdapter()
-    trajs = {t.id: t for t in adapter.load(_logs(tmp_path, old_format=True))}
+    trajs = {t.id: t for t in adapter.load(_logs(tmp_path, merged_prompts=True))}
     first, second = adapter.decision_points(trajs["exp_1/t1"], SHORTLISTER)
     assert adapter.labels(first) == {"phone_search_contacts", "phone_show_text_messages"}
     assert {c.id for c in adapter.candidates(second)} == set(API_DOCS["venmo"])

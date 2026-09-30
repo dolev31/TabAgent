@@ -50,7 +50,8 @@ synth:
   k: 4
 provenance:
   kind: frozen
-  paper: Table 1 skill gating
-  note: Pre-release skills (core, one backbone) card. The pre-release build encoded the bundle text with the e5
-    query prefix and set skill_task_overlap to 0 on the without arm; here the bundle is a passage (as in skill selection)
-    and the fitted cosine is computed on both arms.
+  paper: Table 1 (skill gating); App. M, Table 20
+  note: >-
+    One decision per task over two arms, with and without the task's curated skill bundle. The bundle text
+    is encoded as a passage (as in skill selection), and the fitted task-bundle cosine is computed on both
+    arms.

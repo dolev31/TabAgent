@@ -84,3 +84,35 @@ def test_python_source(tmp_path, monkeypatch):
     card = FeatureCard("x", spec, [Feature("loud", "state", "cat", "python:myfeats:shout", {"col": "t"})])
     t = DecisionTable(pd.DataFrame({"g": [1], "t": ["hi"], "y": ["a"]}), spec)
     assert card.fit(t).transform(t)["loud"].tolist() == ["HI"]
+
+
+def test_python_sources_outside_tabagent_need_trust_code(tmp_path, monkeypatch):
+    mod = tmp_path / "myfeats.py"
+    mod.write_text("def shout(df, col):\n    return df[col].str.upper()\n")
+    monkeypatch.syspath_prepend(str(tmp_path))
+    spec = DecisionSpec("single", "g", "y")
+    card = FeatureCard("x", spec, [Feature("loud", "state", "cat", "python:myfeats:shout", {"col": "t"})])
+    path = card.save(tmp_path / "card")
+    with pytest.raises(PermissionError, match="myfeats"):
+        FeatureCard.load(path)
+    assert FeatureCard.load(path, trust_code=True).features[0].source == "python:myfeats:shout"
+    with pytest.raises(ValueError, match="python:<module>:<function>"):
+        FeatureCard.from_dict(
+            {
+                **card.to_dict(),
+                "features": [{"name": "f", "family": "state", "type": "num", "source": "python:nofunction"}],
+            }
+        )
+
+
+def test_tabagent_modules_are_always_allowed():
+    card = FeatureCard.load("llmrouterbench_model_routing")  # python:tabagent.datasets.llmrouterbench:...
+    assert any(f.source.startswith("python:tabagent.") for f in card.features)
+
+
+def test_card_text_columns():
+    from conftest import make_card
+
+    card = make_card()
+    assert card.context_text_columns() == ["intent"]
+    assert card.candidate_text_columns() == ["tool", "tool_desc"]

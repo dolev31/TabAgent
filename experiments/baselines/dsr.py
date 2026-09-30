@@ -1,22 +1,21 @@
-"""Dense semantic retrieval (DSR) baselines (paper L390-392; Table 1 columns DSR-ZS and DSR-FT).
+"""Dense semantic retrieval (DSR) baselines (paper Sec. 4.2; Table 1 columns DSR-ZS and DSR-FT).
 
 A bi-encoder scores every (decision context, candidate) row by the inner product of L2-normalized e5
 embeddings of the context ("query: " prefix) and the candidate text ("passage: " prefix), mean-pooled over
 tokens. The encoder is intfloat/e5-small-v2, the one TabHead's similarity features use.
 
 * DSR-ZS: the encoder as released. No training, no folds.
-* DSR-FT (Real): per fold, contrastive fine-tuning with LoRA on the training folds only. Each positive
-  (context, relevant candidate) pair is contrasted against the other passages of its batch (in-batch
-  negatives) and against mined hard negatives: non-relevant candidates of the same decision, drawn from the
-  ``hard_pool`` candidates the zero-shot encoder ranks highest. In-batch passages that are relevant to the
-  query (another relevant candidate of the same decision, or the same candidate text) are masked instead of
-  being counted as negatives. The held-out fold is scored by the adapted encoder.
+* DSR-FT (Real): per fold, contrastive fine-tuning with LoRA on the training folds only, then the held-out
+  fold is scored by the adapted encoder. Each positive (context, relevant candidate) pair is contrasted
+  against the other passages of its batch (in-batch negatives, as the paper describes).
 * DSR-FT (Real+synth): the same, with TabSynth paraphrases of the training contexts added as extra positive
-  pairs. The paraphrases are generated inside each training fold (paper Algorithm 1).
+  pairs. The paraphrases are generated inside each training fold (paper App. H, Algorithm 1).
 
-``RECIPES["legacy"]`` reproduces the pre-release scripts that produced the published DSR-FT numbers: in-batch
-negatives only, no false-negative masking. The paper text describes in-batch plus mined hard negatives,
-which is ``RECIPES["paper"]`` (the default).
+``RECIPES`` names the negatives: ``in-batch`` (the default, the paper's recipe) and ``hard-negatives``, which
+adds one mined hard negative per positive (a non-relevant candidate of the same decision, drawn from the
+``hard_pool`` candidates the zero-shot encoder ranks highest) and masks in-batch passages that are relevant
+to the query (another relevant candidate of the same decision, or the same candidate text) instead of
+counting them as negatives.
 
 Single-class decisions (Mind2Web operation) are scored as a ranking over the class names; see
 :func:`expand_classes`.
@@ -47,8 +46,7 @@ class DSRConfig:
     max_chars: int | None = 256  # each text is cut to this many characters before tokenization
     max_length: int = 512  # tokens
     encode_batch_size: int = 128
-    # fine-tuning (pre-release recipe: LoRA r=16, alpha=32 on query/value, AdamW 2e-4, 3 epochs, batch 32,
-    # temperature 0.05)
+    # fine-tuning: LoRA r=16, alpha=32 on query/value, AdamW 2e-4, 3 epochs, batch 32, temperature 0.05
     epochs: int = 3
     batch_size: int = 32
     lr: float = 2e-4
@@ -57,14 +55,14 @@ class DSRConfig:
     lora_alpha: int = 32
     lora_dropout: float = 0.05
     lora_targets: tuple[str, ...] = ("query", "value")
-    hard_negatives: int = 1  # mined hard negatives per positive pair (0: in-batch negatives only)
+    hard_negatives: int = 0  # mined hard negatives per positive pair (0: in-batch negatives only)
     hard_pool: int = 10  # mine among the top-k non-relevant candidates under the zero-shot encoder
-    mask_false_negatives: bool = True
+    mask_false_negatives: bool = False  # mask in-batch passages that are relevant to the query
 
 
 RECIPES: dict[str, DSRConfig] = {
-    "paper": DSRConfig(),
-    "legacy": DSRConfig(hard_negatives=0, mask_false_negatives=False),
+    "in-batch": DSRConfig(),
+    "hard-negatives": DSRConfig(hard_negatives=1, mask_false_negatives=True),
 }
 
 Loader = Callable[[], tuple]  # () -> (tokenizer, model)
@@ -222,7 +220,8 @@ def false_negatives(
 def contrastive_finetune(
     model, tok, pairs: list[Pair], relevant: dict[str, set[str]], cfg: DSRConfig, seed: int, device: str
 ) -> list[float]:
-    """Contrastive LoRA fine-tuning (InfoNCE over in-batch passages plus mined hard negatives)."""
+    """Contrastive LoRA fine-tuning (InfoNCE over the in-batch passages, plus mined hard negatives when the
+    config asks for them)."""
     import torch
 
     params = apply_lora(model, cfg.lora_targets, cfg.lora_r, cfg.lora_alpha, cfg.lora_dropout)
@@ -234,7 +233,7 @@ def contrastive_finetune(
         order = rng.permutation(len(pairs))
         for i in range(0, len(order), cfg.batch_size):
             batch = [pairs[j] for j in order[i : i + cfg.batch_size]]
-            if len(batch) < 2:  # a single pair has no in-batch negative (pre-release behavior)
+            if len(batch) < 2:  # a single pair has no in-batch negative
                 continue
             passages = [p.positive for p in batch]
             if cfg.hard_negatives:

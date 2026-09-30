@@ -1,4 +1,4 @@
-"""TabSchema's judge ensemble (paper L308, L1212-1218, App. C prompts L1422-1684).
+"""TabSchema's judge ensemble (paper Sec. 3.1; App. D.1; judge and MetaJudge prompts in App. D.3).
 
 Three judges score every aggregated feature on a 1-5 rubric along distinct quality dimensions (relevance,
 generality, impact and uniqueness) with a confidence and a justification. They are independent, so they run
@@ -22,6 +22,8 @@ DECISIONS = ("accept", "conditional", "reject")
 
 
 class Judge(Stage):
+    """One judge (``relevance``, ``generality`` or ``impact``): scores every feature on a 1-5 rubric."""
+
     def __init__(self, dimension: str, *args, **kw):
         super().__init__(*args, **kw)
         self.dimension, self.role = dimension, f"judge_{dimension}"
@@ -48,8 +50,8 @@ def run_judges(features: list[FeatureSpec], make_stage, workers: int = 3) -> dic
 
 def judge_table(verdicts: dict[str, list[dict]], analyzed: list[FeatureSpec]) -> list[dict[str, Any]]:
     """One row per feature with each judge's score, confidence, assessment, key factors, source,
-    computation and rationale (as in the original pipeline), joined with the analyzer's description,
-    classification relevance and support (L1218: the MetaJudge sees the analyzer's original view)."""
+    computation and rationale, joined with the analyzer's description, classification relevance and support,
+    so the MetaJudge also sees the analyzer's view of each feature (App. D.1)."""
     rows: dict[str, dict[str, Any]] = {}
     for dimension, items in verdicts.items():
         for feat in items:
@@ -78,15 +80,19 @@ def judge_table(verdicts: dict[str, list[dict]], analyzed: list[FeatureSpec]) ->
 
 
 def normalize_decision(value: Any) -> str:
+    """Map a MetaJudge outcome onto ``accept``, ``conditional`` or ``reject`` (App. D.1: accept, conditionally
+    accept or reject). Anything unrecognized counts as a rejection."""
     v = str(value or "").strip().lower()
     if v.startswith("accept"):
         return "accept"
-    if v.startswith(("conditional", "revise")):  # the paper's text names this outcome "revise" (L1218)
+    if v.startswith(("conditional", "revise")):
         return "conditional"
     return "reject"
 
 
 class MetaJudge(Stage):
+    """Reconciles the three judges' rows into one explained decision per feature."""
+
     role = "meta_judge"
 
     def __call__(self, verdicts: dict[str, list[dict]], table: list[dict[str, Any]]) -> list[dict[str, Any]]:

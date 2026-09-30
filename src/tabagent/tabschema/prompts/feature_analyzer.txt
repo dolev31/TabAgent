@@ -33,4 +33,3 @@ Return your analysis in this JSON format:
 }
 
 Focus on features that would actually help a model learn to make the same decisions as the original agents, and are obtained from the trajectory before the classification suitable component.
-${analyzer_hints}

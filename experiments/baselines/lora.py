@@ -1,9 +1,8 @@
 """A minimal LoRA (Hu et al., 2022), so the fine-tuned baselines need no ``peft``.
 
-It follows peft's defaults for the configurations the pre-release scripts used (``LoraConfig(r, lora_alpha,
-lora_dropout, target_modules)``): A is Kaiming-uniform (a = sqrt(5)), B is zero, the update is scaled by
-alpha / r, dropout is applied to the adapter input, and every base weight is frozen. Adapters are kept in
-float32 when the base model runs in bfloat16.
+It follows peft's defaults for ``LoraConfig(r, lora_alpha, lora_dropout, target_modules)``: A is
+Kaiming-uniform (a = sqrt(5)), B is zero, the update is scaled by alpha / r, dropout is applied to the adapter
+input, and every base weight is frozen. Adapters are kept in float32 when the base model runs in bfloat16.
 """
 
 from __future__ import annotations

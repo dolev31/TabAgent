@@ -60,7 +60,7 @@ def test_decision_points_are_truncated_and_redacted(tmp_path):
     assert "score" not in dp.prefix and "eval" not in dp.prefix and dp.prefix["intent"]
 
 
-def test_json_schema_matches_the_original_pipeline():
+def test_json_schema_golden_values():
     schema = get_json_schema({"a": {"b": 1}, "c": [{"d": "x"}], "e": [], "f": 2.5})
     assert schema == {
         "a": {"type": "dict", "properties": {"b": {"type": "int"}}},
@@ -96,16 +96,34 @@ def test_record_then_replay(tmp_path):
 
 def test_cost_meter_budget():
     meter = CostMeter(prices={"m": (1.0, 2.0)}, max_cost_usd=0.01)
+    meter.require_price("m")
     meter.record("analyzer", LLMResponse("x", "m", 1000, 1000))
     assert meter.total_usd == pytest.approx(0.003)
+    assert meter.describe("m") == "$0.00 (m; 1 calls, 1,000 input / 1,000 output tokens)"
     with pytest.raises(BudgetExceeded):
         meter.record("judges", LLMResponse("x", "m", 10_000, 10_000))
 
 
+def test_cost_meter_never_reports_an_unpriced_model_as_free():
+    meter = CostMeter()
+    meter.record("analyzer", LLMResponse("x", "gpt-x", 1000, 500))
+    assert not meter.priced and meter.summary()["total_usd"] is None
+    assert meter.summary()["input_tokens"] == 1000 and meter.summary()["output_tokens"] == 500
+    assert (
+        meter.describe("gpt-x")
+        == "cost unknown (no price for gpt-x; 1 calls, 1,000 input / 500 output tokens)"
+    )
+    with pytest.raises(ValueError, match="no price is known for model 'gpt-x'"):
+        CostMeter(max_cost_usd=5.0).require_price("gpt-x")
+    CostMeter().require_price("gpt-x")  # without a budget an unknown price is fine
+
+
 def test_auto_llm_needs_credentials(monkeypatch):
+    from tabagent.tabschema.llm import MissingCredentials
+
     for k in ("OPENAI_API_KEY", "ANTHROPIC_API_KEY", "GEMINI_API_KEY", "MISTRAL_API_KEY"):
         monkeypatch.delenv(k, raising=False)
-    with pytest.raises(RuntimeError, match="OPENAI_API_KEY"):
+    with pytest.raises(MissingCredentials, match="OPENAI_API_KEY"):
         auto_llm()
 
 
@@ -174,7 +192,6 @@ def test_prompts_render_every_placeholder():
             target_name="T",
             target_json="{}",
             trajectory_file="f.json",
-            analyzer_hints="",
         ),
         "code_extractor": dict(
             potential_features="[]",
@@ -226,10 +243,10 @@ def test_runstore_cache_is_thread_safe(tmp_path):
     assert not list((tmp_path / "r1" / "cache").rglob("*.tmp"))
 
 
-# Pinned hashes of the prompt files. The seven paper prompts reproduce App. C word for word (verified against
-# tabagent.tex); any edit must be deliberate and re-verified against the paper before updating a hash.
+# Pinned hashes of the prompt files. The seven paper prompts reproduce App. D.2-D.3 word for word (verified
+# against the paper); any edit must be deliberate and re-verified against the paper before updating a hash.
 PAPER_PROMPT_SHA256 = {
-    "feature_analyzer": "11233a14c78bbf9c7faaa163ef01b851b96abc7b87f0f5ebd964892f936a1eb6",
+    "feature_analyzer": "4acc8bb8e373377742fdd1bc18a60d82932e7d863c61e33076309c14bf51cea4",
     "code_extractor": "4216f68b43b8b5ed088b03d5596857cf2aaabdd9ba9806015d24cbd8e047c8d4",
     "feature_aggregator": "9e4adc4eb03385a3b2a4666ec8ebdbf774611126e2496ed24f8c237f6491728d",
     "judge_relevance": "f9a02d00f9b75077f9be05b02791f5e1b432b8b3ce61870761659b418673e788",

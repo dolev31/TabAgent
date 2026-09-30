@@ -9,7 +9,31 @@ from tabagent.datasets._core import Source, download
 def test_registry_lists_datasets_with_licenses():
     table = datasets.available()
     if not table.empty:
-        assert {"decision", "license", "redistribution", "paper"} <= set(table.columns)
+        assert {"kind", "decision", "license", "access", "redistribution", "paper"} <= set(table.columns)
+        assert set(table.index) == set(datasets.names())
+
+
+def test_registry_names_printed_paper_anchors():
+    import re
+
+    for name in datasets.names():
+        paper = datasets.info(name).paper
+        assert paper and not re.search(r"\b(tab|fig|app|sec):", paper), (name, paper)
+
+
+def test_skill_selection_uses_the_card_behind_the_paper_number():
+    from tabagent.tabschema import FeatureCard
+
+    assert datasets.card("skillsbench/skill-select").name == "skillsbench_skill_select_noprior"
+    prior = FeatureCard.load("skillsbench_skill_select")  # the variant stays loadable by name
+    assert "skill_global_freq" in prior.feature_names
+    assert prior.spec == datasets.card("skillsbench/skill-select").spec
+
+
+def test_access_names_how_the_data_is_obtained():
+    assert datasets.info("skillsbench/skill-select").access == "download"
+    assert datasets.info("llmrouterbench/tau2").access == "download (accept terms)"
+    assert datasets.info("appworld/subagent-routing").access == "local copy (APPWORLD_ROOT)"
 
 
 def test_unknown_dataset():

@@ -1,13 +1,14 @@
-"""Trajectories, decision points and the JSON utilities TabSchema's prompts are built on (paper App. C).
+"""Trajectories, decision points and the JSON utilities TabSchema's prompts are built on (paper App. D).
 
 TabSchema works on an agent's *native* logs: the extraction code it writes reads the agent's own logging
-schema, which only has to be stable across the onboarding pool (L306). A trajectory is a JSON object with a
-list of steps; each step names the component that produced it. A *decision point* is one occurrence of the
+schema, which only has to be stable across the onboarding pool (Sec. 3.1). A trajectory is a JSON object with
+a list of steps; each step names the component that produced it. A *decision point* is one occurrence of the
 component being replaced (for example ``ShortlisterAgent``) inside a successful trajectory.
 
-Pre-decision only (L1237, L1285) is enforced structurally: the ``prefix`` a decision point exposes is a copy
-of the trajectory truncated before the decision step, with post-hoc outcome fields (scores, evaluator
-results) removed. Extraction code never receives the decision step, later steps, or outcomes.
+Features use only what precedes the decision (App. D.2, FeatureAnalyzer and CodeExtractor prompts), and this
+is enforced structurally: the ``prefix`` a decision point exposes is a copy of the trajectory truncated
+before the decision step, with post-hoc outcome fields (scores, evaluator results) removed. Extraction code
+never receives the decision step, later steps, or outcomes.
 """
 
 from __future__ import annotations
@@ -32,6 +33,8 @@ class Candidate:
 
 @dataclass(frozen=True)
 class Trajectory:
+    """One agent run: its raw log, whether it succeeded, its task (group) and source file."""
+
     id: str
     raw: dict[str, Any]
     success: bool = True
@@ -41,6 +44,8 @@ class Trajectory:
 
 @dataclass(frozen=True)
 class DecisionPoint:
+    """One occurrence of the replaced component: the redacted prefix before it and the step itself."""
+
     trajectory_id: str
     step_index: int
     prefix: dict[str, Any] = field(repr=False)
@@ -50,6 +55,7 @@ class DecisionPoint:
 
     @property
     def id(self) -> str:
+        """``<trajectory id>#<step index>``."""
         return f"{self.trajectory_id}#{self.step_index}"
 
 
@@ -100,6 +106,8 @@ class GenericJsonAdapter:
         self._raw: dict[str, dict] = {}  # full trajectories, for labels (post-decision information)
 
     def load(self, path: str | Path) -> list[Trajectory]:
+        """Trajectories from one JSON file or every ``*.json`` of a directory. Files whose name contains
+        ``results`` or ``metadata`` (run summaries) and JSON without the steps key are skipped."""
         p = Path(path)
         files = sorted(p.glob("*.json")) if p.is_dir() else [p]
         out = []
@@ -114,6 +122,7 @@ class GenericJsonAdapter:
         return out
 
     def decision_points(self, traj: Trajectory, target: str) -> list[DecisionPoint]:
+        """Every step named ``target``, with its redacted prefix (see :func:`redact`)."""
         self._raw[traj.id] = traj.raw
         steps = traj.raw.get(self.steps_key, [])
         return [
@@ -144,12 +153,14 @@ class GenericJsonAdapter:
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
     def candidates(self, dp: DecisionPoint) -> list[Candidate]:
+        """The legal candidates of a decision point (from ``candidates_fn``)."""
         if self.candidates_fn is None:
             raise NotImplementedError("pass candidates_fn= to GenericJsonAdapter or use a dedicated adapter")
         return self.candidates_fn(dp)
 
     def labels(self, dp: DecisionPoint) -> set[str]:
-        """The chosen candidates, read from the *full* trajectory (e.g. the tools the successful run used)."""
+        """The chosen candidates, read from the *full* trajectory (e.g. the tools the successful run used).
+        Available for decision points produced by this adapter's ``decision_points``."""
         if self.labels_fn is None:
             raise NotImplementedError("pass labels_fn= to GenericJsonAdapter or use a dedicated adapter")
         return self.labels_fn(dp, self._raw[dp.trajectory_id])
@@ -157,7 +168,8 @@ class GenericJsonAdapter:
 
 # --------------------------------------------------------------------------- JSON utilities
 def get_json_schema(data: Any, path: str = "") -> Any:
-    """Schema of a JSON value, as given to the TabSchema prompts (identical to the original pipeline)."""
+    """Schema of a JSON value as the TabSchema prompts show it: nested ``{"type", "properties"}`` dicts,
+    with each list described by its first element."""
     if isinstance(data, dict):
         schema = {}
         for key, value in data.items():

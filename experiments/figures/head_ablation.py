@@ -1,4 +1,4 @@
-"""Fig. 3 (``fig:card_new``): the head ablation. Every head WITH the TabSchema card vs WITHOUT it.
+"""Fig. 3: the head ablation. Every head WITH the TabSchema card vs WITHOUT it (paper Sec. 5; App. K.3).
 
 On SkillsBench skill selection (87 tasks x 195 skills), each head is cross-validated on the paper's pinned
 task-level folds over three seeds, in two conditions:
@@ -8,17 +8,16 @@ WITH the card
     description, and the engineered lexical, embedding-similarity and prior features), fitted in-fold.
     Featurizing heads see the TabHead matrix (TF-IDF text, numeric, categorical codes); TabSTAR sees the
     card's feature frame directly.
-WITHOUT the card (as in the pre-release E28/E28b runs)
+WITHOUT the card
     featurizing heads get only raw embeddings: E5(task text) concatenated with E5(skill name + " — " +
     skill description), each block centered and renormalized (``RawEmbeddingModel``); TabSTAR gets only the
     raw text columns (task text, skill name, skill description), no engineered feature.
 
 The metric is P@R, averaged over decisions for each seed; the figure plots the mean and the population s.d.
-over seeds. One difference from the pre-release runs: the embedding centering is fitted on each training
-fold (the pre-release code centered on all tasks, a label-free transductive step).
+over seeds. The embedding centering of the WITHOUT condition is fitted on each training fold.
 
-    python -m experiments.figures.head_ablation                       # CPU heads, paper card, 3 seeds
-    python -m experiments.figures.head_ablation --cards paper skillsbench_skill_select_noprior
+    python -m experiments.figures.head_ablation --download            # CPU heads, registered card, 3 seeds
+    python -m experiments.figures.head_ablation --cards paper skillsbench_skill_select
     python -m experiments.figures.head_ablation --heads tabstar       # GPU recommended
     python -m experiments.figures.head_ablation --plot-only
 """
@@ -46,8 +45,8 @@ RAW_QUERY = ("task_text",)
 RAW_PASSAGE = ("skill_name", "skill_desc")
 RAW_SEP = " — "
 
-#: The values plotted in the paper's Fig. 3 (pre-release E28/E28b/E28c/E28d runs; P@R, mean and s.d. of
-#: seeds 0-2). Their card fitted the skill prior on a fixed split that overlaps the test folds.
+#: The values plotted in the paper's Fig. 3 (P@R, mean and s.d. over three seeds; see docs/reproducing.md for
+#: the card behind the WITH bars).
 PAPER_FIG3 = {
     "catboost": {"card": (0.7963, 0.0041), "nocard": (0.1925, 0.0051)},
     "histgbm": {"card": (0.7401, 0.0094), "nocard": (0.1429, 0.0012)},
@@ -144,7 +143,7 @@ def model_for(
     card: FeatureCard | None,
     base_card: FeatureCard,
     *,
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     encoder: str = "e5-small-v2",
     query: Sequence[str] = RAW_QUERY,
     passage: Sequence[str] = RAW_PASSAGE,
@@ -170,7 +169,7 @@ def run(
     table: DecisionTable | None = None,
     folds: dict | None = None,
     seeds: Sequence[int] = PAPER_SEEDS,
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     encoder: str = "e5-small-v2",
     query: Sequence[str] = RAW_QUERY,
     passage: Sequence[str] = RAW_PASSAGE,
@@ -178,6 +177,7 @@ def run(
     out: Path | None = None,
     force: bool = False,
     card_objects: Sequence[FeatureCard] | None = None,
+    download: bool = False,
     log: Callable[[str], None] = print,
 ) -> dict:
     """Run (or resume) the ablation grid; results are written after every cell."""
@@ -185,7 +185,7 @@ def run(
 
     out = C.out_dir("figures", out)
     path = out / "head_ablation.json"
-    table = table if table is not None else datasets.load(dataset)
+    table = table if table is not None else datasets.load(dataset, download=download)
     folds = folds if folds is not None else datasets.folds(dataset)
     loaded = list(card_objects) if card_objects is not None else [C.load_card(c, dataset) for c in cards]
     base = loaded[0]
@@ -318,12 +318,13 @@ def main(argv: Sequence[str] | None = None) -> dict:
         "--cards", nargs="+", default=["paper"], help="'paper' (registered card), names, or paths"
     )
     ap.add_argument("--seeds", nargs="+", type=int, default=list(PAPER_SEEDS))
-    ap.add_argument("--preset", default="tmlr-runs", help="CatBoost preset (tmlr-runs produced the figure)")
+    ap.add_argument("--preset", default="paper", help="CatBoost preset (default: the paper's configuration)")
     ap.add_argument("--encoder", default="e5-small-v2")
     ap.add_argument("--raw-query", nargs="+", default=list(RAW_QUERY))
     ap.add_argument("--raw-passage", nargs="+", default=list(RAW_PASSAGE))
     ap.add_argument("--out", type=Path, default=None, help="output directory (default results/figures)")
     ap.add_argument("--force", action="store_true", help="recompute cached cells")
+    ap.add_argument("--download", action="store_true", help="fetch upstream releases that are not cached")
     ap.add_argument("--plot-only", action="store_true")
     a = ap.parse_args(argv)
     out = C.out_dir("figures", a.out)
@@ -342,6 +343,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
             passage=a.raw_passage,
             out=out,
             force=a.force,
+            download=a.download,
         )
     print(comparison(state).round(4).to_string())
     for p in plot(state, out / "head_ablation"):

@@ -1,11 +1,11 @@
-"""Leakage suite: structural guarantees of the protocol (paper L443: every data-dependent stage is
+"""Leakage suite: structural guarantees of the protocol (paper Sec. 4.3: every data-dependent stage is
 fitted inside the training portion of each fold and never sees held-out tasks)."""
 
 import numpy as np
 import pandas as pd
 import pytest
 
-from tabagent import LeakageError, TabAgent, TabHead, cross_validate
+from tabagent import LeakageError, TabAgent, TabHead, TabSynth, cross_validate
 from tabagent.evaluation import assign_folds
 from tabagent.tabschema import Feature, FeatureCard
 
@@ -13,7 +13,7 @@ from conftest import make_card, make_table
 
 
 def agent():
-    return TabAgent(make_card(), head=TabHead("ranking", preset="tmlr-runs", iterations=60))
+    return TabAgent(make_card(), head=TabHead("ranking", preset="paper", iterations=60))
 
 
 def test_scrambling_test_labels_does_not_change_test_scores():
@@ -48,13 +48,42 @@ def test_fitted_features_only_see_training_groups():
             assert feat.seen_groups_ == set(train_groups), name
 
 
+class RecordingSynth(TabSynth):
+    """TabSynth that records, for every call, the groups it was given and the groups it paraphrased."""
+
+    calls: list = []
+
+    def augment(self, X, y, table=None, card=None):
+        out = super().augment(X, y, table, card)
+        RecordingSynth.calls.append((set(table.groups), set(self.source_groups_)))
+        return out
+
+
+def test_tabsynth_paraphrases_only_training_groups_in_every_fold():
+    table = make_table(40)
+    folds = assign_folds(table.groups, 4, 5)
+    RecordingSynth.calls = []
+    synth_agent = TabAgent(
+        make_card(), head=TabHead("ranking", preset="paper", iterations=20), synth=RecordingSynth(k=1)
+    )
+    cross_validate(synth_agent, table, folds=folds, seeds=(0, 1))
+    assert len(RecordingSynth.calls) == 4 * 2
+    held_out_sets = []
+    for train_groups, paraphrased in RecordingSynth.calls:
+        held_out = set(table.groups) - train_groups
+        assert paraphrased and paraphrased <= train_groups and not paraphrased & held_out
+        assert {folds[g] for g in held_out} == {folds[next(iter(held_out))]}  # exactly one held-out fold
+        held_out_sets.append(frozenset(held_out))
+    assert len(set(held_out_sets)) == 4  # every fold was held out once per seed
+
+
 def test_label_copy_tripwire():
     table = make_table(30)
     leaky = table.with_df(table.df.assign(was_used=table.df["used"].map({0: "no", 1: "yes"})))
     card = make_card()
     card = FeatureCard(card.name, card.spec, [*card.features, Feature("was_used", "state", "cat")])
     with pytest.raises(LeakageError, match="was_used"):
-        TabAgent(card, head=TabHead("ranking", preset="tmlr-runs", iterations=10)).fit(leaky)
+        TabAgent(card, head=TabHead("ranking", preset="paper", iterations=10)).fit(leaky)
 
 
 def test_models_never_receive_outcome_columns():

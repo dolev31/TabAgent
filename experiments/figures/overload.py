@@ -1,17 +1,18 @@
-"""Fig. 2 (``fig:overload_new``): resilience to candidate overload, by controlled candidate-set scaling.
+"""Fig. 2: resilience to candidate overload, by controlled candidate-set scaling.
 
-Protocol (pre-release E12v2, "controlled"): TabAgent is cross-validated once on the paper's pinned folds, and
-its out-of-fold scores are reused for every K, with no retraining. For each unit (a task) and each
-candidate-set size K, the slate is the unit's positives plus K negatives drawn without replacement from its
-own negatives, 30 times; P@R (precision of the top R, R = number of positives) and acc@1 are averaged over
-draws, then over units. The answer set is held fixed and only the number of distractors grows, so the
-curve measures overload rather than a change in task mix. Units with fewer than K negatives are skipped at
-that K (``n_units`` records how many remain). Ties are broken by candidate id, the paper's rule (L448).
+Protocol: TabAgent is cross-validated once on the paper's pinned folds, and its out-of-fold scores are reused
+for every K, with no retraining. For each unit (a task) and each candidate-set size K, the slate is the unit's
+positives plus K negatives drawn without replacement from its own negatives, 30 times; P@R (precision of the
+top R, R = number of positives) and acc@1 are averaged over draws, then over units. The answer set is held
+fixed and only the number of distractors grows, so the curve measures overload rather than a change in task
+mix. Units with fewer than K negatives are skipped at that K (``n_units`` records how many remain). Tied
+scores are ordered uniformly at random and each draw contributes its exact expected P@R and acc@1 (paper
+Sec. 4.3 and App. L).
 
 Units: SkillsBench skill selection uses its decisions (one per task, 195 candidates). For Mind2Web element
-selection the pre-release curve pooled every step of a task into one unit (``unit="task_uid"``; the positives
-are the task's target elements across steps), which is what allows K up to 200 although a single step has 50
-candidates; ``--unit decision`` scores per step instead (K <= 49).
+selection every step of a task is pooled into one unit (``unit="task_uid"``; the positives are the task's
+target elements across steps), which is what allows K up to 200 although a single step has 50 candidates;
+``--unit decision`` scores per step instead (K <= 49).
 
 The trend is a power law ``P@R = a K^b`` fitted by least squares in log-log space; R^2 is computed on the
 linear scale and the fit is projected to K = 400 and 800, as in the paper figure.
@@ -19,7 +20,7 @@ linear scale and the fit is projected to K = 400 and 800, as in the paper figure
 LLM curves (generative SFT, cross-encoder, few-shot; GPU) are produced by ``overload_llm`` with the same
 sampler and merged into the same JSON; this script runs them with ``--llm``.
 
-    python -m experiments.figures.overload                                   # SkillsBench, CPU
+    python -m experiments.figures.overload --download                        # SkillsBench, CPU
     python -m experiments.figures.overload --datasets skillsbench/skill-select mind2web/element
     python -m experiments.figures.overload --llm sft_gen fewshot cross_enc --dry-run
     python -m experiments.figures.overload --plot-only
@@ -56,9 +57,8 @@ SETTINGS = {
     },
 }
 
-#: The curves plotted in the paper's Fig. 2 (P@R by K). TabAgent: pre-release E12v2, whose K=150 and K=190
-#: SkillsBench points come from the figure script's defaults, not from the E12v2 result file. LLM curves:
-#: Llama-3.1-8B, pre-release E41 (generative SFT, 6 draws) and E42 (few-shot and cross-encoder, 30 draws).
+#: The curves plotted in the paper's Fig. 2 (P@R by K). LLM curves: Llama-3.1-8B-Instruct, 6 draws per K for
+#: generative SFT and 30 for the cross-encoder and few-shot regimes.
 PAPER_FIG2 = {
     "skillsbench/skill-select": {
         "tabagent": {
@@ -120,7 +120,7 @@ def tabagent_scores(
     card: FeatureCard,
     folds: dict,
     *,
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     seeds: Sequence[int] = (0,),
 ) -> pd.DataFrame:
     """Out-of-fold TabAgent scores, one column per seed (``cross_validate`` on the pinned folds)."""
@@ -129,24 +129,31 @@ def tabagent_scores(
 
 
 # --------------------------------------------------------------------------- controlled K sweep
+def expected_hits(scores: np.ndarray, labels: np.ndarray, top: int) -> float:
+    """Expected number of positives among the ``top`` highest scores when tied scores are ordered uniformly
+    at random: every positive above the cutoff score, plus the free slots times the positive share of the
+    candidates tied at the cutoff."""
+    cut = np.sort(scores)[::-1][top - 1]
+    above, tied = scores > cut, scores == cut
+    return float(labels[above].sum() + (top - above.sum()) * labels[tied].sum() / tied.sum())
+
+
 def simulate_k(
     frame: pd.DataFrame, ks: Sequence[int], reps: int = REPS, seed: int = SAMPLER_SEED
 ) -> dict[int, dict]:
     """Sweep the number of distractors K with the answer set fixed (see the module docstring)."""
-    codes = np.unique(frame["candidate"].to_numpy(), return_inverse=True)[1]  # tie-break order = id order
     units = []
     for _, idx in frame.groupby("unit", sort=True).indices.items():
         y = frame["y"].to_numpy()[idx]
         s = frame["score"].to_numpy(dtype=float)[idx]
-        c = codes[idx]
         pos, neg = y == 1, y == 0
         if pos.any() and neg.any():
-            units.append((s[pos], c[pos], s[neg], c[neg]))
+            units.append((s[pos], s[neg]))
     out: dict[int, dict] = {}
     for k in ks:
         rng = np.random.default_rng(seed)
         par, acc, chance = [], [], []
-        for ps, pc, ns, nc in units:
+        for ps, ns in units:
             if len(ns) < k:
                 continue
             r = len(ps)
@@ -154,10 +161,9 @@ def simulate_k(
             p_r, a_r = [], []
             for _ in range(reps):
                 pick = rng.choice(len(ns), k, replace=False)
-                order = np.lexsort((np.r_[pc, nc[pick]], -np.r_[ps, ns[pick]]))
-                ranked = lab[order]
-                p_r.append(ranked[:r].sum() / r)
-                a_r.append(ranked[0])
+                slate = np.r_[ps, ns[pick]]
+                p_r.append(expected_hits(slate, lab, r) / r)
+                a_r.append(expected_hits(slate, lab, 1))
             par.append(np.mean(p_r))
             acc.append(np.mean(a_r))
             chance.append(r / (r + k))
@@ -212,16 +218,17 @@ def run_tabagent(
     folds: dict | None = None,
     ks: Sequence[int] | None = None,
     unit: str | None = "default",
-    preset: str = "tmlr-runs",
+    preset: str = "paper",
     seeds: Sequence[int] = (0,),
     reps: int = REPS,
+    download: bool = False,
     log: Callable[[str], None] = print,
 ) -> dict:
     from tabagent import datasets
 
     ks = tuple(ks or default_ks(dataset))
     unit = resolve_unit(dataset, unit)
-    table = table if table is not None else datasets.load(dataset)
+    table = table if table is not None else datasets.load(dataset, download=download)
     card = card if card is not None else datasets.card(dataset)
     folds = folds if folds is not None else datasets.folds(dataset)
     t0 = time.time()
@@ -346,8 +353,8 @@ def main(argv: Sequence[str] | None = None) -> dict:
     ap.add_argument("--card", default=None, help="card name or path (default: the dataset's registered card)")
     ap.add_argument("--unit", choices=["default", "decision", "task_uid"], default="default")
     ap.add_argument("--ks", nargs="+", type=int, default=None)
-    ap.add_argument("--seeds", nargs="+", type=int, default=[0], help="model seeds (pre-release: 0)")
-    ap.add_argument("--preset", default="tmlr-runs")
+    ap.add_argument("--seeds", nargs="+", type=int, default=[0], help="model seeds (default: 0)")
+    ap.add_argument("--preset", default="paper")
     ap.add_argument("--reps", type=int, default=REPS)
     ap.add_argument("--llm", nargs="*", default=[], choices=list(L.REGIMES), help="also run LLM curves (GPU)")
     ap.add_argument("--llm-model", default="llama8b", choices=list(L.MODELS))
@@ -357,6 +364,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
     ap.add_argument("--dry-run", action="store_true", help="print the plan (sizes, prompt counts) and exit")
     ap.add_argument("--skip-tabagent", action="store_true", help="keep the cached TabAgent curve")
     ap.add_argument("--no-paper-reference", action="store_true")
+    ap.add_argument("--download", action="store_true", help="fetch upstream releases that are not cached")
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--plot-only", action="store_true")
     a = ap.parse_args(argv)
@@ -371,7 +379,7 @@ def main(argv: Sequence[str] | None = None) -> dict:
 
         for name in a.datasets:
             unit = resolve_unit(name, a.unit)
-            table = datasets.load(name)
+            table = datasets.load(name, download=a.download)
             ks = tuple(a.ks or default_ks(name))
             print(f"[dry-run] {name}: {len(table)} rows; TabAgent 5-fold x {len(a.seeds)} seed(s); K {ks}")
             for regime in a.llm:
@@ -386,11 +394,18 @@ def main(argv: Sequence[str] | None = None) -> dict:
             if not a.skip_tabagent:
                 card = C.load_card(a.card, name)
                 cur["tabagent"] = run_tabagent(
-                    name, card=card, ks=a.ks, unit=unit, preset=a.preset, seeds=a.seeds, reps=a.reps
+                    name,
+                    card=card,
+                    ks=a.ks,
+                    unit=unit,
+                    preset=a.preset,
+                    seeds=a.seeds,
+                    reps=a.reps,
+                    download=a.download,
                 )
                 C.write_json(path, state)
             for regime in a.llm:
-                table = datasets.load(name)
+                table = datasets.load(name, download=a.download)
                 ks = tuple(a.ks or default_ks(name))
                 cur[regime] = L.run(
                     table,

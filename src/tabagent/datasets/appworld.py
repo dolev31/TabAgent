@@ -1,4 +1,4 @@
-"""AppWorld sub-agent routing (paper Table 1, policy family; App. "AppWorld").
+"""AppWorld sub-agent routing (paper Table 1, policy family; App. B.1).
 
 AppWorld (trivedi2024appworld) publishes the experiment outputs of its baseline agent systems: four agent
 architectures (ReAct, plan-and-execute, full-code, function calling) over four LLM backbones, 14 systems in
@@ -6,7 +6,7 @@ all, each run on all 585 test tasks (168 test_normal and 417 test_challenge) and
 evaluator. This executed matrix is dense, so choosing a system per task is a policy decision. Each row is
 one (task, system) pair:
 
-  task_uid            group id (the trajectory-corpus id: a hash of the AppWorld task id)
+  task_uid            group id (``stable_uid`` of the AppWorld release and task id)
   task_id             AppWorld task id; scenario_id is its scenario (tasks ``<scenario>_1..3``)
   official_split      test_normal or test_challenge
   instruction         the task instruction, the only pre-decision context
@@ -100,14 +100,17 @@ def _backbone_family(backbone: str) -> str:
 
 
 def architecture(df: pd.DataFrame, col: str = "system_id") -> pd.Series:
+    """The agent architecture of a system id (react_code, plan_execute_code, full_code, function_calling)."""
     return df[col].map(_architecture)
 
 
 def backbone(df: pd.DataFrame, col: str = "system_id") -> pd.Series:
+    """The LLM backbone of a system id (gpt-4o, gpt-4-turbo, llama-3-70b, deepseek-coder-33b)."""
     return df[col].map(_backbone)
 
 
 def backbone_family(df: pd.DataFrame, col: str = "system_id") -> pd.Series:
+    """The backbone's provider family (openai, meta, deepseek)."""
     return df[col].map(lambda s: _backbone_family(_backbone(s)))
 
 
@@ -194,10 +197,11 @@ DATASETS: list[DatasetInfo] = [
         card="appworld_subagent_routing",
         folds="appworld_subagent_routing",
         decision="sub-agent routing (policy): route each AppWorld test task to one of 14 agent systems",
-        paper="Table 1, sub-agent routing: route@1 38 (best fixed system 36, chance 16, oracle 58)",
+        paper="Table 1 (sub-agent routing); App. B.1; App. M, Table 20",
         description=(
             "585 AppWorld test tasks x 14 official baseline systems (8,190 rows); label and reward = the "
             "run passed every evaluator test. Needs APPWORLD_ROOT (see tabagent.datasets.appworld)."
         ),
+        local_root_env="APPWORLD_ROOT",
     )
 ]

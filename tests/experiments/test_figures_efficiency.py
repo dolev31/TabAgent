@@ -6,27 +6,22 @@ No model download: the embedding features use the hashing encoder, and TabSTAR i
 from __future__ import annotations
 
 import json
-import sys
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import pytest
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from experiments import heads as H
+from experiments.efficiency import cost, latency, pareto
+from experiments.figures import head_ablation as HA
+from experiments.figures import overload as OV
+from experiments.figures import overload_llm as OL
+from experiments.heads.tabstar import TabSTARHead
+from tabagent import TabAgent, TabHead
+from tabagent.evaluation.cv import assign_folds
 
-from experiments import heads as H  # noqa: E402
-from experiments.efficiency import cost, latency, pareto  # noqa: E402
-from experiments.figures import head_ablation as HA  # noqa: E402
-from experiments.figures import overload as OV  # noqa: E402
-from experiments.figures import overload_llm as OL  # noqa: E402
-from experiments.heads.tabstar import TabSTARHead  # noqa: E402
-from tabagent import TabAgent, TabHead  # noqa: E402
-from tabagent.evaluation.cv import assign_folds  # noqa: E402
-
-from conftest import make_card, make_table  # noqa: E402
+from conftest import make_card, make_table
 
 RAW = {"query": ("intent",), "passage": ("tool", "tool_desc")}
 
@@ -48,7 +43,7 @@ def test_cpu_heads_available_and_fit_through_tabhead():
         s = head.score(X)
         assert s.shape == (120,) and s[y == 1].mean() > s[y == 0].mean()
     assert H.factory("histgbm")(3).random_state == 3
-    assert H.factory("catboost", preset="paper")(0).get_params()["iterations"] == 1000
+    assert H.factory("catboost")(0).get_params()["iterations"] == 300
 
 
 def test_unknown_or_missing_head(monkeypatch):
@@ -189,15 +184,23 @@ def test_simulate_k_perfect_inverted_and_skipped():
     assert OV.simulate_k(bad, ks=(5,), reps=5)[5]["p@r"] == 0.0
 
 
-def test_simulate_k_random_is_chance_and_ties_break_by_candidate_id():
+def test_simulate_k_random_is_chance_and_ties_are_scored_in_expectation():
     rng = np.random.default_rng(0)
     rand = _frame([list(rng.random(2)) for _ in range(1000)], [list(rng.random(60)) for _ in range(1000)])
     out = OV.simulate_k(rand, ks=(10,), reps=10)
     assert abs(out[10]["p@r"] - out[10]["chance_p@r"]) < 0.03
-    tied_first = _frame([[0.5]], [[0.5] * 5], pos_ids=["a"], neg_ids=[f"b{i}" for i in range(5)])
-    tied_last = _frame([[0.5]], [[0.5] * 5], pos_ids=["z"], neg_ids=[f"b{i}" for i in range(5)])
-    assert OV.simulate_k(tied_first, ks=(3,), reps=3)[3]["p@r"] == 1.0
-    assert OV.simulate_k(tied_last, ks=(3,), reps=3)[3]["p@r"] == 0.0
+    # every candidate tied: the expected P@R and acc@1 are chance, whatever the candidate ids
+    for pos_id in ("a", "z"):
+        tied = _frame([[0.5]], [[0.5] * 5], pos_ids=[pos_id], neg_ids=[f"b{i}" for i in range(5)])
+        res = OV.simulate_k(tied, ks=(3,), reps=3)[3]
+        assert res["p@r"] == res["acc@1"] == res["chance_p@r"] == 0.25
+
+
+def test_expected_hits_splits_the_free_slots_over_the_tied_candidates():
+    s, y = np.array([0.9, 0.5, 0.5, 0.1]), np.array([0, 1, 0, 0])
+    assert OV.expected_hits(s, y, 1) == 0.0
+    assert OV.expected_hits(s, y, 2) == 0.5  # one slot left for two tied candidates, one of them relevant
+    assert OV.expected_hits(s, y, 3) == 1.0
 
 
 def test_power_law_recovers_parameters():
@@ -242,12 +245,17 @@ def test_overload_llm_pure_helpers(toy):
 
 # --------------------------------------------------------------------------- cost, latency, Pareto
 def test_cost_formulas_reproduce_the_paper_table():
-    assert cost.c_cpu(2.682e-3) == pytest.approx(4 * 2.682e-3 / 3600 * 0.07)
-    assert cost.c_cpu(2.682e-3) == pytest.approx(2.0e-7, rel=0.05)  # paper: "about $2.0e-7"
+    assert cost.CPU["usd_per_vcpu_hour"] == 0.063  # App. C: r6i.xlarge, $0.252 per hour for 4 vCPU
+    assert cost.c_cpu(2.682e-3) == pytest.approx(4 * 2.682e-3 / 3600 * 0.063)
+    assert cost.c_cpu(2.682e-3) == pytest.approx(1.9e-7, rel=0.02)  # App. F: "approx. $1.9e-7"
     assert cost.c_local(3600) == pytest.approx(0.25 * 1.4 * 0.20 + 0.20)
-    for row in cost.check_paper_table():
+    rows = {r["method"]: r for r in cost.check_paper_table()}
+    assert "Qwen2.5-7B-Instruct" in rows and len(rows) == 6  # the rows of Table 15
+    for row in rows.values():
         if row["pricing"] == "api":
             assert row["recomputed_usd"] is None
+        elif row["pricing"] == "cpu":  # Table 15 rounds 1.9e-7 up to 2.0e-7
+            assert row["recomputed_usd"] <= row["reported_usd"] < 1.1 * row["recomputed_usd"], row
         else:
             assert abs(row["rel_diff"]) < 0.05, row
 
@@ -288,13 +296,13 @@ def test_pareto_front_points_and_plot(tmp_path):
         P("bad", 0, 1e-7, 0.5)
     rec = {
         "dataset": "toy",
-        "preset": "tmlr-runs",
+        "preset": "paper",
         "candidates_per_decision": {"mean": 8},
         "levels": {"model": {"mean_ms": 1.5, "usd_per_decision": 1.7e-9}},
         "quality_holdout_fold": {"p@r": 0.7},
     }
     path = tmp_path / "latency.json"
-    path.write_text(json.dumps({"runs": {"toy|tmlr-runs": rec}}))
+    path.write_text(json.dumps({"runs": {"toy|paper": rec}}))
     [pt] = pareto.points_from_latency(path)
     assert pt.kind == "tabagent" and pt.latency_ms == 1.5 and pt.quality == 0.7
     paths = pareto.plot([*pareto.PAPER_POINTS, pt], tmp_path / "pareto")

@@ -1,6 +1,7 @@
 """Evaluation protocol: paper metrics, task-grouped cross-validation, and bootstrap intervals."""
 
 from tabagent.evaluation.cv import (
+    DEFAULT_SEED,
     PAPER_SEEDS,
     CVResult,
     assign_folds,
@@ -14,6 +15,7 @@ from tabagent.evaluation.metrics import normalized, per_decision
 from tabagent.evaluation.stats import Interval, bootstrap_ci, holm, paired_bootstrap
 
 __all__ = [
+    "DEFAULT_SEED",
     "PAPER_SEEDS",
     "CVResult",
     "Interval",

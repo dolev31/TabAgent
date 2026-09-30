@@ -1,4 +1,7 @@
-"""Train on one agent's traces, deploy on another's (paper Table 2): τ²-bench, 67-tool catalog."""
+"""Train on one agent's traces, deploy on another's (paper Table 2): τ²-bench, 67-tool catalog.
+
+On first run the official τ²-bench trajectory release is downloaded once (about 600 MB, SHA-256 verified).
+"""
 
 from tabagent import TabAgent, TabHead, datasets
 from tabagent.evaluation import metrics

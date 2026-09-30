@@ -1,8 +1,9 @@
-"""τ²-bench four-agent studies (paper Table 2, trajectory efficiency, and the name-only rename row).
+"""τ²-bench four-agent studies: cross-agent transfer (paper Table 2), trajectory efficiency (App. F.1,
+Table 17) and the rename row of App. N.4 (Table 21, τ² row).
 
-    python experiments/tau2_studies.py --study transfer      # Table 2: train on one agent, test on another
-    python experiments/tau2_studies.py --study efficiency    # N* to 90% of full-pool P@R (App. traj_per_tool)
-    python experiments/tau2_studies.py --study rename        # names hashed at test time, prior carried
+    python -m experiments.tau2_studies --study transfer --download  # Table 2: cross-agent transfer
+    python -m experiments.tau2_studies --study efficiency           # N* to 90% of full-pool P@R (Table 17)
+    python -m experiments.tau2_studies --study rename               # names hashed at test time, prior kept
 
 Protocol: the pinned 594-task folds shared by the four agents, CatBoost TabHead, every fold-level statistic
 fitted inside the training subsample. Results go to results/tau2_studies.json.
@@ -32,8 +33,8 @@ PAPER_SEEDS = (20260720, 20260726, 20260727)
 GRID = (4, 8, 16, 32, 64, 128, 256)
 
 
-def load():
-    tables = {a: datasets.load(n) for a, n in AGENTS.items()}
+def load(download: bool = False):
+    tables = {a: datasets.load(n, download=download) for a, n in AGENTS.items()}
     first = next(iter(AGENTS.values()))
     return tables, datasets.card(first), datasets.folds(first)
 
@@ -191,12 +192,17 @@ def rename(seeds, preset) -> dict:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--study", choices=["transfer", "efficiency", "rename", "all"], default="all")
-    ap.add_argument("--seeds", nargs="*", type=int)
-    ap.add_argument("--preset", default="tmlr-runs", choices=["paper", "tmlr-runs"])
+    ap.add_argument(
+        "--seeds", nargs="*", type=int, help="default: the paper's seeds (ten seeds for efficiency)"
+    )
+    ap.add_argument("--preset", default="paper", choices=["paper", "catboost-default"])
+    ap.add_argument("--download", action="store_true", help="fetch the τ²-bench release if not cached")
     ap.add_argument("--out", default="results")
     args = ap.parse_args()
+    if args.download:
+        load(download=True)  # every study reads the cached tables afterwards
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     path = out / "tau2_studies.json"

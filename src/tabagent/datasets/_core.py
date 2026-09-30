@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import shutil
 import tempfile
@@ -25,14 +26,15 @@ from typing import Any
 
 import pandas as pd
 
+from tabagent.defaults import cache_root
+
+logger = logging.getLogger(__name__)
+
 USER_AGENT = "tabagent-datasets/1"
 
 
-def cache_root() -> Path:
-    return Path(os.environ.get("TABAGENT_CACHE", Path.home() / ".cache" / "tabagent"))
-
-
 def sha256_file(path: Path) -> str:
+    """SHA-256 of a file, read in 1 MB chunks."""
     h = hashlib.sha256()
     with open(path, "rb") as f:
         for chunk in iter(lambda: f.read(1 << 20), b""):
@@ -41,15 +43,19 @@ def sha256_file(path: Path) -> str:
 
 
 def download(url: str, dest: Path, sha256: str | None = None, timeout: int = 300) -> Path:
-    """Atomic download with optional SHA-256 verification."""
+    """Atomic download with optional SHA-256 verification (a partial or mismatching file is never kept)."""
     dest.parent.mkdir(parents=True, exist_ok=True)
+    logger.info("downloading %s", url)
     req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with (
-        tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as tmp,
-        urllib.request.urlopen(req, timeout=timeout) as resp,
-    ):
-        shutil.copyfileobj(resp, tmp)
-    tmp_path = Path(tmp.name)
+    with tempfile.NamedTemporaryFile(dir=dest.parent, delete=False) as tmp:
+        tmp_path = Path(tmp.name)
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                shutil.copyfileobj(resp, tmp)
+        except BaseException:
+            tmp.close()
+            tmp_path.unlink(missing_ok=True)
+            raise
     if sha256 and sha256_file(tmp_path) != sha256:
         tmp_path.unlink(missing_ok=True)
         raise ValueError(f"checksum mismatch for {url}")
@@ -70,7 +76,7 @@ class Source:
     revision: str
     release_id: str
     license: str
-    redistribution: str  # redistributable | access_restricted | unresolved
+    redistribution: str  # redistributable | access_restricted
     citation: str
     notes: str = ""
 
@@ -83,6 +89,7 @@ class Source:
         return {f["path"]: f for f in json.loads(res.read_text())["files"]}
 
     def local_dir(self) -> Path:
+        """The cache directory of this release's files."""
         return cache_root() / "sources" / self.id / self.release_id / "files"
 
     def path(self, rel: str, download: bool = False) -> Path:
@@ -106,12 +113,20 @@ class Source:
         return _fetch(entry["url"], p, entry.get("sha256"))
 
     def files(self, prefix: str = "") -> list[str]:
+        """The release paths under ``prefix`` recorded in the manifest."""
         return sorted(p for p in self.manifest if p.startswith(prefix))
 
 
 @dataclass(frozen=True)
 class DatasetInfo:
-    """One decision table TabAgent can build from a source."""
+    """One decision table TabAgent can build from a source.
+
+    ``card`` names the bundled card the paper result uses, ``folds`` the bundled fold file of the paper's
+    split, ``paper`` the printed tables and figures the dataset backs. ``requires_license_acceptance``
+    datasets need ``accept_license=True``; ``local_root_env`` names the environment variable pointing at
+    data that must be obtained outside TabAgent (AppWorld). ``version`` changes whenever the builder's
+    output does, so cached tables are rebuilt.
+    """
 
     name: str
     source: Source
@@ -123,4 +138,13 @@ class DatasetInfo:
     description: str = ""
     args: dict[str, Any] = field(default_factory=dict)
     requires_license_acceptance: bool = False
-    version: int = 1  # bump when the builder's output changes, so cached tables are rebuilt
+    version: int = 1
+    local_root_env: str | None = None
+
+    @property
+    def access(self) -> str:
+        """How the data is obtained: ``download``, ``download (accept terms)`` (needs ``accept_license=True``)
+        or ``local copy (<ENV>)``."""
+        if self.local_root_env:
+            return f"local copy ({self.local_root_env})"
+        return "download (accept terms)" if self.requires_license_acceptance else "download"

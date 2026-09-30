@@ -69,7 +69,7 @@ def read_json(path: str | Path) -> dict:
 
 
 def load_card(name_or_path: str | None, dataset: str):
-    """The dataset's registered (paper) card when ``name_or_path`` is None, else a bundled name or a path."""
+    """The dataset's registered card for None or "paper", else a bundled card name or a path."""
     from tabagent import datasets
     from tabagent.tabschema.card import FeatureCard
 
@@ -87,7 +87,7 @@ def per_seed(result, metric: str = "p@r", **kw) -> list[float]:
 
 
 def summarize(values: list[float]) -> dict[str, Any]:
-    """Mean and population s.d. (ddof=0, as the pre-release figure scripts) of per-seed scores."""
+    """Mean and population s.d. (ddof=0) of per-seed scores."""
     v = np.asarray(values, dtype=float)
     return {
         "seeds": [round(float(x), 4) for x in v],

@@ -46,7 +46,8 @@ synth:
   k: 2
 provenance:
   kind: frozen
-  paper: Table 1 skill selection (recommended card)
-  note: 'skillsbench_skill_select without the candidate prior. 180 of the 195 skills occur in a single bundle, so
-    a prior fitted in-fold is 0 for a held-out task''s own skills and positive for other tasks'' skills. CatBoost
-    (tmlr-runs), 5 pinned folds, paper seeds: P@R 0.796 without the prior, 0.727 with it.'
+  paper: Table 1 (skill selection); App. M, Table 20
+  note: >-
+    The task instruction, the skill's name and SKILL.md opening, and task-skill lexical and embedding
+    similarity (the embedding centering fitted inside the training folds). With CatBoost (paper preset), the
+    pinned folds and the paper's seeds it gives P@R 0.796 (App. M, Table 20).

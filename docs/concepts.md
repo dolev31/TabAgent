@@ -9,10 +9,14 @@ are behavior-grounded features, and its label says whether the agent's successfu
 
 | kind | examples | decoding | metric |
 |---|---|---|---|
-| `ranking` | tool, skill, API, GUI-element shortlisting | top-k by score, ties by candidate id | P@R (R-precision), Recall@k |
+| `ranking` | tool, skill, API, GUI-element shortlisting | top-k by score | P@R (R-precision), Recall@k |
 | `multilabel` | application selection | score ≥ threshold, back off to the best one | example-based precision / recall / F1 |
 | `single` | operation type, task category | argmax class | accuracy, macro-F1 |
 | `policy` | model routing, sub-agent routing, skill gating | argmax predicted success (optionally cost-aware) | route@1 = reward of the chosen arm |
+
+When a method gives several candidates the same score, the metrics order the tied candidates uniformly at
+random and report the exact expected value, for every method (paper Sec. 4.3 and App. L); a deployed head
+breaks ties by candidate id so that its decisions are deterministic.
 
 ## The decision table
 
@@ -27,7 +31,7 @@ Outcome columns (label, reward, eval) can never be features, and models score *l
 
 ## Leakage safety by construction
 
-The paper requires every data-dependent stage to be fitted inside the training portion of each fold (L443).
+The paper requires every data-dependent stage to be fitted inside the training portion of each fold (Sec. 4.3).
 In TabAgent that is structural, not a convention:
 
 * `cross_validate` is the only code that decides what is training data; for every fold and seed it clones the
@@ -44,5 +48,6 @@ not transductive; fitted statistics only see training groups).
 ## The protocol
 
 5-fold task-level cross-validation (the paper's folds are bundled with each public dataset), three seeds
-(20260720, 20260726, 20260727), macro average over decisions, 95% bootstrap intervals, and paired task-level
-bootstraps with 2,000 resamples for comparisons (an improvement is claimed only when the interval excludes 0).
+(20260720, 20260726, 20260727), macro average over tasks (over steps for Mind2Web element selection), 95%
+bootstrap intervals, and paired task-level bootstraps with 2,000 resamples for comparisons (an improvement is
+claimed only when the interval excludes 0; paper App. M).

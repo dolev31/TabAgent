@@ -1,8 +1,9 @@
 import numpy as np
+import pytest
 
 from tabagent import TabAgent, TabAgentRanker, TabHead
 from tabagent.baselines import bm25
-from tabagent.report import evaluate
+from tabagent.report import VCPU_HOUR_USD, cpu_cost_usd, evaluate
 
 from conftest import make_card, make_table
 
@@ -19,7 +20,7 @@ def test_bm25_prefers_lexically_matching_candidates():
 
 def test_evaluate_ranking_report(tmp_path):
     t = make_table(40)
-    agent = TabAgent(make_card(), head=TabHead("ranking", preset="tmlr-runs", iterations=40))
+    agent = TabAgent(make_card(), head=TabHead("ranking", preset="paper", iterations=40))
     rep = evaluate(agent, t, n_splits=4, llm_cost_per_call=0.05)
     assert {"TabAgent", "chance", "BM25"} <= set(rep.results.index)
     assert rep.latency_ms > 0 and rep.cost_per_decision_usd < 1e-4
@@ -38,3 +39,18 @@ def test_estimator_report():
     ).fit(X, y)
     rep = r.report(X, y, n_splits=4)
     assert "TabAgent" in rep.results.index and any("recipe" in n for n in rep.notes)
+
+
+def test_cpu_cost_is_the_papers_per_decision_cost():
+    assert pytest.approx(0.252 / 4) == VCPU_HOUR_USD  # r6i.xlarge: $0.252 per hour for 4 vCPU (App. C, F)
+    cost = cpu_cost_usd(2.682)  # the paper's 2.682 ms on 4 threads (App. F)
+    assert cost == pytest.approx(1.88e-7, rel=0.01) and round(cost, 7) <= 2.0e-7
+
+
+def test_importance_is_skipped_with_a_warning_for_non_catboost_heads():
+    from sklearn.linear_model import LogisticRegression
+
+    head = TabHead("ranking", estimator=lambda s: LogisticRegression(max_iter=300))
+    with pytest.warns(UserWarning, match="CatBoost head only"):
+        rep = evaluate(TabAgent(make_card(), head=head), make_table(20), n_splits=3, baselines=False)
+    assert rep.importance is None

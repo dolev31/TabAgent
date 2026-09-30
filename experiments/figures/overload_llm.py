@@ -1,7 +1,7 @@
 """The LLM curves of Fig. 2 (GPU): generative SFT, cross-encoder and few-shot, on the controlled K sweep.
 
-Ported from the pre-release E41 (generative SFT) and E42 (few-shot and cross-encoder) runs; the curves in the
-paper are Llama-3.1-8B-Instruct. All three use the task-grouped pinned folds and the units of ``overload``.
+The regimes run Llama-3.1-8B-Instruct by default (``--llm-model llama8b``, the model of the LLM curves in
+``overload.PAPER_FIG2``). All three use the task-grouped pinned folds and the units of ``overload``.
 
 sft_gen
     LoRA supervised fine-tuning (r 16, alpha 32, dropout 0.05 on q/v projections, AdamW lr 2e-4, 3 epochs,
@@ -14,8 +14,8 @@ cross_enc
     LoRA sequence classifier (same adapter, 2 epochs, batch 16, positive-class weighting) over (task,
     candidate) pairs, trained per fold; its out-of-fold scores go through ``overload.simulate_k``.
 fewshot
-    Pointwise p(yes) of the instruction-tuned model for "is this candidate relevant to the task?". As in the
-    pre-release run the prompt carries no demonstrations (zero-shot yes/no scoring), whatever the name.
+    Pointwise p(yes) of the instruction-tuned model for "is this candidate relevant to the task?". The prompt
+    carries no demonstrations (zero-shot yes/no scoring), whatever the name.
 
 Needs ``torch``, ``transformers`` and ``peft`` and, in practice, a CUDA GPU. ``plan`` (the ``--dry-run`` of
 ``overload``) needs none of them.

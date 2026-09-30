@@ -1,9 +1,9 @@
-"""Task-grouped cross-validation (paper Sec. 4.3, L443-445; App. E, L2292).
+"""Task-grouped cross-validation (paper Sec. 4.3; App. M).
 
 Five folds at the task level: every row, synthetic row and feature statistic derived from a task stays
 in one fold, and every data-dependent stage is fitted inside the training portion of each fold. Folds can
-be stratified by application or domain and by deciles of |G(t)|. Stochastic methods run over three seeds
-and task-level scores are averaged over seeds before any interval is computed.
+be stratified by application or domain and by deciles of |G(t)|. Models run over the paper's three seeds
+(``PAPER_SEEDS``) and task-level scores are averaged over seeds before any interval is computed.
 
 ``cross_validate`` is the only place in the library that decides what is training data: for every fold
 and seed it clones the model, fits it on the training groups, and scores the held-out groups through a
@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from collections.abc import Hashable, Iterable, Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -22,16 +23,17 @@ from typing import Protocol
 import numpy as np
 import pandas as pd
 
+from tabagent.defaults import DEFAULT_SEED, PAPER_SEEDS
 from tabagent.evaluation import metrics as M
 from tabagent.evaluation import stats as S
 from tabagent.table import DecisionTable
 
-PAPER_SEEDS = (20260720, 20260726, 20260727)
-FOLD_SEED = 20260720
+logger = logging.getLogger(__name__)
 
 
 def stable_uid(prefix: str, *parts: object) -> str:
-    """Deterministic id from parts (identical to the trajectory-corpus builder)."""
+    """Deterministic id: ``<prefix>_`` and the first 24 hex digits of the SHA-256 of the parts joined by
+    U+001F. The dataset builders key tasks and trajectories by these ids, as do the pinned fold files."""
     payload = "\x1f".join(str(part) for part in parts)
     return f"{prefix}_{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24]}"
 
@@ -40,23 +42,17 @@ def stable_uid(prefix: str, *parts: object) -> str:
 def assign_folds(
     groups: Iterable[Hashable],
     n_splits: int = 5,
-    seed: int = FOLD_SEED,
+    seed: int = DEFAULT_SEED,
     strata: Mapping[Hashable, Hashable] | None = None,
-    order: str = "sorted",
 ) -> dict:
     """Map each unique group to a fold in ``range(n_splits)``.
 
-    Without ``strata`` the unique groups are shuffled with ``default_rng(seed)`` and dealt round-robin;
-    with ``order="appearance"`` this is identical to the pre-release ``groupkfold``. ``order="sorted"``
-    (default) sorts the groups first, so folds do not depend on row order. With ``strata`` the groups of
-    each stratum are shuffled and dealt round-robin, continuing the deal across strata, so each fold gets
-    a near-equal share of every stratum (the paper's stratification by application and |G(t)| decile).
+    The unique groups are sorted (so folds do not depend on row order), shuffled with ``default_rng(seed)``
+    and dealt round-robin. With ``strata`` the groups of each stratum are shuffled and dealt round-robin,
+    continuing the deal across strata, so each fold gets a near-equal share of every stratum (the paper's
+    stratification by application and |G(t)| decile).
     """
-    uniq = list(dict.fromkeys(groups))
-    if order == "sorted":
-        uniq = sorted(uniq, key=str)
-    elif order != "appearance":
-        raise ValueError("order must be 'sorted' or 'appearance'")
+    uniq = sorted(dict.fromkeys(groups), key=str)
     rng = np.random.default_rng(seed)
     if strata is None:
         rng.shuffle(uniq)
@@ -91,6 +87,7 @@ def paper_strata(table: DecisionTable, by: str | None = None, size_deciles: bool
 
 
 def save_folds(path: str | Path, folds: Mapping, group_col: str) -> None:
+    """Write a fold file: ``{"group_col": ..., "by_group": {group: fold}}`` (see :func:`load_folds`)."""
     by_group = {str(g): int(f) for g, f in folds.items()}
     Path(path).write_text(
         json.dumps({"group_col": group_col, "by_group": by_group}, indent=0, sort_keys=True)
@@ -98,7 +95,7 @@ def save_folds(path: str | Path, folds: Mapping, group_col: str) -> None:
 
 
 def load_folds(path: str | Path) -> dict:
-    """Read a fold file (``{"group_col": ..., "by_group": {group: fold}}``, the pre-release format)."""
+    """Read a fold file written by :func:`save_folds` (the format of the bundled paper folds)."""
     return {g: int(f) for g, f in json.loads(Path(path).read_text())["by_group"].items()}
 
 
@@ -125,6 +122,7 @@ class CVResult:
 
     @property
     def seeds(self) -> list:
+        """The model seeds, one ``oof`` column each."""
         return list(self.oof.columns)
 
     def _groups_of(self, decisions: pd.Index) -> pd.Series:
@@ -142,10 +140,13 @@ class CVResult:
         return d.groupby(self._groups_of(d.index).to_numpy()).mean().rename(metric)
 
     def ci(self, metric: str, level: str = "group", **kw) -> S.Interval:
+        """Bootstrap interval of the metric's mean over tasks (``level="group"``) or decisions; ``kw`` go to
+        :func:`tabagent.evaluation.stats.bootstrap_ci`."""
         values = self.per_group(metric) if level == "group" else self.per_decision(metric)
         return S.bootstrap_ci(values.to_numpy(), **kw)
 
     def summary(self, metrics: Iterable[str] = ("p@r",), level: str = "group", **kw) -> pd.DataFrame:
+        """One row per metric: estimate, 95% interval bounds and the number of resampled units."""
         rows = []
         for m in metrics:
             iv = self.ci(m, level=level, **kw)
@@ -166,15 +167,30 @@ def cross_validate(
     *,
     folds: Mapping | None = None,
     n_splits: int = 5,
-    fold_seed: int = FOLD_SEED,
-    seeds: Iterable[int] = (0, 1, 2),
+    fold_seed: int = DEFAULT_SEED,
+    seeds: Iterable[int] = PAPER_SEEDS,
     stratify: bool | str = False,
 ) -> CVResult:
-    """Grouped K-fold out-of-fold scoring.
+    """Grouped K-fold out-of-fold scoring of ``model`` on ``table`` (paper Sec. 4.3; App. M).
 
-    ``folds`` pins a group->fold map (use this to reproduce published numbers); otherwise folds are
-    assigned with ``fold_seed``, optionally stratified (``stratify=True`` uses ``spec.strata`` and |G(t)|
-    deciles; a column name overrides the stratum column). ``seeds`` seed the model, not the folds.
+    For every seed and fold the model is cloned with that seed, fitted on the training groups and scored on
+    a label-free view of the held-out groups.
+
+    Parameters
+    ----------
+    model: anything with ``clone(seed)``, ``fit(table)`` and ``score(table)``, such as a ``TabAgent``.
+    table: the labeled decision table.
+    folds: a pinned ``{group: fold}`` map (use the bundled paper folds to reproduce published numbers);
+        otherwise folds are assigned with ``fold_seed``.
+    n_splits: number of folds when ``folds`` is not given.
+    fold_seed: seed of the fold assignment.
+    seeds: model seeds; the default is the paper's three seeds. Seeds never change the folds.
+    stratify: ``True`` stratifies by ``spec.strata`` and |G(t)| deciles; a column name overrides the
+        stratum column.
+
+    Returns
+    -------
+    CVResult: out-of-fold scores (one column per seed) with metric and interval helpers.
     """
     s = table.spec
     if folds is None:
@@ -187,9 +203,11 @@ def cross_validate(
 
     single = s.kind == "single"
     oof = pd.DataFrame(index=table.df.index)
+    seeds, fold_ids = list(seeds), sorted(set(fold_of))
     for seed in seeds:
         col = np.empty(len(table), dtype=object if single else float)
-        for f in sorted(set(fold_of)):
+        for i, f in enumerate(fold_ids, 1):
+            logger.info("cross-validation: seed %s, fold %d/%d", seed, i, len(fold_ids))
             test_mask = fold_of == f
             train_groups = pd.unique(table.df.loc[~test_mask, s.group])
             test_groups = pd.unique(table.df.loc[test_mask, s.group])

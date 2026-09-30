@@ -1,8 +1,9 @@
 """Per-dataset configuration of the learned baselines: which text is the query and which the candidate, the
 metrics, the prompt shape, and the paper's Table 1 values for reference.
 
-Each preset follows the pre-release script that produced the published cell (``source``). Where no such
-script exists the preset says so (``reconstructed``).
+``source`` names the paper result a preset or prompt reproduces. ``reconstructed`` marks a configuration
+written for this release without the settings of the paper's run, so its value is not expected to match
+Table 1 exactly.
 """
 
 from __future__ import annotations
@@ -21,14 +22,13 @@ class Preset:
     doc: tuple | None  # DSR passage text view
     metrics: tuple[str, ...]
     dsr: DSRConfig = field(default_factory=DSRConfig)
-    dsr_seed: int = 0  # seed of the pre-release DSR-FT run (its permutation stream)
+    dsr_seed: int = 0  # default DSR-FT seed (the training permutation stream)
     classes: tuple[str, ...] | None = None  # single-class decisions: DSR ranks these class passages
     class_text: Mapping | None = None  # passage per class (default: the lower-cased class name)
     llm: LLMTask | None = None
-    ce: CrossEncoderTask | None = None  # the cross-encoder (``ft-ce``; FT-SLM where the paper used one)
+    ce: CrossEncoderTask | None = None  # the LoRA cross-encoder (``ft-ce``)
     slice_col: str | None = None  # also report the metrics per value of this column
     paper: Mapping = field(default_factory=dict)  # Table 1 values, {method: value or {slice: value}}
-    legacy: Mapping = field(default_factory=dict)  # pre-release result files, same layout
     source: str = ""
 
 
@@ -46,7 +46,7 @@ SKILL_LISTWISE = ListwiseTask(
     max_input=8192,
     max_new_tokens=60,
     sft_epochs=3,
-    source="run_e23_llama_family.py (few_shot, sft_generative)",
+    source="Table 1, skill selection: Few-shot and FT-SLM; App. F, Fig. 8b (SLM family)",
 )
 SKILL_CE = CrossEncoderTask(
     task_cols=("task_text",),
@@ -55,19 +55,20 @@ SKILL_CE = CrossEncoderTask(
     task_chars=400,
     cand_chars=100,
     max_length=224,
-    source="run_e23_llama_family.py (cross_encoder)",
+    source="ft-ce option (not a Table 1 column)",
 )
 
 SKILL_SELECT = Preset(
     query=("task_text",),
-    doc=("skill_name", ("skill_desc", 200)),
+    doc=("skill_name", "skill_desc"),
     metrics=("p@r", "recall@9"),
-    dsr=DSRConfig(max_chars=256, max_length=512, epochs=3),
+    dsr=DSRConfig(
+        max_chars=None, max_length=512, epochs=3
+    ),  # full task and skill texts, as in the paper's runs
     llm=SKILL_LISTWISE,
     ce=SKILL_CE,
-    paper={"dsr-zs": 0.17, "dsr-ft": 0.38, "fewshot": 0.35, "ft-slm": 0.49},
-    legacy={"dsr-zs": 0.1713, "dsr-ft": 0.3839, "dsr-ft+synth": 0.4369, "fewshot": 0.3478, "ft-slm": 0.4915},
-    source="run_e32_bm25_dsr.py (DSR), run_e23_llama_family.py (LLM, Llama-3.1-8B)",
+    paper={"dsr-zs": 0.51, "dsr-ft": 0.74, "fewshot": 0.33, "ft-slm": 0.52},
+    source="Table 1, skill selection row (DSR-ZS, DSR-FT, Few-shot, FT-SLM)",
 )
 
 GATE = GateTask(
@@ -81,7 +82,7 @@ GATE = GateTask(
         "Would activating these skill hints help the agent complete the task correctly? "
         "End your answer with the single word Yes or No."
     ),
-    source="run_e51_gate_gpt.py",
+    source="Table 1, skill gating: Few-shot (GPT-5.4)",
 )
 SKILL_GATING = Preset(
     query=None,
@@ -95,11 +96,10 @@ SKILL_GATING = Preset(
         task_chars=800,
         cand_chars=20,
         max_length=320,
-        source="reconstructed (no pre-release FT-SLM script for gating)",
+        source="reconstructed (Table 1, skill gating: FT-SLM)",
     ),
     paper={"fewshot": 0.43, "ft-slm": 0.43},
-    legacy={"fewshot": 0.4257},
-    source="run_e51_gate_gpt.py (few-shot = GPT via an OpenAI-compatible endpoint)",
+    source="Table 1, skill gating row (Few-shot = GPT-5.4 through an OpenAI-compatible endpoint)",
 )
 
 # --------------------------------------------------------------------------- Mind2Web
@@ -112,7 +112,7 @@ ELEMENT_CE = CrossEncoderTask(
     max_length=160,
     epochs=2,
     batch_size=16,
-    source="run_e49_element_slm.py (crossenc_scores)",
+    source="Table 1, Mind2Web element selection: FT-SLM",
 )
 ELEMENT_POINTWISE = PointwiseTask(
     task_cols=("instruction",),
@@ -124,7 +124,7 @@ ELEMENT_POINTWISE = PointwiseTask(
     cand_chars=100,
     max_length=512,
     cross_encoder=ELEMENT_CE,
-    source="run_e49_element_slm.py (fewshot_scores)",
+    source="Table 1, Mind2Web element selection: Few-shot",
 )
 ELEMENT = Preset(
     query=("instruction",),
@@ -135,23 +135,17 @@ ELEMENT = Preset(
     ce=ELEMENT_CE,
     slice_col="domain",
     paper={
-        "dsr-zs": {"Entertainment": 0.15, "Shopping": 0.16, "Travel": 0.15},
+        "dsr-zs": {"Entertainment": 0.11, "Shopping": 0.13, "Travel": 0.12},
         "dsr-ft": {"Entertainment": 0.15, "Shopping": 0.18, "Travel": 0.23},
         "fewshot": {"Entertainment": 0.15, "Shopping": 0.14, "Travel": 0.20},
         "ft-slm": {"Entertainment": 0.31, "Shopping": 0.48, "Travel": 0.41},
     },
-    legacy={
-        "dsr-zs": {"Entertainment": 0.1471, "Shopping": 0.1568, "Travel": 0.1475, "overall": 0.15},
-        "dsr-ft": {"Entertainment": 0.1471, "Shopping": 0.1777, "Travel": 0.2264, "overall": 0.1981},
-        "fewshot": {"Entertainment": 0.1488, "Shopping": 0.1429, "Travel": 0.1952, "overall": 0.1719},
-        "ft-slm": {"Entertainment": 0.3102, "Shopping": 0.4832, "Travel": 0.4121, "overall": 0.4134},
-    },
-    source="run_e32_bm25_dsr.py, run_e40_element_perstep.py (DSR), run_e49_element_slm.py (LLM)",
+    source="Table 1, Mind2Web element selection rows (DSR-ZS, DSR-FT, Few-shot, FT-SLM)",
 )
 
 
 def operation_context(r: Mapping) -> str:
-    """The step context of the pre-release operation prompt; the labels' eval_* columns are never shown."""
+    """The step context of the operation prompt; the labels' eval_* columns are never shown."""
     return (
         f"Task: {_cell(r.get('instruction'))[:280]}\n"
         f"Target element: <{_cell(r.get('target_tag'))}> type={_cell(r.get('target_type'))}\n"
@@ -169,7 +163,7 @@ OPERATION_CLASSIFY = ClassifyTask(
     max_new_tokens=4,
     batch_size=16,
     sft_epochs=2,
-    source="run_e48_operation_slm.py",
+    source="Table 1, Mind2Web operation selection: Few-shot and FT-SLM",
 )
 OPERATION = Preset(
     query=(("instruction", 280), "target_tag", "target_type", ("history_action_reprs", 180)),
@@ -183,11 +177,10 @@ OPERATION = Preset(
     metrics=("accuracy",),
     dsr=DSRConfig(max_chars=None, max_length=512, epochs=3),
     llm=OPERATION_CLASSIFY,
-    paper={"dsr-zs": 0.48, "dsr-ft": 0.54, "fewshot": 0.70, "ft-slm": 0.85},
-    legacy={"dsr-zs": 0.4833, "dsr-ft": 0.5394, "fewshot": 0.698, "ft-slm": 0.8534},
+    paper={"dsr-zs": 0.28, "dsr-ft": 0.84, "fewshot": 0.70, "ft-slm": 0.85},
     source=(
-        "run_e48_operation_slm.py (LLM, macro-F1); DSR reconstructed: the script behind the published "
-        "operation DSR values is not in the pre-release tree"
+        "Table 1, Mind2Web operation selection row (macro-F1): Few-shot and FT-SLM; DSR reconstructed "
+        "(the classes ranked as passages)"
     ),
 )
 
@@ -206,22 +199,18 @@ TAU_AGENT_LISTWISE = ListwiseTask(
     max_input=8192,
     max_new_tokens=60,
     sft_epochs=3,
-    source="run_e36_tau_llm.py",
+    source="per-agent τ² tables (not a Table 1 row)",
 )
-TAU_AGENT_LEGACY = {  # results_e32_bm25_dsr.json, results_e36_tau_llm.json, results_e23 (sonnet agent)
-    "tau2/gpt-4.1-2025-04-14": {"dsr-zs": 0.4199, "dsr-ft": 0.6122, "fewshot": 0.4643, "ft-slm": 0.7552},
-    "tau2/gpt-4.1-mini-2025-04-14": {"dsr-zs": 0.4144, "dsr-ft": 0.5589, "fewshot": 0.4498, "ft-slm": 0.6715},
-    "tau2/o4-mini-2025-04-16": {"dsr-zs": 0.4215, "dsr-ft": 0.5964, "fewshot": 0.464, "ft-slm": 0.7306},
-    "tau2/claude-3-7-sonnet-20250219": {
-        "dsr-zs": 0.395,
-        "dsr-ft": 0.6096,
-        "fewshot": 0.4672,
-        "ft-slm": 0.7819,
-    },
-}
+TAU_AGENTS = (
+    "tau2/claude-3-7-sonnet-20250219",
+    "tau2/gpt-4.1-2025-04-14",
+    "tau2/gpt-4.1-mini-2025-04-14",
+    "tau2/o4-mini-2025-04-16",
+)
 
 
 def tau_agent(name: str) -> Preset:
+    """The per-agent τ² tables of Table 2. Table 1 reports no baselines for them."""
     return Preset(
         query=("instruction",),
         doc=("tool_name",),
@@ -229,8 +218,7 @@ def tau_agent(name: str) -> Preset:
         dsr=DSRConfig(max_chars=256, max_length=512, epochs=3),
         llm=TAU_AGENT_LISTWISE,
         slice_col="domain",
-        legacy=TAU_AGENT_LEGACY[name],
-        source="run_e32_bm25_dsr.py (DSR), run_e36_tau_llm.py (LLM; sonnet agent: run_e23 prompt)",
+        source=f"per-agent τ² table {name} (not a Table 1 row)",
     )
 
 
@@ -248,13 +236,19 @@ TAU_DOMAIN_LISTWISE = ListwiseTask(
     max_input=2048,
     max_new_tokens=40,
     sft_epochs=4,
-    source="run_e45b_tau_domain_fixed.py",
+    source="Table 1, τ²-bench rows: Few-shot and FT-SLM",
 )
 TAU_DOMAIN_PAPER = {
-    "tau2/airline": {"dsr-zs": 0.30, "dsr-ft": 0.45, "fewshot": 0.44, "ft-slm": 0.60},
+    "tau2/airline": {"dsr-zs": 0.30, "dsr-ft": 0.44, "fewshot": 0.44, "ft-slm": 0.60},
     "tau2/retail": {"dsr-zs": 0.48, "dsr-ft": 0.42, "fewshot": 0.59, "ft-slm": 0.57},
-    "tau2/telecom": {"dsr-zs": 0.46, "dsr-ft": 0.27, "fewshot": 0.55, "ft-slm": 0.71},
+    "tau2/telecom": {"dsr-zs": 0.46, "dsr-ft": 0.28, "fewshot": 0.55, "ft-slm": 0.71},
     "tau2/all-domains": {"dsr-zs": 0.34, "dsr-ft": 0.42, "fewshot": 0.31, "ft-slm": 0.57},
+}
+TAU_ROWS = {
+    "tau2/airline": "airline",
+    "tau2/retail": "retail",
+    "tau2/telecom": "telecom",
+    "tau2/all-domains": "combined",
 }
 
 
@@ -268,7 +262,7 @@ def tau_domain(name: str) -> Preset:
         llm=TAU_DOMAIN_LISTWISE,
         slice_col="domain" if name == "tau2/all-domains" else None,
         paper=TAU_DOMAIN_PAPER[name],
-        source="run_e45b_tau_domain_fixed.py (DSR and LLM)",
+        source=f"Table 1, τ²-bench {TAU_ROWS[name]} row (DSR-ZS, DSR-FT, Few-shot, FT-SLM)",
     )
 
 
@@ -285,19 +279,19 @@ ROUTER = Preset(
         task_chars=600,
         cand_chars=80,
         max_length=256,
-        source="reconstructed (no pre-release FT-SLM script for model routing)",
+        source="reconstructed (Table 1, model routing: FT-SLM)",
     ),
     paper={"dsr-zs": 0.49, "dsr-ft": 0.60, "fewshot": 0.50, "ft-slm": 0.70},
-    source="reconstructed: no pre-release DSR or LLM script for model routing was found",
+    source="reconstructed (Table 1, model routing row: DSR-ZS, DSR-FT); no few-shot prompt is included",
 )
 
 PRESETS: dict[str, Preset] = {
     "skillsbench/skill-select": SKILL_SELECT,
     "skillsbench/skill-gating": SKILL_GATING,
     "mind2web/element-150": ELEMENT,
-    "mind2web/element": replace(ELEMENT, paper={}, legacy={}),
+    "mind2web/element": replace(ELEMENT, paper={}),
     "mind2web/operation": OPERATION,
-    **{name: tau_agent(name) for name in TAU_AGENT_LEGACY},
+    **{name: tau_agent(name) for name in TAU_AGENTS},
     **{name: tau_domain(name) for name in TAU_DOMAIN_PAPER},
     "llmrouterbench/tau2": ROUTER,
 }

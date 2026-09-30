@@ -1,7 +1,6 @@
 """Run one learned baseline on one public decision table and write per-decision metric vectors.
 
-    python experiments/baselines/run.py --dataset skillsbench/skill-select --method dsr-ft \
-        --out results/baselines/skill-select__dsr-ft.json
+    python -m experiments.baselines.run --dataset skillsbench/skill-select --method dsr-ft --download
 
 Methods: ``dsr-zs``, ``dsr-ft`` (add ``--synth K`` for Real+synth), ``fewshot``, ``ft-slm``, ``ft-ce`` (the
 LoRA cross-encoder). Fine-tuned methods are trained on the training folds of the paper's task folds only
@@ -18,7 +17,6 @@ from __future__ import annotations
 import argparse
 import json
 import platform
-import sys
 import time
 from dataclasses import asdict, replace
 from pathlib import Path
@@ -26,20 +24,19 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-ROOT = Path(__file__).resolve().parents[2]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+from experiments.baselines import dsr as D
+from experiments.baselines import llm as L
+from experiments.baselines.presets import PRESETS, Preset
+from tabagent import datasets
+from tabagent.evaluation import metrics as M
+from tabagent.evaluation import stats as S
+from tabagent.table import DecisionTable
 
-from experiments.baselines import dsr as D  # noqa: E402
-from experiments.baselines import llm as L  # noqa: E402
-from experiments.baselines.presets import PRESETS, Preset  # noqa: E402
-from tabagent import datasets  # noqa: E402
-from tabagent.evaluation import metrics as M  # noqa: E402
-from tabagent.evaluation import stats as S  # noqa: E402
-from tabagent.table import DecisionTable  # noqa: E402
+ROOT = Path(__file__).resolve().parents[2]
 
 METHODS = ("dsr-zs", "dsr-ft", "fewshot", "ft-slm", "ft-ce")
 DETERMINISTIC = {"dsr-zs", "fewshot"}
+DEFAULT_RECIPE = "in-batch"
 
 
 # --------------------------------------------------------------------------- scoring
@@ -108,7 +105,7 @@ def run_llm(table, preset: Preset, folds, method, seed, args, backend: Backends)
             raise SystemExit(f"no cross-encoder configured for {args.dataset}")
         return L.cross_encoder_scores(table, ce, backend("ce"), folds, seed), asdict(ce)
     if task is None:
-        raise SystemExit(f"no {method} prompt for {args.dataset}: no pre-release script to port")
+        raise SystemExit(f"no {method} prompt is included for {args.dataset}")
     info = {k: v for k, v in asdict(task).items() if not callable(v)}
     if isinstance(task, L.GateTask):
         if method != "fewshot":
@@ -208,6 +205,8 @@ def default_out(args) -> Path:
     name = (
         args.dataset.replace("/", "__") + "__" + args.method + (f"+synth{args.synth}" if args.synth else "")
     )
+    if args.method == "dsr-ft" and args.recipe != DEFAULT_RECIPE:
+        name += "__" + args.recipe
     if args.method not in ("dsr-zs", "dsr-ft"):
         name += "__" + L.resolve_model(args.model).split("/")[-1]
     return ROOT / "results" / "baselines" / f"{name}{'.dryrun' if args.dry_run else ''}.json"
@@ -218,8 +217,13 @@ def parse_args(argv=None):
     p.add_argument("--dataset", required=True, choices=sorted(PRESETS))
     p.add_argument("--method", required=True, choices=METHODS)
     p.add_argument("--model", default=L.DEFAULT_MODEL, help=f"LLM: alias ({', '.join(L.MODELS)}) or HF id")
-    p.add_argument("--seeds", type=int, nargs="+", help="training seeds (default: the pre-release run's)")
-    p.add_argument("--recipe", default="paper", choices=sorted(D.RECIPES), help="DSR-FT negatives recipe")
+    p.add_argument("--seeds", type=int, nargs="+", help="training seeds (default: the preset's seed)")
+    p.add_argument(
+        "--recipe",
+        default=DEFAULT_RECIPE,
+        choices=sorted(D.RECIPES),
+        help="DSR-FT negatives: in-batch (the paper's, default) or hard-negatives",
+    )
     p.add_argument("--synth", type=int, default=None, help="DSR-FT Real+synth: TabSynth variants per row")
     p.add_argument("--epochs", type=int, default=None, help="override the DSR-FT epochs")
     p.add_argument("--device", default=None, help="cuda | mps | cpu (default: best available)")
@@ -266,7 +270,6 @@ def main(argv=None) -> dict:
         "config": config,
         "source": preset.source,
         "paper": preset.paper.get(args.method),
-        "legacy": preset.legacy.get(args.method + ("+synth" if args.synth else "")),
         "n_rows": len(table),
         "n_groups": len(table.groups),
         "runtime_s": round(runtime, 1),
@@ -312,7 +315,7 @@ def _print_summary(result: dict, out: Path) -> None:
             print(f"  {metric}: {s['value']:.4f}{ci}{n}")
     for sl, vals in result["slices"].items():
         print(f"  {sl}: " + ", ".join(f"{m} {v:.4f}" for m, v in vals.items()))
-    print(f"  paper: {result['paper']}  legacy: {result['legacy']}  ({result['runtime_s']}s) -> {out}")
+    print(f"  paper (Table 1): {result['paper']}  ({result['runtime_s']}s) -> {out}")
 
 
 if __name__ == "__main__":

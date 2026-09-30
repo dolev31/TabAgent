@@ -40,6 +40,12 @@ def test_ranker_is_sklearn_compatible():
     assert scores.shape == (3,) and (scores > 0.7).all()
 
 
+def test_preset_conflicts_with_full_search():
+    X, y = _xy(12)
+    with pytest.raises(ValueError, match="preset"):
+        TabAgentRanker(group_col="task", candidate_col="tool", search="full", preset="paper").fit(X, y)
+
+
 def test_ranker_requires_groups_and_candidates():
     X, y = _xy(12)
     with pytest.raises(ValueError, match="groups"):
@@ -57,7 +63,11 @@ def test_classifier_single_class():
     clf = TabAgentClassifier(synth=0, iterations=80).fit(X, y)
     assert set(clf.classes_) == {"travel", "mail", "other"}
     assert (clf.predict(X) == y).mean() > 0.9
-    assert clf.predict_proba(X).shape == (len(X), 3)
+    proba = clf.predict_proba(X)
+    assert proba.shape == (len(X), 3)
+    scores = clf.decision_function(X)  # class scores, not labels
+    assert scores.dtype.kind == "f" and np.array_equal(scores, proba)
+    assert (np.asarray(clf.classes_)[scores.argmax(axis=1)] == clf.predict(X)).all()
 
 
 def test_router_picks_best_arm():

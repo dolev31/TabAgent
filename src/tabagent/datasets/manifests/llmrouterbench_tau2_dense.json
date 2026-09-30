@@ -5,7 +5,7 @@
   "revision": "0e5af1b84bf73437a01a1849c0f1d2468baa93fc",
   "code_url": "https://github.com/ynulihao/LLMRouterBench",
   "code_revision": "c77cb0506949d8f959e97967d2fefca0e8ff1b05",
-  "license": "unresolved: README badge states MIT, no LICENSE file in the repository, no license on the Hugging Face dataset",
+  "license": "MIT (declared in the upstream README; the repository ships no LICENSE file)",
   "notes": "Only the archive has a URL. The 12 tau2-bench test files are extracted from it (member = path inside the archive) and verified one by one.",
   "files": [
     {

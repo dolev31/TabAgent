@@ -12,7 +12,8 @@ source from its upstream location at a pinned revision into a local cache, subje
   * tau2-sft-final (Hugging Face dataset) ............... Apache-2.0
   * SkillsBench (benchflow-ai/skillsbench) .............. Apache-2.0
   * Mind2Web (osunlp/Mind2Web) .......................... CC-BY-4.0 (attribution required)
-  * LLMRouterBench ...................................... license unresolved upstream; opt-in download only
+  * LLMRouterBench ...................................... MIT, as declared in the upstream README (the
+                                                          repository ships no LICENSE file); opt-in download
   * AppWorld ............................................ Apache-2.0 with an encrypted-redistribution
                                                           condition; obtained only via the official CLI
   * intfloat/e5-small-v2 (text encoder) ................. MIT

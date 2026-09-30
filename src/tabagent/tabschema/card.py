@@ -1,4 +1,4 @@
-"""The feature card: TabSchema's output and TabHead's input (paper Sec. 3, "feature card").
+"""The feature card: TabSchema's output and TabHead's input (paper Sec. 3, Fig. 1; example in App. I).
 
 A card declares, for one decision:
 
@@ -6,7 +6,8 @@ A card declares, for one decision:
 * the features, each with a family (schema / state / dependency, paper Fig. 1), a declared type
   (text / num / cat) and a source:
 
-  - ``column`` or a stateless primitive (``features.STATELESS``), or ``python:<module>:<fn>``;
+  - ``column`` or a stateless primitive (``features.STATELESS``), or ``python:<module>:<fn>`` (modules
+    outside ``tabagent`` only when the card is loaded with ``trust_code=True``);
   - ``fitted:<name>``, a dependency statistic fitted on the real training rows of a fold
     (``fitted.FITTED``), such as candidate priors;
   - ``extractor``, a column produced by the TabSchema-compiled extractor (``extract.py``);
@@ -39,6 +40,19 @@ CARD_VERSION = 1
 
 @dataclass
 class Feature:
+    """One feature of a card.
+
+    Parameters
+    ----------
+    name: the output column name.
+    family: ``schema``, ``state`` or ``dependency`` (paper Fig. 1).
+    type: ``text``, ``num`` or ``cat``; declared, never inferred per fold.
+    source: ``column`` (the column ``name`` itself), a stateless primitive, ``python:<module>:<fn>``,
+        ``fitted:<name>`` (fitted on training rows) or ``extractor`` (produced by TabSchema's extractor).
+    args: arguments of the source.
+    description, provenance: free-form documentation.
+    """
+
     name: str
     family: Family
     type: FeatureType
@@ -55,11 +69,28 @@ class Feature:
 
     @property
     def fitted(self) -> bool:
+        """True for a dependency statistic fitted on training rows (``fitted:<name>``)."""
         return self.source.startswith("fitted:")
 
 
 @dataclass
 class FeatureCard:
+    """A decision's feature card: its ``DecisionSpec``, its features and the text TabSynth may paraphrase.
+
+    ``fit`` learns the fitted features' statistics on labeled training rows; ``transform`` computes every
+    feature for any rows. Cards are saved and loaded as YAML (``save``, ``load``).
+
+    Parameters
+    ----------
+    name: the card name.
+    spec: the decision roles.
+    features: the ``Feature`` list, in column order.
+    synth_text: free-text feature columns TabSynth may paraphrase.
+    synth_k: the card's TabSynth variants per row (``TabSynth`` uses it when no ``k`` is given).
+    provenance: who or what authored the card, and the paper result it backs.
+    extractor: the compiled TabSchema extractor it needs (``path``, ``sha256``), if any.
+    """
+
     name: str
     spec: DecisionSpec
     features: list[Feature]
@@ -85,17 +116,30 @@ class FeatureCard:
     # ------------------------------------------------------------------ properties
     @property
     def types(self) -> dict[str, str]:
+        """Feature name -> declared type."""
         return {f.name: f.type for f in self.features}
 
     @property
     def feature_names(self) -> list[str]:
+        """Feature names in column order."""
         return [f.name for f in self.features]
 
     @property
     def is_fitted(self) -> bool:
+        """True after ``fit``."""
         return self._fitted is not None
 
+    def context_text_columns(self) -> list[str]:
+        """Free-text features describing the decision context (text features of the ``state`` family)."""
+        return [f.name for f in self.features if f.type == "text" and f.family == "state"]
+
+    def candidate_text_columns(self) -> list[str]:
+        """Features describing the candidate in words (text or categorical features of the ``schema`` family),
+        for example its id, name and description."""
+        return [f.name for f in self.features if f.family == "schema" and f.type in ("text", "cat")]
+
     def clone(self) -> FeatureCard:
+        """An unfitted deep copy."""
         new = copy.deepcopy(self)
         new._fitted = None
         return new
@@ -139,6 +183,7 @@ class FeatureCard:
 
     # ------------------------------------------------------------------ serialization
     def to_dict(self) -> dict[str, Any]:
+        """The card as the plain dict written to ``card.yaml``."""
         spec = {k: v for k, v in asdict(self.spec).items() if v not in (None, (), [])}
         spec = {k: list(v) if isinstance(v, tuple) else v for k, v in spec.items()}
         feats = []
@@ -161,9 +206,19 @@ class FeatureCard:
         return out
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> FeatureCard:
+    def from_dict(cls, d: dict[str, Any], trust_code: bool = False) -> FeatureCard:
+        """Build a card from ``to_dict`` output. Features computed by modules outside ``tabagent``
+        (``python:`` sources) are refused unless ``trust_code``."""
         if d.get("card_version", 1) > CARD_VERSION:
             raise ValueError(f"card_version {d['card_version']} is newer than this library supports")
+        if not trust_code:
+            for f in d["features"]:
+                module = stateless.python_module(f.get("source", "column"))
+                if module is not None and not stateless.is_trusted_module(module):
+                    raise PermissionError(
+                        f"card feature {f['name']!r} runs code from module {module!r}. Load the card with "
+                        "trust_code=True only if you trust that code."
+                    )
         dec = dict(d["decision"])
         for key in ("decision", "eval"):
             if key in dec:
@@ -190,14 +245,18 @@ class FeatureCard:
         return p
 
     @classmethod
-    def load(cls, path_or_name: str | Path) -> FeatureCard:
-        """Load from a YAML file, a directory containing ``card.yaml``, or a bundled card name."""
+    def load(cls, path_or_name: str | Path, trust_code: bool = False) -> FeatureCard:
+        """Load from a YAML file, a directory containing ``card.yaml``, or a bundled card name.
+
+        A card whose features import code from a module outside ``tabagent`` (``python:<module>:<fn>``)
+        raises ``PermissionError`` unless ``trust_code=True``.
+        """
         p = Path(path_or_name)
         if p.is_dir():
             p = p / "card.yaml"
         if p.is_file():
-            return cls.from_dict(yaml.safe_load(p.read_text()))
+            return cls.from_dict(yaml.safe_load(p.read_text()), trust_code)
         bundled = resources.files("tabagent.cards") / f"{path_or_name}.yaml"
         if bundled.is_file():
-            return cls.from_dict(yaml.safe_load(bundled.read_text()))
+            return cls.from_dict(yaml.safe_load(bundled.read_text()), trust_code)
         raise FileNotFoundError(f"no card at {path_or_name!r} and no bundled card of that name")

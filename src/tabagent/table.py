@@ -1,6 +1,6 @@
 """The decision table: one row per (decision context, candidate) pair.
 
-Every closed-set decision TabAgent replaces is reduced to the same pointwise layout (paper Sec. 3): a row
+Every closed-set decision TabAgent replaces is reduced to the same pointwise layout (paper Sec. 3.3): a row
 pairs the state of the agent at one decision point with one legal candidate, its columns are
 behavior-grounded features, and its label says whether the successful trajectory chose that candidate.
 ``DecisionSpec`` names the columns that play a structural role; everything else is a feature candidate.
@@ -34,6 +34,12 @@ class LeakageError(RuntimeError):
 
 @dataclass(frozen=True)
 class DecisionSpec:
+    """The structural columns of a decision table (see the module docstring for each role).
+
+    ``kind`` is ``ranking``, ``multilabel``, ``single`` or ``policy``. Single-class decisions have no
+    candidate column; every other kind needs one, and policies also need a ``reward`` column.
+    """
+
     kind: Kind
     group: str
     label: str
@@ -55,6 +61,7 @@ class DecisionSpec:
 
     @property
     def decision_cols(self) -> tuple[str, ...]:
+        """The columns identifying one decision: ``decision``, or the group when it is empty."""
         return self.decision or (self.group,)
 
     @property
@@ -64,6 +71,7 @@ class DecisionSpec:
 
     @property
     def structural_cols(self) -> tuple[str, ...]:
+        """Every column with a structural role (ids, candidate, strata and outcomes)."""
         cols = [self.group, *self.decision_cols, self.candidate, self.strata, *self.outcome_cols]
         return tuple(dict.fromkeys(c for c in cols if c))
 
@@ -137,6 +145,7 @@ class DecisionTable:
 
     @property
     def labels(self) -> np.ndarray:
+        """The label column (raises ``LeakageError`` on a label-free view)."""
         if not self.has_labels:
             raise LeakageError("labels were dropped from this view")
         return self.df[self.spec.label].to_numpy()
@@ -151,15 +160,19 @@ class DecisionTable:
 
     # ------------------------------------------------------------------ views
     def subset(self, groups: Iterable) -> DecisionTable:
+        """The rows of the given groups, in their original order."""
         keep = self.df[self.spec.group].isin(set(groups))
         return DecisionTable(self.df[keep], self.spec, self.has_labels)
 
     def drop_labels(self) -> DecisionTable:
+        """A label-free view: the outcome columns are removed (what a model sees at scoring time)."""
         cols = [c for c in self.spec.outcome_cols if c in self.df.columns]
         return DecisionTable(self.df.drop(columns=cols), self.spec, has_labels=False)
 
     def with_df(self, df: pd.DataFrame) -> DecisionTable:
+        """The same spec over another frame (validated again)."""
         return DecisionTable(df, self.spec, self.has_labels)
 
     def with_spec(self, **changes) -> DecisionTable:
+        """The same rows under a spec with ``changes`` applied."""
         return DecisionTable(self.df, replace(self.spec, **changes), self.has_labels)

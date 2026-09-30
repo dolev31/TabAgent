@@ -1,10 +1,10 @@
-"""TabSchema's feature-extraction agents (paper Sec. 3.1, App. C).
+"""TabSchema's feature-extraction agents (paper Sec. 3.1; App. D).
 
-FeatureAnalyzer   proposes features from one decision point (L1222-1263)
-CodeExtractor     writes the extraction code for them (L1265-1368)
-CodeExecutor      runs it in the sandbox, with up to three retries that feed errors back (L1210)
-CodeValidator     an LLM check that the executed code reads only real fields and follows the plan (L1216)
-FeatureAggregator merges the proposals of many trajectories and drops unobtainable ones (L1372-1416)
+FeatureAnalyzer   proposes features from one decision point (App. D.2, FeatureAnalyzer prompt)
+CodeExtractor     writes the extraction code for them (App. D.2, CodeExtractor prompt)
+CodeExecutor      runs it in the sandbox, with up to three retries that feed errors back (App. D.1)
+CodeValidator     an LLM check that the executed code reads only real fields and follows the plan (App. D.1)
+FeatureAggregator merges the proposals of many trajectories and drops unobtainable ones (App. D.2)
 """
 
 from __future__ import annotations
@@ -30,10 +30,6 @@ SPEC_FIELDS = (
     "classification_relevance",
     "rationale",
 )
-LEGACY_ANALYZER_HINTS = (
-    "\nExample of a potential features extracted:\n{hints}\n\nYou can use the example of potential features "
-    "extracted to help you extract features, but do not use it as a template, only as a reference.\n"
-)
 JSON_REPAIR = (
     "\n\nYour previous answer could not be parsed. Return only the requested JSON, with no other text."
 )
@@ -45,6 +41,9 @@ class LLMFormatError(ValueError):
 
 @dataclass
 class FeatureSpec:
+    """One proposed feature, in the fields of the FeatureAnalyzer's JSON answer, plus its support (the
+    number of decision points that proposed it)."""
+
     feature_name: str
     feature_type: str = "computed"
     description: str = ""
@@ -72,6 +71,7 @@ class FeatureSpec:
 
 
 def normalize_name(name: str) -> str:
+    """Lowercase ``name`` and collapse each run of non-alphanumerics to ``_`` (the key features match on)."""
     return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
 
 
@@ -80,6 +80,8 @@ def _dump(obj: Any) -> str:
 
 
 class Stage:
+    """Base of the LLM-backed stages: one prompt in, one answer out, metered and optionally cached."""
+
     role = "stage"
 
     def __init__(
@@ -100,6 +102,7 @@ class Stage:
         return self.store.cached("llm", key, lambda: self._live(prompt).text)
 
     def _live(self, prompt: str):
+        self.meter.check()  # a spent budget stops every stage before its next paid call
         r = self.llm.complete(prompt, role=self.role)
         self.meter.record(self.role, r)
         if self.store is not None:
@@ -115,6 +118,7 @@ class Stage:
         return r
 
     def ask_json(self, prompt: str) -> Any:
+        """Call the LLM and parse its answer as JSON, re-asking up to ``json_retries`` times."""
         text = self.call(prompt)
         for attempt in range(self.json_retries + 1):
             try:
@@ -128,9 +132,11 @@ class Stage:
 
 # --------------------------------------------------------------------------- analyzer
 class FeatureAnalyzer(Stage):
+    """Proposes features from one decision point: its prefix, schema and the target step."""
+
     role = "analyzer"
 
-    def __call__(self, dp: DecisionPoint, target: str, hints: list[str] | None = None) -> list[FeatureSpec]:
+    def __call__(self, dp: DecisionPoint, target: str) -> list[FeatureSpec]:
         prompt = prompts.render(
             "feature_analyzer",
             trajectory_json=_dump(dp.prefix),
@@ -138,7 +144,6 @@ class FeatureAnalyzer(Stage):
             target_name=target,
             target_json=_dump(dp.target_step),
             trajectory_file=dp.source or dp.trajectory_id,
-            analyzer_hints=LEGACY_ANALYZER_HINTS.format(hints=list(hints)) if hints else "",
         )
         out = self.ask_json(prompt)
         items = out.get("potential_features", []) if isinstance(out, dict) else out
@@ -150,7 +155,8 @@ class FeatureAnalyzer(Stage):
 
 # --------------------------------------------------------------------------- extraction code
 def generate_retry_prompt(retry_count: int, error: str, failed_code: str) -> str:
-    """The retry block appended to the CodeExtractor prompt (identical to the original pipeline, L1368)."""
+    """The retry block appended to the CodeExtractor prompt after a failed attempt (App. D.1): the error, the
+    failed code and the instruction to fix the root cause."""
     if retry_count == 0:
         return ""
     return f"""
@@ -171,6 +177,8 @@ RETRY INSTRUCTIONS (Attempt #{retry_count + 1}):
 
 
 class CodeExtractor(Stage):
+    """Writes extraction code for a list of feature plans against a trajectory schema."""
+
     role = "extractor"
 
     def __call__(
@@ -194,6 +202,8 @@ class CodeExtractor(Stage):
 
 @dataclass
 class ExtractionAttempt:
+    """One generated extractor: its code, whether it passed, per-prefix results, issues and the error."""
+
     code: str
     ok: bool
     results: list[ExecResult] = field(default_factory=list)
@@ -219,6 +229,7 @@ class CodeExecutor:
         )
 
     def run(self, code: str, prefixes: list[dict]) -> ExtractionAttempt:
+        """Check ``code`` statically, then run it on every prefix; fail above ``max_failure_rate``."""
         fatal = {"syntax", "import", "call", "uses_get", "unknown_field", "outcome_field"}
         issues = [i for i in checks.check_code(code, self.known_paths, self.outcome_keys) if i.kind in fatal]
         if issues:
@@ -248,7 +259,7 @@ def extract_with_retries(
     max_retries: int = 3,
 ) -> tuple[ExtractionAttempt, list[ExtractionAttempt]]:
     """Generate, check and execute extraction code; on failure retry up to ``max_retries`` times with the
-    error and the failed code in the prompt (paper L1210). Returns the final attempt and the history."""
+    error and the failed code in the prompt (App. D.1). Returns the final attempt and the history."""
     history: list[ExtractionAttempt] = []
     retry_block = ""
     for n in range(max_retries + 1):
@@ -266,6 +277,9 @@ VALID = "valid"
 
 
 class CodeValidator(Stage):
+    """Checks that executed extraction code reads only real fields and follows each feature's plan; returns
+    a verdict per feature (``valid``, ``hallucinated_field``, ``plan_mismatch``)."""
+
     role = "validator"
 
     def __call__(
@@ -290,6 +304,8 @@ class CodeValidator(Stage):
 
 
 class FeatureAggregator(Stage):
+    """Merges the proposals of all analyzed decision points; returns (kept, rejected) features."""
+
     role = "aggregator"
 
     def __call__(self, specs: list[FeatureSpec]) -> tuple[list[FeatureSpec], list[FeatureSpec]]:

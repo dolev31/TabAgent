@@ -10,7 +10,8 @@ features:
   family: state
   type: text
   description: What the agent sees before acting - the customer's first message, or the ticket in the solo
-    (no-user) modes (context='user_scenario' rebuilds the pre-release tables).
+    (no-user) modes (context='user_scenario' uses the user simulator's hidden task
+    description instead).
 - name: instr_word_count
   family: state
   type: num
@@ -51,6 +52,7 @@ synth:
   k: 4
 provenance:
   kind: hand-authored
-  paper: Table 2 (tab:transfer_new), App. B.2
-  note: The pre-release per-agent card (materialize_tau2_cards / run_p2 / run_e8_tau2), with every
-    data-dependent statistic fitted inside the training fold.
+  paper: Table 2; App. B.2
+  note: >-
+    The request, the tool name, their lexical and embedding similarity, and the tool's usage prior. Every
+    data-dependent statistic (the prior, the embedding centering) is fitted inside the training fold.

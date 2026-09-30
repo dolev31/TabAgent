@@ -158,7 +158,7 @@ def test_card_features(tmp_path, monkeypatch):
 
 def test_registry_entry():
     info = datasets.info("llmrouterbench/tau2")
-    assert info.requires_license_acceptance and info.source.redistribution == "unresolved"
+    assert info.requires_license_acceptance and info.source.license.startswith("MIT")
     with pytest.raises(PermissionError, match="accept_license"):
         datasets.load("llmrouterbench/tau2")
     manifest = info.source.manifest

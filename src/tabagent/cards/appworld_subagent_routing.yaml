@@ -70,8 +70,8 @@ features:
   description: the system's success rate on the 15 most similar training tasks (e5 instruction embeddings)
 provenance:
   kind: hand-authored
-  paper: Table 1, sub-agent routing (AppWorld, 14 systems)
+  paper: Table 1 (sub-agent routing, AppWorld, 14 systems); App. B.1
   note: >-
-    The pre-release AppWorld routing card, whose priors were already refitted on every training fold. Its
-    task_family_solve_rate feature (the mean over systems of system_success_on_similar) has no fitted source
-    in this release and is omitted.
+    The task instruction and its length, the system's architecture and backbone, and label-derived features
+    (the system's training success rate and rank, and its success on the 15 most similar training tasks),
+    which are fitted inside the training folds.

@@ -90,9 +90,10 @@ def test_agent_labels_union_successful_runs_only():
     row = df[(df.task_uid == t1) & (df.tool == "toggle_data")].iloc[0]
     assert row.tool_name == "toggle data" and row.domain == "telecom"
     assert row.instruction == "customer request for task 1"  # what the agent sees, not the hidden scenario
-    legacy = tau2.agent_decisions([("x.json", airline), ("y.json", telecom)], AGENT, context="user_scenario")
+    payloads = [("x.json", airline), ("y.json", telecom)]
+    scenario = tau2.agent_decisions(payloads, AGENT, context="user_scenario")
     assert (
-        legacy[legacy.task_uid == t1].instruction.iloc[0]
+        scenario[scenario.task_uid == t1].instruction.iloc[0]
         == "{'instructions': 'Pay my bill.', 'persona': 'calm'}"
     )
     with pytest.raises(ValueError, match="context"):

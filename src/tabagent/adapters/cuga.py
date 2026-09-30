@@ -5,8 +5,8 @@ node that produced it (``TaskAnalyzerAgent``, ``PlanControllerAgent``, ``APIPlan
 ``ShortlisterAgent``, ``CodeAgent``, ``FinalAnswerAgent``, ...) and carries its ``prompts`` (role/value) and
 ``data`` (the node's output, usually JSON). Evaluated runs end with an ``EvaluationResult`` step.
 
-The built-in decision is the API shortlister (the paper's CUGA tool shortlisting), ported from the original
-``convert2tabular`` pipeline: at each ``ShortlisterAgent`` step the candidates are the APIs offered to it
+The built-in decision is the API shortlister (the paper's CUGA tool shortlisting): at each
+``ShortlisterAgent`` step the candidates are the APIs offered to it
 (the ``Available APIs`` block of its prompt, else a catalog given here, e.g. CUGA API docs, else the APIs
 seen for that app across the loaded runs), and the labels are the APIs the ``CodeAgent`` then called
 (``call_api(app, api)``, app-prefixed as ``<app>_<api>``) before the next shortlisting. The prefix is the

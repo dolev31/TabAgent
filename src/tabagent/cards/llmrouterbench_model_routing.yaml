@@ -106,8 +106,8 @@ features:
   description: the model's success rate on the 15 most similar training tasks (e5 query embeddings)
 provenance:
   kind: hand-authored
-  paper: Table 1, model routing (LLMRouterBench, de-leaked)
+  paper: Table 1 (model routing, LLMRouterBench); App. B.7
   note: >-
-    The pre-release router card with every label-derived feature fitted inside the training folds (the
-    de-leaked protocol). Its task_family_solve_rate feature (the mean over models of
-    model_success_on_similar) has no fitted source in this release and is omitted.
+    Query text features, static model metadata (family, reasoning flag, list prices) and label-derived
+    features (the model's training success rate, rank and mean cost, and its success on the 15 most similar
+    training tasks), which are fitted inside the training folds.

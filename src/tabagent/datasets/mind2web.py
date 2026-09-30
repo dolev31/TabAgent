@@ -1,4 +1,4 @@
-"""Mind2Web: operation selection and GUI element selection (paper Sec. 5, Table 1; App. C).
+"""Mind2Web: operation selection and GUI element selection (paper Sec. 5, Table 1; App. B.6).
 
 Source: the public train split of Mind2Web (Deng et al., 2023; 1,009 tasks, CC-BY-4.0) on the Hugging Face
 Hub at a pinned revision. The password-protected test splits are never used. The eleven original
@@ -19,8 +19,8 @@ Labels are the human demonstrations.
     ``(task_uid, step_index)``, and Recall@k is computed per step. Rows follow the paper evaluator's fixed
     task split (:func:`evaluator_split`: 706 train, 151 val, 152 test tasks), train tasks first.
 ``mind2web/element-150``
-    The 150 tasks (1,019 steps) on which the paper's element numbers were computed; the pre-release
-    evaluator capped the 368K-row table to a seeded sample of whole tasks.
+    A seeded sample of 150 whole tasks (1,019 steps) of ``mind2web/element``, on which the paper's element
+    numbers were computed.
 
 The paper reports element selection per web domain (Entertainment, Shopping, Travel) as slices of one
 model trained on all domains, not as separate models: see :func:`per_domain`.
@@ -39,6 +39,7 @@ import numpy as np
 import pandas as pd
 
 from tabagent.datasets._core import DatasetInfo, Source
+from tabagent.defaults import DEFAULT_SEED
 from tabagent.evaluation.cv import stable_uid
 
 REVISION = "17ece8eb89862368edc0cc806acee6fca5163474"
@@ -57,7 +58,7 @@ SOURCE = Source(
 ACTIONS = "mind2web_train_action_references.jsonl.gz"  # the train split without page HTML
 HTML_FIELDS = frozenset({"raw_html", "cleaned_html", "html", "screenshot"})
 
-SEED = 20260720  # negative sampling seed of the paper runs
+SEED = DEFAULT_SEED  # seeds the negative sample of every step
 SLATE, POS_CAP = 50, 25
 ATTR_TEXT = (
     "class",
@@ -113,6 +114,7 @@ def actions_path(source: Source = SOURCE, download: bool = False) -> Path:
 
 
 def iter_tasks(path: Path) -> Iterator[dict]:
+    """The tasks of a reduced action file, one dict per line."""
     with gzip.open(path, "rt", encoding="utf-8") as f:
         for line in f:
             if line.strip():
@@ -206,6 +208,7 @@ def steps(tasks: Iterable[dict]) -> Iterator[tuple[dict, list, list, dict]]:
 
 
 def element_rows(tasks: Iterable[dict]) -> pd.DataFrame:
+    """One row per (usable step, candidate element), with the step's operation as evaluation columns."""
     rows = []
     for ctx, pos, neg, op in steps(tasks):
         ev = {
@@ -219,6 +222,7 @@ def element_rows(tasks: Iterable[dict]) -> pd.DataFrame:
 
 
 def operation_rows(tasks: Iterable[dict]) -> pd.DataFrame:
+    """One row per usable step: its context, the target element's tag and type, and the operation class."""
     rows = []
     for ctx, pos, _, op in steps(tasks):
         target = pos[0]
@@ -242,6 +246,7 @@ def _fold_groups(name: str) -> set[str]:
 
 
 def build_operation(source: Source, download: bool = False) -> pd.DataFrame:
+    """Build ``mind2web/operation`` from the pinned release."""
     return operation_rows(iter_tasks(actions_path(source, download)))
 
 
@@ -298,7 +303,7 @@ def per_domain(result, metric: str = "recall@3", **kw) -> pd.Series:
     return out.rename(metric)
 
 
-_ELEMENT_PAPER = "Table 1, Mind2Web GUI element selection (R@3 per web domain; R@5 in the R@k column)"
+_ELEMENT_PAPER = "Table 1 (GUI element selection: R@3 per web domain, R@5 in the R@k column); App. B.6"
 DATASETS: list[DatasetInfo] = [
     DatasetInfo(
         name="mind2web/operation",
@@ -306,8 +311,8 @@ DATASETS: list[DatasetInfo] = [
         build=build_operation,
         card="mind2web_operation",
         folds="mind2web_groupkfold5",
-        decision="single",
-        paper="Table 1, Operation selection (Mind2Web, 3-way, macro-F1)",
+        decision="operation selection (single-class: CLICK, TYPE or SELECT)",
+        paper="Table 1 (operation selection, macro-F1); App. B.6",
         description="Operation type (CLICK / TYPE / SELECT) of each demonstrated action step.",
     ),
     DatasetInfo(
@@ -316,10 +321,10 @@ DATASETS: list[DatasetInfo] = [
         build=build_element,
         card="mind2web_element",
         folds="mind2web_groupkfold5",
-        decision="ranking",
+        decision="GUI element selection (ranking over 50 candidate elements per step)",
         paper=_ELEMENT_PAPER,
         description="Target element among 50 candidate elements of each action step (all 1,009 tasks).",
-        version=2,  # v2: rows in the paper evaluator's split order
+        version=2,  # rows in the paper evaluator's split order
     ),
     DatasetInfo(
         name="mind2web/element-150",
@@ -327,7 +332,7 @@ DATASETS: list[DatasetInfo] = [
         build=build_element,
         card="mind2web_element",
         folds="mind2web_element_150",
-        decision="ranking",
+        decision="GUI element selection (ranking over 50 candidate elements per step)",
         paper=_ELEMENT_PAPER,
         description="The seeded 150-task sample of mind2web/element behind the paper's element numbers.",
         args={"tasks": "mind2web_element_150"},

@@ -1,4 +1,4 @@
-"""Compile the accepted features into one reusable extractor (paper L306, L443).
+"""Compile the accepted features into one reusable extractor (paper Sec. 3.1; Sec. 4.3).
 
 The paper's TabSchema produces "reusable extractors: Python feature-extraction functions that can be
 re-applied when onboarding a new agent", and "only the resulting extractors are applied to the held-out
@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import warnings
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -45,6 +46,9 @@ class ExtractionError(RuntimeError):
 
 @dataclass
 class CompiledExtractor:
+    """The compiled extractor: its code, the output columns with their frozen types, the feature plan each
+    column implements, what was dropped and why, and per-column quality statistics."""
+
     code: str
     features: dict[str, str]  # output column -> frozen type (text / num / cat)
     specs: dict[str, dict] = field(default_factory=dict)  # output column -> the feature plan it implements
@@ -54,6 +58,7 @@ class CompiledExtractor:
 
     @property
     def sha256(self) -> str:
+        """SHA-256 of the code (recorded in the card, checked when a head is loaded)."""
         return hashlib.sha256(self.code.encode()).hexdigest()
 
 
@@ -109,6 +114,10 @@ def compile_extractor(
     min_success: float = 0.95,
     max_null_rate: float = 0.5,
 ) -> CompiledExtractor:
+    """Write, check and quality-gate one extractor for the ``accepted`` features (see the module docstring).
+
+    Raises ``ExtractionError`` when no code runs on enough decision points or no column passes the gates.
+    """
     if not accepted:
         raise ExtractionError("no accepted features to compile")
     prefixes = [dp.prefix for dp in decision_points]
@@ -169,23 +178,50 @@ def compile_extractor(
 
 
 class ExtractorRunner:
-    """Apply a compiled extractor to decision-point prefixes. ``trusted=True`` runs it in-process (fast,
-    for serving an extractor you have reviewed); otherwise it runs in the sandbox."""
+    """Apply a compiled extractor to decision-point prefixes.
 
-    def __init__(self, code: str, trusted: bool = False, sandbox: SubprocessSandbox | None = None):
-        self.code, self.trusted = code, trusted
+    By default the code runs in the sandbox. ``trust_extractor=True`` runs it in-process, which is fast but
+    gives the code the caller's privileges; use it only for an extractor you have reviewed. A prefix on
+    which the code fails yields ``None`` (no features); failures are counted in ``n_failed`` and reported
+    with a ``RuntimeWarning`` naming the first error.
+    """
+
+    def __init__(
+        self, code: str, trust_extractor: bool = False, sandbox: SubprocessSandbox | None = None
+    ) -> None:
+        self.code, self.trust_extractor = code, trust_extractor
         self.sandbox = sandbox or SubprocessSandbox()
-        self._compiled = compile(code, "<extract.py>", "exec") if trusted else None
+        self._compiled = compile(code, "<extract.py>", "exec") if trust_extractor else None
+        self.n_runs = 0
+        self.n_failed = 0
 
     def run(self, prefixes: list[dict]) -> list[dict | None]:
-        if not self.trusted:
-            return [r.features if r.ok else None for r in self.sandbox.run_batch(self.code, prefixes)]
-        out: list[dict | None] = []
-        for p in prefixes:
-            ns: dict[str, Any] = {"__name__": "__main__", "trajectory": p}
-            try:
-                exec(self._compiled, ns)  # noqa: S102 - trusted, reviewed extractor
-                out.append(ns["features"])
-            except Exception:
-                out.append(None)
+        """The features of each prefix, or None where the extractor failed."""
+        errors: list[str] = []
+        if not self.trust_extractor:
+            out = []
+            for r in self.sandbox.run_batch(self.code, prefixes):
+                out.append(r.features if r.ok else None)
+                if not r.ok:
+                    errors.append(str(r.error))
+        else:
+            out = []
+            for p in prefixes:
+                ns: dict[str, Any] = {"__name__": "__main__", "trajectory": p}
+                try:
+                    exec(self._compiled, ns)  # noqa: S102 - trusted, reviewed extractor
+                    out.append(ns["features"])
+                except Exception as e:  # the extractor is arbitrary code: any failure means no features
+                    out.append(None)
+                    errors.append(f"{type(e).__name__}: {e}")
+        self.n_runs += len(prefixes)
+        self.n_failed += len(errors)
+        if errors:
+            last = errors[0].strip().splitlines()[-1] if errors[0].strip() else "unknown error"
+            warnings.warn(
+                f"the TabSchema extractor failed on {len(errors)} of {len(prefixes)} decision point(s); "
+                f"their features are empty. First error: {last}",
+                RuntimeWarning,
+                stacklevel=2,
+            )
         return out

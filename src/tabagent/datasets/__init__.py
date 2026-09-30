@@ -3,13 +3,13 @@
     from tabagent import datasets
     datasets.available()                                    # what can be built, with licenses and paper rows
     table = datasets.load("skillsbench/skill-select", download=True)
-    card = datasets.card("skillsbench/skill-select")         # the paper's frozen feature card
+    card = datasets.card("skillsbench/skill-select")         # the card behind the paper's number
     folds = datasets.folds("skillsbench/skill-select")       # the paper's task-level fold assignment
 
 Nothing is redistributed: ``load`` rebuilds each table from the upstream release at a pinned revision
-(verified by SHA-256) and caches the result under ``$TABAGENT_CACHE``. Some sources need an explicit opt-in:
-LLMRouterBench (license unresolved upstream, ``accept_license=True``) and AppWorld (obtained only through the
-official ``appworld download data`` command).
+(verified by SHA-256) and caches the result under ``$TABAGENT_CACHE``. Two sources need a step from the user:
+LLMRouterBench (MIT per its README; ``accept_license=True`` confirms that your use complies with the upstream
+terms) and AppWorld (obtained only through the official ``appworld download data`` command).
 """
 
 from __future__ import annotations
@@ -38,12 +38,16 @@ def _registry() -> dict[str, DatasetInfo]:
 
 
 def available() -> pd.DataFrame:
+    """Every registered dataset, one row each: its decision kind and description, benchmark, license, access
+    (``DatasetInfo.access``), redistribution status and the paper result it backs."""
     rows = [
         {
             "name": i.name,
+            "kind": card(i.name).spec.kind,
             "decision": i.decision,
             "benchmark": i.source.benchmark,
             "license": i.source.license,
+            "access": i.access,
             "redistribution": i.source.redistribution,
             "paper": i.paper,
         }
@@ -52,7 +56,13 @@ def available() -> pd.DataFrame:
     return pd.DataFrame(rows).set_index("name") if rows else pd.DataFrame()
 
 
+def names() -> list[str]:
+    """The registered dataset names."""
+    return list(_registry())
+
+
 def info(name: str) -> DatasetInfo:
+    """The ``DatasetInfo`` of ``name``; ``KeyError`` for an unknown name."""
     reg = _registry()
     if name not in reg:
         raise KeyError(f"unknown dataset {name!r}; see tabagent.datasets.available()")
@@ -60,10 +70,12 @@ def info(name: str) -> DatasetInfo:
 
 
 def card(name: str) -> FeatureCard:
+    """The bundled feature card of dataset ``name``: the card behind its paper result."""
     return FeatureCard.load(info(name).card)
 
 
 def folds(name: str) -> dict:
+    """The pinned ``{group: fold}`` assignment of the paper's cross-validation for dataset ``name``."""
     ds = info(name)
     if not ds.folds:
         raise KeyError(f"{name} has no pinned folds")
@@ -98,7 +110,10 @@ def load(
 ) -> DecisionTable:
     """Build (or read from cache) the decision table ``name``, ready for its bundled card.
 
-    ``build_kwargs`` go to the dataset's builder (for example ``root=`` for AppWorld's data directory).
+    ``download`` fetches missing source files (each verified against the pinned SHA-256);
+    ``accept_license`` confirms the upstream terms of datasets that ask for it; ``rebuild`` ignores a cached
+    table. ``build_kwargs`` go to the dataset's builder (for example ``root=`` for AppWorld's data
+    directory).
     """
     ds = info(name)
     if ds.requires_license_acceptance and not accept_license:
@@ -120,4 +135,4 @@ def load(
     return DecisionTable(df, card(name).spec)
 
 
-__all__ = ["DatasetInfo", "Source", "available", "card", "folds", "info", "load"]
+__all__ = ["DatasetInfo", "Source", "available", "card", "folds", "info", "load", "names"]

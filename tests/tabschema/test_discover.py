@@ -194,7 +194,7 @@ def test_discovery_end_to_end(tmp_path):
         len(TASKS[i % 4][1]) for i in range(48) if i % 12
     )
     res = cross_validate(
-        TabAgent(card, head=TabHead("ranking", preset="tmlr-runs", iterations=60)),
+        TabAgent(card, head=TabHead("ranking", preset="paper", iterations=60)),
         table,
         n_splits=4,
         seeds=(0,),
@@ -210,7 +210,7 @@ def test_discovery_end_to_end(tmp_path):
     assert len(llm.calls) == n_calls
 
 
-def test_retry_prompt_matches_original_pipeline():
+def test_retry_prompt_carries_the_error_and_the_attempt_number():
     block = generate_retry_prompt(1, "KeyError: 'x'", "print(1)")
     assert "PREVIOUS ATTEMPT FAILED:" in block and "Attempt #2" in block and "KeyError" in block
     assert generate_retry_prompt(0, "e", "c") == ""

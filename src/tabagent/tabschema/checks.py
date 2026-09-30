@@ -1,9 +1,9 @@
 """Deterministic checks on LLM-written extraction code and its output.
 
-They complement the CodeValidator (an LLM judge, paper L1216) with rules that need no model:
+They complement the CodeValidator (an LLM judge, paper App. D.1) with rules that need no model:
 
 * the code parses, imports only allowed standard-library modules, and calls no dangerous builtins;
-* it follows the CodeExtractor contract (``dict['key']`` access, never ``.get()``, L1293);
+* it follows the CodeExtractor contract (``dict['key']`` access, never ``.get()``; App. D.2);
 * every constant key path it reads from the trajectory exists in the union schema of the onboarding
   prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for);
 * it never reads post-hoc outcome fields (scores, rewards, evaluator results);
@@ -52,6 +52,8 @@ ROOTS = ("trajectory_data", "trajectory")
 
 @dataclass(frozen=True)
 class Issue:
+    """One rule violation found in extraction code or its output."""
+
     kind: str  # syntax | import | call | uses_get | unknown_field | outcome_field | output
     detail: str
 
@@ -109,6 +111,8 @@ def _covered(path: tuple[str, ...], known: set[tuple]) -> bool:
 def check_code(
     code: str, known_paths: set[tuple] | None = None, outcome_keys: tuple[str, ...] = ()
 ) -> list[Issue]:
+    """Static checks of extraction ``code`` (see the module docstring); ``known_paths`` is the union schema
+    of the onboarding prefixes and ``outcome_keys`` the fields the code must never read."""
     try:
         tree = ast.parse(code)
     except SyntaxError as e:
@@ -140,6 +144,7 @@ def check_code(
 
 
 def check_output(features: Any) -> list[Issue]:
+    """Issues with one extractor output: it must be a flat dict of JSON scalars."""
     if not isinstance(features, dict):
         return [Issue("output", "features must be a dict")]
     bad = [k for k, v in features.items() if not (v is None or isinstance(v, (str, int, float, bool)))]

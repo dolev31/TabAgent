@@ -1,4 +1,4 @@
-"""Efficiency Pareto plot (Fig. 4, ``fig:pareto_new``): latency x quality, marker area = cost-efficiency.
+"""Efficiency Pareto plot (paper Fig. 4; App. F, Fig. 9): latency x quality, marker area = cost-efficiency.
 
 Takes measured (latency, cost, quality) points: x is per-decision latency (log ms), y is decision quality
 (P@R), and marker area grows as cost falls (area = 24 + 9 * (-log10 $)^2, TabAgent's star scaled by 2.9, as in
@@ -46,8 +46,9 @@ class Point:
             raise ValueError(f"{self.name}: latency and cost must be positive")
 
 
-#: The points of the paper's Fig. 4 (AppWorld shortlisting, private data; GPU-served SLMs on a V100, costs by
-#: ``cost.c_local``; TabAgent CPU, ``cost.c_cpu``; GPT-5.4 at its API latency and metered charge).
+#: The points of the paper's Fig. 4 (AppWorld shortlisting on the CUGA agent's trajectories, which are not
+#: released; GPU-served SLMs on a V100, costs by ``cost.c_local``; TabAgent on CPU, ``cost.c_cpu``, as
+#: reported in Table 15; GPT-5.4 at its API latency and metered charge).
 PAPER_POINTS = [
     Point("TabAgent (paper, AppWorld)", 2.682, 2.0e-7, 0.794, "tabagent", "paper, AppWorld"),
     Point("Llama-1B FT", 277.6, 2.08e-5, 0.669, "finetuned", "paper, AppWorld"),

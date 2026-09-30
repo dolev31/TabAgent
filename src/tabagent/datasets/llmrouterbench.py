@@ -1,10 +1,10 @@
-"""LLMRouterBench model routing on τ²-bench (paper Table 1, policy family; App. "LLMRouterBench").
+"""LLMRouterBench model routing on τ²-bench (paper Table 1, policy family; App. B.7).
 
 LLMRouterBench (li2026llmrouterbench) ships, for each of its models, one cached evaluation per task. Its
 τ²-bench test partition is dense: the same 278 tasks were run by 12 models, so every (task, model) pair has
 an executed binary outcome and a realized cost. Each row of the decision table is one (task, model) pair:
 
-  task_uid        group id (the trajectory-corpus id: a hash of the task index and its query)
+  task_uid        group id (``stable_uid`` of the task index and a hash of its query)
   task_index      the task's index in the upstream files
   origin_query    the τ² task instruction, the only pre-decision context
   model_id        the candidate model
@@ -17,7 +17,9 @@ model's success on similar tasks) is fitted inside the training folds.
 
 The upstream release is a single 1.3 GB archive on Hugging Face. ``download=True`` fetches it once
 (SHA-256 verified), extracts the 12 τ²-bench test files (66 MB, each verified) and deletes the archive.
-The upstream license is unresolved, so ``load`` needs ``accept_license=True``.
+LLMRouterBench is MIT-licensed, as its README declares (the repository ships no LICENSE file). TabAgent
+redistributes none of the data; ``load`` asks for ``accept_license=True`` to confirm that your use complies
+with the upstream terms.
 """
 
 from __future__ import annotations
@@ -46,14 +48,13 @@ SOURCE = Source(
     url="https://huggingface.co/datasets/NPULH/LLMRouterBench",
     revision=HF_REVISION,
     release_id=f"hf-{HF_REVISION}",
-    license="license unresolved upstream (the README states MIT, but no license text is published)",
-    redistribution="unresolved",
+    license="MIT (declared in the upstream README; the repository ships no LICENSE file)",
+    redistribution="redistributable",
     citation="li2026llmrouterbench",
     notes=(
-        f"The LLMRouterBench README (github.com/ynulihao/LLMRouterBench at {CODE_REVISION[:7]}) shows an MIT "
-        "badge that links to a LICENSE file the repository does not contain, and the Hugging Face dataset "
-        "declares no license. TabAgent redistributes none of the data: it downloads the pinned archive from "
-        "Hugging Face and keeps only the 12 tau2-bench test files."
+        f"The LLMRouterBench README (github.com/ynulihao/LLMRouterBench at {CODE_REVISION[:7]}) declares the "
+        "MIT license. TabAgent redistributes none of the data: it downloads the pinned archive from Hugging "
+        "Face and keeps only the 12 tau2-bench test files."
     ),
 )
 
@@ -98,14 +99,17 @@ def _domain(text: str) -> str:
 
 
 def model_family(df: pd.DataFrame, col: str = "model_id") -> pd.Series:
+    """The model's family (claude, gemini, gpt, ...), from its name."""
     return df[col].map(_family)
 
 
 def is_reasoning_model(df: pd.DataFrame, col: str = "model_id") -> pd.Series:
+    """1.0 for the two reasoning models of the release."""
     return df[col].isin(REASONING).astype(float)
 
 
 def list_price(df: pd.DataFrame, col: str = "model_id", side: str = "in") -> pd.Series:
+    """The model's public list price (USD per 1M ``in``put or ``out``put tokens)."""
     i = {"in": 0, "out": 1}[side]
     return df[col].map(lambda m: PRICE.get(m, (np.nan, np.nan))[i]).astype(float)
 
@@ -117,6 +121,7 @@ def price_rank(df: pd.DataFrame, col: str = "model_id") -> pd.Series:
 
 
 def query_domain(df: pd.DataFrame, col: str = "origin_query") -> pd.Series:
+    """The τ² domain the query's keywords point to (airline, retail, telecom or unknown)."""
     return df[col].fillna("").astype(str).map(_domain)
 
 
@@ -234,7 +239,7 @@ DATASETS: list[DatasetInfo] = [
         card="llmrouterbench_model_routing",
         folds="llmrouterbench_tau2",
         decision="model routing (policy): route each tau2-bench task to one of 12 LLMs",
-        paper="Table 1, model routing: route@1 68 (best fixed model 70, chance 43, oracle 94)",
+        paper="Table 1 (model routing); App. B.7; App. M, Table 20",
         description=(
             "278 tau2-bench test tasks x 12 models (3,336 rows); label and reward = executed success, "
             "with realized cost and tokens as evaluation columns."

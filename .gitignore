@@ -22,7 +22,7 @@ catboost_info/
 .env.*
 !.env.example
 
-# Data, results and run artifacts never live in the repo (see scripts/privacy_guard.py).
+# Data, results and run artifacts never live in the repo.
 /data/
 /results*/
 /runs/

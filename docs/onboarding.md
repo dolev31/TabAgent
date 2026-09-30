@@ -5,7 +5,9 @@ export OPENAI_API_KEY=...                       # or OPENAI_BASE_URL (any OpenAI
                                                 # or ANTHROPIC_API_KEY / GEMINI_API_KEY with tabagent[llm]
 tabagent components ./logs                      # the decisions you can replace, with counts
 tabagent onboard ./logs --decision ToolShortlist --dry-run
-tabagent onboard ./logs --decision ToolShortlist --out ./my_head --max-cost 50
+tabagent onboard ./logs --decision ToolShortlist --out ./my_head
+tabagent onboard ./logs --decision ToolShortlist --out ./my_head \
+    --max-cost 50 --price-in "$PRICE_IN" --price-out "$PRICE_OUT"   # a budget, in USD per 1M tokens
 ```
 
 `tabagent.onboard()` detects the log format, runs TabSchema discovery on the successful runs, builds the
@@ -31,8 +33,9 @@ outcome are treated as successful with a warning in the report.
 
 Trajectories are sent to your LLM provider during discovery. Pass `redact=` (a function applied to every
 trajectory before anything is sent) to scrub personal data. `--dry-run` reports the trajectories, decision
-points and an estimate of the tokens before any call; `max_cost_usd` stops discovery when exceeded (pass
-`prices=` to price your model). Run directories hold trajectory text and live outside the repository
+points and an estimate of the tokens before any call. `max_cost_usd` (`--max-cost`) stops discovery when
+the LLM cost exceeds it; it needs the model's prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}`
+(`--price-in`, `--price-out`), and is refused for a model without a price. Run directories hold trajectory text and live outside the repository
 (`~/.cache/tabagent/runs` by default).
 
 ## Review the extractor

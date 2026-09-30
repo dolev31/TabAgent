@@ -17,11 +17,11 @@ class FakeHead:
             return {"name": "demo"}
 
     def decide(self, prefix, candidates, k=None, defer_below=None):
-        return {"choice": candidates[:k], "scores": {}, "confidence": 1.0, "defer": False}
+        return {"candidates": candidates[:k], "scores": {}, "confidence": 1.0, "deferred": False}
 
 
 def test_decide_endpoint():
     client = TestClient(create_app(FakeHead()))
     assert client.get("/health").json()["target"] == "ShortlisterAgent"
     r = client.post("/decide", json={"prefix": {"steps": []}, "candidates": ["a", "b", "c"], "k": 2})
-    assert r.status_code == 200 and r.json()["choice"] == ["a", "b"]
+    assert r.status_code == 200 and r.json()["candidates"] == ["a", "b"]

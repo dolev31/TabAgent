@@ -8,8 +8,8 @@ skills each task ships under ``environment/skills/<skill>/SKILL.md``).
     Set retrieval over the skill catalog (Table 1: P@R, R@9; Fig. 2 candidate overload; Fig. 3 head
     ablation). One row per (task, catalog skill), 87 tasks x 195 skills. The label says whether the skill is
     in the task's curated bundle. A skill's text is the first 800 characters of its SKILL.md (whitespace
-    collapsed), taken from the first task, by name, that ships it. The paper's "196 skills" counts skill
-    directories: one of them, ``licenses/``, holds license files and no SKILL.md.
+    collapsed), taken from the first task, by name, that ships it. Its card is
+    ``skillsbench_skill_select_noprior``; ``skillsbench_skill_select`` adds an in-fold candidate prior.
 ``skillsbench/skill-gating``
     A policy over two arms per task, ``with`` (activate the task's bundle) and ``without`` (Table 1, gated
     reward against always-activate). Audit-kept runs of one backbone (gemini-3.5-flash), tasks with both
@@ -17,11 +17,11 @@ skills each task ships under ``environment/skills/<skill>/SKILL.md``).
 ``skillsbench/skill-gating-enriched``
     The same gate for every audited backbone (gemini-3.5-flash, minimax-m3, opus-4.8); one decision per
     (task, backbone) with both arms observed. ``skill_gain`` (with minus without reward of the pair) is an
-    outcome column, used only to fit the per-backbone gain prior.
+    outcome column, used only to fit the per-backbone gain prior. Not reported in the paper.
 
 Runs whose audit verdict is an infrastructure failure or unclear are excluded from every label. Skill texts
-always come from SKILL.md: the pre-release build took the first ``*.md`` its file system listed, which for
-6 of the 195 skills was another file (a README or reference page).
+always come from the skill's SKILL.md, never from the other Markdown files a skill directory may hold (a
+README or reference pages).
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ SOURCE = Source(
 RUNS = "leaderboard/analysis/skillsbench/v1.1/official-selected/selected_runs.jsonl"
 TASKS = "tasks/tasks/"
 KEPT_VERDICTS = frozenset({"pass", "model_capability_failure"})  # capability outcomes; infra/unclear dropped
-MODES = ("without", "with")  # arm order within a decision (the pre-release row order)
+MODES = ("without", "with")  # arm order within a decision
 DESC_CHARS, BUNDLE_CHARS = 800, 600
 
 
@@ -59,11 +59,12 @@ def _clean(text: str) -> str:
 
 
 def task_uid(name: str) -> str:
-    """The corpus task id (identical to the pre-release ``task_uid``)."""
+    """The task id: ``stable_uid("task", <source id>, name, "")``, the key of the pinned fold files."""
     return stable_uid("task", SOURCE.id, name, "")
 
 
 def read_runs(source: Source, download: bool = False) -> list[dict]:
+    """The audited run index (``selected_runs.jsonl``), one dict per execution."""
     with open(source.path(RUNS, download), encoding="utf-8") as f:
         return [json.loads(line) for line in f if line.strip()]
 
@@ -95,6 +96,7 @@ def _skill_name(skill: str) -> str:
 
 # --------------------------------------------------------------------------- skill selection
 def skill_select_frame(tasks: dict[str, dict]) -> pd.DataFrame:
+    """One row per (task, catalog skill) from ``read_tasks`` output."""
     catalog: dict[str, str] = {}
     for t in tasks.values():  # the first task (by name) shipping a skill defines its text
         for skill, md in t["skills"].items():
@@ -171,10 +173,10 @@ DATASETS: list[DatasetInfo] = [
         name="skillsbench/skill-select",
         source=SOURCE,
         build=build_skill_select,
-        card="skillsbench_skill_select",
+        card="skillsbench_skill_select_noprior",
         folds="skillsbench_skill_select",
         decision="skill selection (set retrieval)",
-        paper="Table 1 skill selection (P@R 74, R@9 87); Fig. 2a; Fig. 3",
+        paper="Table 1 (skill selection); Fig. 2a; Fig. 3; App. M, Table 20",
         description="87 SkillsBench tasks x 195 catalog skills; label = skill in the task's curated bundle.",
     ),
     DatasetInfo(
@@ -184,7 +186,7 @@ DATASETS: list[DatasetInfo] = [
         card="skillsbench_skill_gating",
         folds="skillsbench_skill_gating",
         decision="skill gating (policy)",
-        paper="Table 1 skill gating (gated reward 49, always-activate 50, chance 46, oracle 56)",
+        paper="Table 1 (skill gating); App. M, Table 20",
         description="84 tasks x {with, without} skills (gemini-3.5-flash); reward = mean verifier reward.",
     ),
     DatasetInfo(
@@ -194,7 +196,7 @@ DATASETS: list[DatasetInfo] = [
         card="skillsbench_skill_gating_enriched",
         folds="skillsbench_skill_gating_enriched",
         decision="skill gating (policy)",
-        paper="not in the paper (pre-release three-backbone variant)",
+        paper="not reported in the paper (skill gating over three backbones)",
         description="Gate per (task, backbone) for gemini-3.5-flash, minimax-m3 and opus-4.8.",
         args={"models": None},
     ),

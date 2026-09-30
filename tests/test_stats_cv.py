@@ -7,8 +7,8 @@ from tabagent.table import DecisionSpec, DecisionTable
 
 
 # --------------------------------------------------------------------------- stats
-def _legacy_paired_ci(a, b, seed):
-    """Verbatim logic of the pre-release paired bootstrap (percentile, 2,000 resamples)."""
+def _reference_paired_ci(a, b, seed):
+    """Reference paired percentile bootstrap: 2,000 resamples, one ``rng.integers(0, n, n)`` draw each."""
     rng = np.random.default_rng(seed)
     n = len(a)
     deltas = [(a[idx] - b[idx]).mean() for idx in (rng.integers(0, n, n) for _ in range(2000))]
@@ -16,11 +16,11 @@ def _legacy_paired_ci(a, b, seed):
     return lo, hi
 
 
-def test_percentile_bootstrap_reproduces_legacy_exactly():
+def test_percentile_bootstrap_matches_the_reference_draws_bit_for_bit():
     rng = np.random.default_rng(3)
     a, b = rng.random(87), rng.random(87)
     iv = stats.paired_bootstrap(a, b, seed=20260720)
-    lo, hi = _legacy_paired_ci(a, b, 20260720)
+    lo, hi = _reference_paired_ci(a, b, 20260720)
     assert (iv.low, iv.high) == (lo, hi)
     assert iv.estimate == pytest.approx((a - b).mean())
 
@@ -40,15 +40,11 @@ def test_pvalue_small_for_clear_effect():
 
 
 # --------------------------------------------------------------------------- folds
-def _legacy_groupkfold(groups, n_splits=5, seed=0):
-    uniq = list(dict.fromkeys(groups))
-    np.random.default_rng(seed).shuffle(uniq)
-    return {g: i % n_splits for i, g in enumerate(uniq)}
-
-
-def test_assign_folds_matches_legacy_in_appearance_order():
+def test_folds_deal_shuffled_sorted_groups_round_robin():
     groups = [f"task{i}" for i in np.random.default_rng(0).permutation(137)]
-    assert cv.assign_folds(groups, 5, 20260720, order="appearance") == _legacy_groupkfold(groups, 5, 20260720)
+    uniq = sorted(groups)
+    np.random.default_rng(20260720).shuffle(uniq)
+    assert cv.assign_folds(groups, 5, 20260720) == {g: i % 5 for i, g in enumerate(uniq)}
 
 
 def test_sorted_folds_do_not_depend_on_row_order():
@@ -119,6 +115,13 @@ def test_cross_validate_never_trains_on_held_out_groups():
         assert not (train & test)
         assert not has_labels and "used" not in cols
     assert res.oof.shape == (len(t), 2) and not res.oof.isna().any().any()
+
+
+def test_cross_validate_defaults_to_the_paper_seeds():
+    from tabagent.defaults import DEFAULT_SEED, PAPER_SEEDS
+
+    res = cv.cross_validate(Spy(), _table())
+    assert res.seeds == list(PAPER_SEEDS) and DEFAULT_SEED == PAPER_SEEDS[0] == 20260720
 
 
 def test_cv_result_metrics_and_compare():
