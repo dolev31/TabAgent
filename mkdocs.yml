@@ -5,10 +5,12 @@ repo_url: https://github.com/dolev31/TabAgent
 repo_name: TabAgent
 copyright: Copyright &copy; 2026 The TabAgent authors. Code released under the Apache-2.0 license.
 
-# Theme overrides live under docs/ but are templates, not pages.
+# Theme overrides live under docs/ but are templates, not pages. releasing.md is for maintainers (linked from
+# CONTRIBUTING.md), not part of the site.
 exclude_docs: |
   /overrides/
   /hooks/
+  /releasing.md
 
 hooks:
   - docs/hooks/faq.py

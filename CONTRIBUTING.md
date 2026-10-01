@@ -35,6 +35,11 @@ paper number must also update `experiments/paper_cells.yaml` and say why in the 
 Never commit benchmark data, agent trajectories, model weights or API keys. Datasets are downloaded at run time
 from their pinned upstream releases, and test fixtures are small, fabricated and marked as such.
 
+## Releases
+
+Maintainers publish a version to PyPI by pushing a version tag; [docs/releasing.md](docs/releasing.md) has the
+steps and the one-time PyPI setup.
+
 ## License
 
 By contributing you agree that your contribution is licensed under the Apache License 2.0.

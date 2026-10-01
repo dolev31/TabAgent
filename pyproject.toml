@@ -1,12 +1,11 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling>=1.27", "hatch-fancy-pypi-readme>=24.1"]
 build-backend = "hatchling.build"
 
 [project]
 name = "tabagent"
-dynamic = ["version"]
+dynamic = ["version", "readme"]
 description = "Distill an LLM agent's closed-set decisions into cheap tabular classifiers: TabSchema, TabSynth, TabHead."
-readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE", "NOTICE"]
 requires-python = ">=3.10"
@@ -74,7 +73,44 @@ path = "src/tabagent/__init__.py"
 packages = ["src/tabagent"]
 
 [tool.hatch.build.targets.sdist]
-include = ["src/tabagent", "tests", "README.md", "LICENSE", "NOTICE", "pyproject.toml"]
+# Anchored paths: an unanchored "README.md" also matches experiments/*/README.md. experiments/ ships because
+# tests/experiments imports it; docs/ (the site and its images), .github/ and uv.lock stay out.
+include = [
+  "/src/tabagent", "/tests", "/experiments", "/examples",
+  "/README.md", "/LICENSE", "/NOTICE", "/CITATION.cff", "/pyproject.toml",
+]
+
+# PyPI's long description is README.md with its repository-relative links made absolute, so the one file renders
+# on GitHub and on pypi.org. pypi.org has no dark theme and its sanitizer drops <source>: the light <img> stays.
+[tool.hatch.metadata.hooks.fancy-pypi-readme]
+content-type = "text/markdown"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.fragments]]
+path = "README.md"
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# the README's HTML comment markers around the author blocks
+pattern = '<!-- /?named -->\n'
+replacement = ''
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+pattern = '[ \t]*<source media="\(prefers-color-scheme: dark\)"[^>]*>\n'
+replacement = ''
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# HTML images
+pattern = '(src|srcset)="(?!https?://)([^"]+)"'
+replacement = '\1="https://raw.githubusercontent.com/dolev31/TabAgent/main/\2"'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# Markdown images
+pattern = '(!\[[^\]]*\])\((?!https?://)([^)\s]+)\)'
+replacement = '\1(https://raw.githubusercontent.com/dolev31/TabAgent/main/\2)'
+
+[[tool.hatch.metadata.hooks.fancy-pypi-readme.substitutions]]
+# Markdown links to files in the repository (in-page #anchors keep working on PyPI)
+pattern = '\]\((?!https?://|#|mailto:)([^)\s]+)\)'
+replacement = '](https://github.com/dolev31/TabAgent/blob/main/\1)'
 
 [tool.ruff]
 line-length = 110
