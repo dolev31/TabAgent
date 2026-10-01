@@ -19,38 +19,54 @@ keywords:
 authors:
   - family-names: Levy
     given-names: Ido
+    affiliation: "IBM; Weizmann Institute of Science"
   - family-names: Shlomov
     given-names: Segev
+    affiliation: "IBM"
   - family-names: Yaeli
     given-names: Avi
+    affiliation: "IBM"
   - family-names: Mashkif
     given-names: Nir
+    affiliation: "IBM"
   - family-names: Adi
     given-names: Asaf
-  - family-names: Goldshtein
+    affiliation: "IBM"
+  - family-names: Goldstein
     given-names: Yinon
+    affiliation: "IBM"
   - family-names: Shapira
     given-names: Eilam
+    affiliation: "IBM"
   - family-names: Choshen
     given-names: Leshem
+    affiliation: "IBM; Weizmann Institute of Science"
 preferred-citation:
   type: generic
   title: "TabAgent: Distilling LLM Agent Components into Cheap Classifiers"
   authors:
     - family-names: Levy
       given-names: Ido
+      affiliation: "IBM; Weizmann Institute of Science"
     - family-names: Shlomov
       given-names: Segev
+      affiliation: "IBM"
     - family-names: Yaeli
       given-names: Avi
+      affiliation: "IBM"
     - family-names: Mashkif
       given-names: Nir
+      affiliation: "IBM"
     - family-names: Adi
       given-names: Asaf
-    - family-names: Goldshtein
+      affiliation: "IBM"
+    - family-names: Goldstein
       given-names: Yinon
+      affiliation: "IBM"
     - family-names: Shapira
       given-names: Eilam
+      affiliation: "IBM"
     - family-names: Choshen
       given-names: Leshem
+      affiliation: "IBM; Weizmann Institute of Science"
   year: 2026

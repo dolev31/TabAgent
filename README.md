@@ -13,7 +13,10 @@
 successful runs.**
 
 <!-- named -->
-Ido Levy · Segev Shlomov · Avi Yaeli · Nir Mashkif · Asaf Adi · Yinon Goldshtein · Eilam Shapira · Leshem Choshen
+Ido Levy<sup>1,2</sup> · Segev Shlomov<sup>1</sup> · Avi Yaeli<sup>1</sup> · Nir Mashkif<sup>1</sup> · Asaf Adi<sup>1</sup> ·
+Yinon Goldstein<sup>1</sup> · Eilam Shapira<sup>1</sup> · Leshem Choshen<sup>1,2</sup>
+
+<sup>1</sup>IBM · <sup>2</sup>Weizmann Institute of Science
 
 [![Docs](https://img.shields.io/badge/docs-dolev31.github.io%2FTabAgent-1B5EA8)](https://dolev31.github.io/TabAgent/)
 [![CI](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml)
@@ -269,7 +272,7 @@ If you use TabAgent, please cite the paper:
 @misc{levy2026tabagent,
   title  = {TabAgent: Distilling LLM Agent Components into Cheap Classifiers},
   author = {Levy, Ido and Shlomov, Segev and Yaeli, Avi and Mashkif, Nir and Adi, Asaf and
-            Goldshtein, Yinon and Shapira, Eilam and Choshen, Leshem},
+            Goldstein, Yinon and Shapira, Eilam and Choshen, Leshem},
   year   = {2026}
 }
 ```

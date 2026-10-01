@@ -47,14 +47,14 @@
         "name": {{ ta_paper | tojson }},
 {# named #}
         "author": [
-          {"@type": "Person", "name": "Ido Levy"},
-          {"@type": "Person", "name": "Segev Shlomov"},
-          {"@type": "Person", "name": "Avi Yaeli"},
-          {"@type": "Person", "name": "Nir Mashkif"},
-          {"@type": "Person", "name": "Asaf Adi"},
-          {"@type": "Person", "name": "Yinon Goldshtein"},
-          {"@type": "Person", "name": "Eilam Shapira"},
-          {"@type": "Person", "name": "Leshem Choshen"}
+          {"@type": "Person", "name": "Ido Levy", "affiliation": [{"@type": "Organization", "name": "IBM"}, {"@type": "Organization", "name": "Weizmann Institute of Science"}]},
+          {"@type": "Person", "name": "Segev Shlomov", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Avi Yaeli", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Nir Mashkif", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Asaf Adi", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Yinon Goldstein", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Eilam Shapira", "affiliation": {"@type": "Organization", "name": "IBM"}},
+          {"@type": "Person", "name": "Leshem Choshen", "affiliation": [{"@type": "Organization", "name": "IBM"}, {"@type": "Organization", "name": "Weizmann Institute of Science"}]}
         ],
 {# /named #}
         "headline": {{ ta_paper | tojson }}

@@ -13,7 +13,8 @@ hide:
 <p class="ta-hero__paper" markdown>Code for the paper *TabAgent: Distilling LLM Agent Components into Cheap Classifiers*.</p>
 
 <!-- named -->
-<p class="ta-hero__authors">Ido&nbsp;Levy&nbsp;· Segev&nbsp;Shlomov&nbsp;· Avi&nbsp;Yaeli&nbsp;· Nir&nbsp;Mashkif&nbsp;· Asaf&nbsp;Adi&nbsp;· Yinon&nbsp;Goldshtein&nbsp;· Eilam&nbsp;Shapira&nbsp;· Leshem&nbsp;Choshen</p>
+<p class="ta-hero__authors">Ido&nbsp;Levy<sup>1,2</sup>&nbsp;· Segev&nbsp;Shlomov<sup>1</sup>&nbsp;· Avi&nbsp;Yaeli<sup>1</sup>&nbsp;· Nir&nbsp;Mashkif<sup>1</sup>&nbsp;· Asaf&nbsp;Adi<sup>1</sup>&nbsp;· Yinon&nbsp;Goldstein<sup>1</sup>&nbsp;· Eilam&nbsp;Shapira<sup>1</sup>&nbsp;· Leshem&nbsp;Choshen<sup>1,2</sup></p>
+<p class="ta-hero__authors"><sup>1</sup>IBM&nbsp;· <sup>2</sup>Weizmann&nbsp;Institute&nbsp;of&nbsp;Science</p>
 <!-- /named -->
 
 <div class="ta-hero__actions" markdown>
@@ -233,7 +234,7 @@ If you use TabAgent, please cite the paper:
 @misc{levy2026tabagent,
   title  = {TabAgent: Distilling LLM Agent Components into Cheap Classifiers},
   author = {Levy, Ido and Shlomov, Segev and Yaeli, Avi and Mashkif, Nir and Adi, Asaf and
-            Goldshtein, Yinon and Shapira, Eilam and Choshen, Leshem},
+            Goldstein, Yinon and Shapira, Eilam and Choshen, Leshem},
   year   = {2026}
 }
 ```
