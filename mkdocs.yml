@@ -8,6 +8,10 @@ copyright: Copyright &copy; 2026 The TabAgent authors. Code released under the A
 # Theme overrides live under docs/ but are templates, not pages.
 exclude_docs: |
   /overrides/
+  /hooks/
+
+hooks:
+  - docs/hooks/faq.py
 
 theme:
   name: material
@@ -50,7 +54,10 @@ extra_css:
 
 # Search-engine verification and the visitor counter. docs/overrides/main.html emits each tag only when its code is
 # set here, so the site carries none of them until then.
-# extra:
+extra:
+  # The paper's PDF beside the page, fetched from arXiv by the Pages workflow (Google Scholar attaches a PDF only
+  # from the page's own directory). The workflow drops the citation_pdf_url tag if the fetch fails.
+  paper_pdf: paper.pdf
 #   google_site_verification: TOKEN   # Google Search Console, URL-prefix property, HTML-tag method
 #   bing_site_verification: TOKEN     # Bing Webmaster Tools, meta-tag method (msvalidate.01)
 #   goatcounter: CODE                 # GoatCounter site code (CODE.goatcounter.com): counts visits without cookies

@@ -541,18 +541,6 @@
 
 /* ---------------------------------------------------------------- landing: how it works */
 
-.md-typeset .ta-diagram {
-  background-color: var(--ta-surface-alt);
-  border: 1px solid var(--ta-border);
-  border-radius: var(--ta-radius);
-  padding: 0.8rem 1rem;
-}
-
-.md-typeset .ta-diagram .mermaid {
-  margin: 0;
-  text-align: center;
-}
-
 [dir] .md-typeset .ta-steps ol {
   counter-reset: ta-step;
   display: grid;
@@ -777,18 +765,10 @@
 }
 
 @media screen and (max-width: 44.984375em) {
-  /* Wide tables and the flowchart scroll sideways on phones instead of squeezing into tall cells. */
+  /* Wide tables scroll sideways on phones instead of squeezing into tall cells. */
   .md-typeset .ta-results table:not([class]),
   .md-typeset .ta-examples table:not([class]) {
     min-width: 34rem;
-  }
-
-  .md-typeset .ta-diagram {
-    overflow-x: auto;
-  }
-
-  .md-typeset .ta-diagram .mermaid {
-    min-width: 40rem;
   }
 
   .md-typeset .grid.ta-guides {
@@ -811,4 +791,61 @@
   .md-typeset .ta-lead {
     text-align: left;
   }
+}
+
+/* How it works: the pipeline as static HTML (no diagram library on the landing page). */
+.md-typeset .ta-pipeline {
+  align-items: stretch;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  justify-content: center;
+  margin: 1.2rem 0 1.6rem;
+}
+.md-typeset .ta-pipeline__step {
+  background: var(--md-default-bg-color);
+  border: 1px solid var(--md-default-fg-color--lightest);
+  border-radius: 0.5rem;
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  justify-content: center;
+  min-width: 7.5rem;
+  padding: 0.55rem 0.7rem;
+  text-align: center;
+}
+.md-typeset .ta-pipeline__step strong {
+  font-size: 0.72rem;
+}
+.md-typeset .ta-pipeline__step span {
+  color: var(--md-default-fg-color--light);
+  font-size: 0.62rem;
+  line-height: 1.35;
+}
+.md-typeset .ta-pipeline__step--key {
+  background: color-mix(in srgb, var(--md-primary-fg-color) 8%, var(--md-default-bg-color));
+  border-color: color-mix(in srgb, var(--md-primary-fg-color) 55%, transparent);
+}
+.md-typeset .ta-pipeline__step--key strong {
+  color: var(--md-primary-fg-color);
+}
+.md-typeset .ta-pipeline__arrow {
+  align-self: center;
+  color: var(--md-primary-fg-color);
+  font-weight: 700;
+}
+@media screen and (max-width: 44.9375em) {
+  .md-typeset .ta-pipeline {
+    flex-direction: column;
+  }
+  .md-typeset .ta-pipeline__arrow {
+    transform: rotate(90deg);
+  }
+}
+
+/* Links inside running text are underlined, so they do not rely on color alone (WCAG 1.4.1). */
+.md-typeset :is(p, li, td, dd) > a:not(.md-button) {
+  text-decoration: underline;
+  text-decoration-thickness: 0.06em;
+  text-underline-offset: 0.18em;
 }

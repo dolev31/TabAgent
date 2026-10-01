@@ -138,17 +138,18 @@ classifier, with the surrounding agent left unchanged.
 
 ## How it works
 
-<div class="ta-diagram" markdown>
-
-```mermaid
-flowchart LR
-    T[successful agent<br/>trajectories] --> S[TabSchema<br/>LLM-driven feature discovery]
-    S --> C[feature card<br/>+ compiled extractor]
-    C --> Y[TabSynth<br/>label-preserving paraphrases]
-    Y --> H[TabHead<br/>CatBoost over the card]
-    H --> D[decision:<br/>top-k / label / route]
-```
-
+<div class="ta-pipeline" role="img" aria-label="Successful agent trajectories go to TabSchema, LLM-driven feature discovery, which produces a feature card and a compiled extractor; TabSynth adds label-preserving paraphrases; TabHead, CatBoost over the card, returns the decision: a top-k shortlist, a label or a route.">
+  <div class="ta-pipeline__step"><strong>successful agent</strong><span>trajectories</span></div>
+  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
+  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabSchema</strong><span>LLM-driven feature discovery</span></div>
+  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
+  <div class="ta-pipeline__step"><strong>feature card</strong><span>+ compiled extractor</span></div>
+  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
+  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabSynth</strong><span>label-preserving paraphrases</span></div>
+  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
+  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabHead</strong><span>CatBoost over the card</span></div>
+  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
+  <div class="ta-pipeline__step"><strong>decision</strong><span>top-k / label / route</span></div>
 </div>
 
 <div class="ta-steps" markdown>
@@ -164,12 +165,12 @@ flowchart LR
 </div>
 
 <figure class="ta-figure" markdown="span">
-  ![TabSchema: feature analyzer, code extractor and validator, feature aggregator, three judges and a meta-judge produce the feature schema](assets/tabschema.png)
+  ![TabSchema: feature analyzer, code extractor and validator, feature aggregator, three judges and a meta-judge produce the feature schema](assets/tabschema.png){ loading=lazy decoding=async }
   <figcaption>TabSchema compiles trajectory-derived schema, state, and dependency signals into tabular features.</figcaption>
 </figure>
 
 <figure class="ta-figure" markdown="span">
-  ![TabHead: numerical, categorical and textual features plus the tool catalog go into one tabular-textual unit that outputs a ranked shortlist](assets/tabhead.png)
+  ![TabHead: numerical, categorical and textual features plus the tool catalog go into one tabular-textual unit that outputs a ranked shortlist](assets/tabhead.png){ loading=lazy decoding=async }
   <figcaption>TabHead consumes features and candidates to output per-candidate probabilities.</figcaption>
 </figure>
 
@@ -203,7 +204,7 @@ baseline, and sub-agent routing and skill gating, where it is on par with the be
 <div class="ta-findings" markdown>
 
 <figure class="ta-figure" markdown="span">
-  ![Per-decision latency against shortlisting quality: TabAgent is the fastest and cheapest point, near the top on quality](assets/pareto.png)
+  ![Per-decision latency against shortlisting quality: TabAgent is the fastest and cheapest point, near the top on quality](assets/pareto.png){ loading=lazy decoding=async }
   <figcaption>Per-decision latency (x, log ms) against shortlisting quality P@R (y). TabAgent (star) is the fastest and cheapest point while remaining near the top on quality; filled circles are fine-tuned small LLMs, open circles the same models few-shot. Figure from the paper.</figcaption>
 </figure>
 

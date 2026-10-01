@@ -25,6 +25,16 @@ jobs:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
       - run: uv run --group docs mkdocs build --strict
+      - name: The paper's PDF beside the page (Google Scholar attaches a PDF only from the page's own directory)
+        # Pinned to the version whose title the page carries; until it is listed, the Scholar PDF tag is dropped.
+        run: |
+          if curl -fsSL --retry 3 -o site/paper.pdf "https://arxiv.org/pdf/2602.16429v2"; then
+            echo "paper.pdf: $(wc -c < site/paper.pdf) bytes"
+          else
+            rm -f site/paper.pdf
+            sed -i '/name="citation_pdf_url"/d' site/index.html
+            echo "arXiv v2 not listed yet: citation_pdf_url removed"
+          fi
       - uses: actions/upload-pages-artifact@v3
         with:
           path: site

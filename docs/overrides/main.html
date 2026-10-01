@@ -86,8 +86,8 @@
     {%- set ta_arxiv_url = "https://arxiv.org/abs/2602.16429" %}
     {%- set ta_date = "2026-02-18" %}
   <meta name="author" content="{{ ta_authors | map(attribute='name') | join(', ') }}">
-    {#- Google Scholar's Highwire Press tags. No citation_pdf_url: Scholar attaches a PDF only from the page's own
-        directory, so the arXiv PDF on another host would be ignored; Scholar reads that PDF on arXiv itself. #}
+    {#- Google Scholar's Highwire Press tags. Scholar attaches a PDF only from the page's own directory, so the Pages
+        workflow fetches the arXiv PDF next to the page (config.extra.paper_pdf) and drops citation_pdf_url if it cannot. #}
   <meta name="citation_title" content="{{ ta_paper }}">
     {%- for a in ta_authors %}
   <meta name="citation_author" content="{{ a.cite }}">
@@ -97,6 +97,9 @@
     {%- endfor %}
   <meta name="citation_publication_date" content="{{ ta_date | replace('-', '/') }}">
   <meta name="citation_arxiv_id" content="{{ ta_arxiv_id }}">
+    {%- if config.extra.paper_pdf and config.site_url %}
+  <meta name="citation_pdf_url" content="{{ config.site_url }}{{ config.extra.paper_pdf }}">
+    {%- endif %}
   <meta name="citation_language" content="en">
     {%- if ta_meta.abstract %}
   <meta name="citation_abstract" content="{{ ta_meta.abstract | e }}">
@@ -175,6 +178,18 @@
           "citation": {"@id": {{ (ta_base ~ "#paper") | tojson }}},
           "subjectOf": {"@id": {{ (ta_base ~ "#paper") | tojson }}}
         }
+        {%- if page.meta and page.meta.faq %},
+        {
+          "@type": "FAQPage",
+          "@id": {{ (ta_base ~ "#questions") | tojson }},
+          "about": {"@id": {{ (ta_base ~ "#paper") | tojson }}},
+          "mainEntity": [
+            {%- for f in page.meta.faq %}
+            {"@type": "Question", "name": {{ f.q | tojson }}, "acceptedAnswer": {"@type": "Answer", "text": {{ f.a | tojson }}}}{{ "," if not loop.last }}
+            {%- endfor %}
+          ]
+        }
+        {%- endif %}
       ]
     }
   </script>
