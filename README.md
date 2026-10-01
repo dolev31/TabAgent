@@ -18,6 +18,7 @@ Yinon Goldstein<sup>1</sup> · Eilam Shapira<sup>1</sup> · Leshem Choshen<sup>1
 
 <sup>1</sup>IBM · <sup>2</sup>Weizmann Institute of Science
 
+[![arXiv](https://img.shields.io/badge/arXiv-2602.16429-B31B1B)](https://arxiv.org/abs/2602.16429)
 [![Docs](https://img.shields.io/badge/docs-dolev31.github.io%2FTabAgent-1B5EA8)](https://dolev31.github.io/TabAgent/)
 [![CI](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml)
 [![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-1B5EA8)](pyproject.toml)
@@ -67,8 +68,8 @@ What the paper finds, across three decision families and seven agent benchmarks:
   shortlister used on its successful runs (Recall@9) at far lower latency and cost.
 - **Classification and policy.** It ranks first on the classification decisions and is on par with a strong
   fixed default on the harder routing and gating decisions, where a costly generative router does worse.
-- **Representation, not model.** A discriminative head over raw text or embeddings alone stays near-random;
-  the trace-derived features make it accurate.
+- **Representation, not model.** A discriminative head over raw text or embeddings alone collapses; the
+  trace-derived features make it accurate.
 - **In the loop.** Placed on a live agent's critical path, TabAgent drives AppWorld tasks to completion about
   as often as the GPT-5.4 shortlister it replaces.
 - **Few traces.** The head reaches 90% of its full-pool P@R from 118 successful trajectories on AppWorld and
@@ -78,7 +79,7 @@ What the paper finds, across three decision families and seven agent benchmarks:
 
 | Decision | Benchmark | Metric | Best baseline | TabAgent | Reproducible here |
 |---|---|---|---:|---:|:---:|
-| Tool shortlisting | AppWorld, five apps | P@R | 52–70 | **66–96** | traces not released |
+| Tool shortlisting | AppWorld, five apps | P@R | 56–92 | **66–96** | traces not released |
 | Tool shortlisting | τ²-bench, three domains, 38 tools | P@R | 42 | **78** | ✓ |
 | Skill shortlisting | SkillsBench, 195 skills | P@R | 74 | **80** | ✓ |
 | Application selection | AppWorld, multi-label | macro&#8209;F1 | 92 | **97** | traces not released |
@@ -86,9 +87,10 @@ What the paper finds, across three decision families and seven agent benchmarks:
 | GUI element selection | Mind2Web, three domains | R@3 | 15–23 | **68–74** | ✓ |
 | Model routing | LLMRouterBench, 12 models | route@1 | 70 | **71**&nbsp;(on&nbsp;par) | ✓ opt-in download |
 
-<sub>Percentages from the paper's Table 1. TabAgent is the better of its real-only and +synth variants. Best
-baseline is the strongest of BM25, DSR (zero-shot and fine-tuned) and the few-shot LLM in each row; on model
-routing it is the best single model applied to every task. A fine-tuned 8B small LLM, a reference at about
+<sub>Percentages from the paper's Table 1 and, for AppWorld, its full per-method table. TabAgent is the better of
+its real-only and +synth variants. Best baseline is the strongest of BM25, DSR (zero-shot and fine-tuned; on
+AppWorld also fine-tuned on the same TabSynth rows, where TabAgent's lead is significant only on Gmail) and the
+few-shot LLM in each row; on model routing it is the best single model applied to every task. A fine-tuned 8B small LLM, a reference at about
 10²–10⁴× TabAgent's cost, is excluded as in the paper; it scores higher on four of the five AppWorld apps. The
 AppWorld rows use the CUGA agent's own trajectories, which are not released. The paper's table also covers the
 OAK and BPO enterprise benchmarks, where the small trajectory pools leave TabAgent behind or level with the best
@@ -273,7 +275,11 @@ If you use TabAgent, please cite the paper:
   title  = {TabAgent: Distilling LLM Agent Components into Cheap Classifiers},
   author = {Levy, Ido and Shlomov, Segev and Yaeli, Avi and Mashkif, Nir and Adi, Asaf and
             Goldstein, Yinon and Shapira, Eilam and Choshen, Leshem},
-  year   = {2026}
+  year   = {2026},
+  eprint = {2602.16429},
+  archivePrefix = {arXiv},
+  primaryClass  = {cs.CL},
+  url    = {https://arxiv.org/abs/2602.16429}
 }
 ```
 

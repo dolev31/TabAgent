@@ -48,6 +48,13 @@ theme:
 extra_css:
   - stylesheets/extra.css
 
+# Search-engine verification and the visitor counter. docs/overrides/main.html emits each tag only when its code is
+# set here, so the site carries none of them until then.
+# extra:
+#   google_site_verification: TOKEN   # Google Search Console, URL-prefix property, HTML-tag method
+#   bing_site_verification: TOKEN     # Bing Webmaster Tools, meta-tag method (msvalidate.01)
+#   goatcounter: CODE                 # GoatCounter site code (CODE.goatcounter.com): counts visits without cookies
+
 markdown_extensions:
   - admonition
   - tables

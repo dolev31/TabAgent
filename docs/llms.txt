@@ -2,11 +2,73 @@
 
 > TabAgent replaces an LLM agent's repeated closed-set decisions (which tools to shortlist, which skill or application to use, which model or sub-agent to route to, whether to activate a skill) with a cheap tabular classifier trained on the agent's own successful runs, with the surrounding agent left unchanged. It is the code for the paper "TabAgent: Distilling LLM Agent Components into Cheap Classifiers": TabSchema discovers behavior-grounded features from the agent's trajectories with an LLM, TabSynth adds label-preserving paraphrases where trajectories are scarce, and TabHead (CatBoost) scores every candidate of a decision in one pass.
 
+The paper: "TabAgent: Distilling LLM Agent Components into Cheap Classifiers", by Ido Levy (IBM, Weizmann Institute of Science), Segev Shlomov (IBM), Avi Yaeli (IBM), Nir Mashkif (IBM), Asaf Adi (IBM), Yinon Goldstein (IBM), Eilam Shapira (IBM) and Leshem Choshen (IBM, Weizmann Institute of Science), 2026. Preprint on arXiv: https://arxiv.org/abs/2602.16429.
+
 On AppWorld tool shortlisting, the TabAgent head decides in 2.682 ms for $2.0×10⁻⁷ per decision, against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces. Install with `pip install "tabagent @ git+https://github.com/dolev31/TabAgent"` until the PyPI release (extras: `tabschema`, `embed`, `serve`). Python 3.10+, Apache-2.0.
+
+## What is this paper about?
+
+TabAgent replaces a generative decision head in a running LLM agent, such as a tool shortlister or a router, with a compact classifier trained on the agent's own successful execution traces. It changes only the decision component and leaves the surrounding agent unchanged.
+
+## Important context
+
+- The decisions are closed-set: the answer is selected from a fixed set of candidates. TabAgent does not generate free text or plan.
+- The head mimics the boundary of the decision head it replaces, learned from that head's successful runs. On tool shortlisting it is scored against the tools the GPT-5.4 shortlister's successful runs used.
+- P@R in the paper is R-precision, which equals Recall@R.
+- Prior lines of work either avoid the LLM but score a static catalog (retrieval selectors), or read the agent's state but keep the generative call (LLM controllers, routing, cascades, self-training). TabAgent conditions on live execution state with no generative call.
+- Closed-set decision: A decision inside an agent's execution whose answer is selected from a fixed, bounded set of candidates: which skill to invoke, which tool to call next, which application to route to, or which sub-task to gate.
+- Tool shortlisting: The task of picking a small subset from a catalog of hundreds to thousands of tools, where a tool is any externally callable capability (API endpoint, function, or GUI operation) with a typed schema and observable outputs.
+- Feature card: The tabular layout TabAgent learns from, with one row per (context, candidate) pair and one column per behavior-grounded feature.
+- TabSchema: An orchestrated agentic system that proposes features, implements them as executable trace-extraction code, and keeps only those a judge ensemble agrees are decision-relevant.
+- TabSynth: A schema-aligned augmentation module: a deterministic, rule-based paraphraser that rewrites the free-text state of an existing training row while copying the candidate, the label, and every schema, state, and dependency feature verbatim.
+- TabHead: The classifier that scores each (context, candidate) pair over the TabSchema feature card in a single pass. It is CatBoost in every main-paper result.
+- P@R (R-precision): The share of a task's ground-truth tools that appear in the top R of the ranking, where R is the task's relevant-set size, averaged over tasks. It equals Recall@R and captures completeness.
+- Recall@k: The share of a task's ground-truth tools recovered in the top k of the ranking, averaged over tasks: recovery at a fixed budget.
+
+## Data and methods
+
+Seven agent benchmarks (AppWorld with the CUGA agent, τ²-bench, OAK, BPO, SkillsBench, Mind2Web, LLMRouterBench) across three decision families (set retrieval, classification, policy/reward), evaluated with 5-fold task-level cross-validation in which every data-dependent stage is fitted inside the training folds, with paired task-level bootstrap confidence intervals.
+
+## Key results
+
+- On AppWorld tool shortlisting, one TabHead pass takes 2.682 ms at $2.0×10⁻⁷ per decision, against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces (more than 10³× lower latency and 10⁵× lower cost).
+- On AppWorld tool shortlisting, TabAgent (+synth) reaches Recall@9 of 92 to 100 across five applications and leads or ties every deployable baseline on P@R. Only fine-tuned small LLMs score slightly higher, at about 100 to 250 times the cost.
+- On τ²-bench, per-domain TabAgents reach Recall@9 of 96 to 100, and a single TabAgent trained over the merged 38-tool catalog reaches 97.
+- On SkillsBench (195 candidate skills), TabAgent reaches P@R 80 and Recall@9 91, above every retrieval and LLM baseline.
+- TabAgent reaches macro-F1 97 on application selection and 92 on Mind2Web operation selection, and leads all baselines on Mind2Web GUI element selection at R=3 (68, 74, 72).
+- On sub-agent routing, model routing and skill gating, TabAgent matches the best fixed default within a paired 95% CI, at far lower latency and cost, and few-shot GPT-5.4 falls at or below that default.
+- In a live run on 24 held-out AppWorld tasks, TabAgent reaches 27.1% task success against 29.2% for the GPT-5.4 shortlister, a paired difference of -2.1 points whose 95% CI [-18.8, +16.7] includes zero.
+- With the card held fixed, heads from classical trees to tabular foundation models reach comparable P@R, and every head collapses to P@R 0.10 to 0.21 without the card.
+
+## Limitations and scope
+
+- It does not zero-shot a new domain: with no trajectories for a domain there is nothing to mimic, so a trajectory pool and a one-time onboarding are required first.
+- Cross-agent transfer holds within one architecture (four ReAct agents differing only in LLM backbone) and does not imply architecture-agnosticism.
+- TabSynth is not universally positive: on Spotify it lowers P@R from 70 to 61.
+- On policy and reward decisions it captures 22 to 54% of the chance-to-oracle headroom and matches a strong default, not more.
+- The head inherits the replaced shortlister's decision boundary and its biases by design.
+- The in-the-loop study covers one agent and one benchmark on a modest sample.
+- The paper does not claim TabAgent beats the LLM everywhere: the frontier model is retained where it still earns its cost.
+
+## Navigation guide
+
+- Section 3 describes TabSchema, TabSynth and TabHead.
+- Section 4 gives the benchmarks, baselines and evaluation metrics.
+- Section 5 holds the results: Table 1 for every decision, Table 2 for cross-agent transfer, the efficiency Pareto figure, and the in-the-loop study.
+- The appendices cover scope and limitations, the TabSchema prompts, statistics, cost and efficiency, TabSynth, error analysis, and the live hot-swap.
+
+## Publication status
+
+Preprint on arXiv (2602.16429, first posted 2026-02-18). Its first version carries the paper's earlier title, "TabAgent: A Framework for Replacing Agentic Generative Components with Tabular-Textual Classifiers".
+
+## Paper
+
+- [Paper on arXiv](https://arxiv.org/abs/2602.16429): the abstract page and every version
+- [PDF](https://arxiv.org/pdf/2602.16429): the full paper
 
 ## Docs
 
-- [Home](https://dolev31.github.io/TabAgent/): overview, results at a glance, install, quickstart and citation
+- [Home](https://dolev31.github.io/TabAgent/): overview, results at a glance, install, quickstart, the abstract, key terms, questions and answers, and citation
 - [Concepts](https://dolev31.github.io/TabAgent/concepts/): the decision table, the four decision kinds, leakage safety, the evaluation protocol
 - [Components](https://dolev31.github.io/TabAgent/components/): TabSchema, TabSynth and TabHead in detail
 - [Onboard an agent](https://dolev31.github.io/TabAgent/onboarding/): log formats, privacy and cost controls, reviewing the generated extractor

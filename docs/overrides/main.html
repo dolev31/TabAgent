@@ -1,65 +1,206 @@
 {% extends "base.html" %}
 
+{#-
+  What search engines, Google Scholar and answer engines read. The home page is the paper's home on the web: it
+  carries Google Scholar's citation_* tags and JSON-LD for the paper (ScholarlyArticle) and the code
+  (SoftwareSourceCode), linked by @id. The abstract, keywords and terms come from docs/index.md's front matter,
+  beside the visible text they mirror. Whatever names the authors, their institutions or the arXiv listing sits
+  in a "named" block, which the anonymous copy strips. The verification tags and the visitor counter appear only
+  when their code is set under `extra:` in mkdocs.yml.
+-#}
+
+{% block htmltitle %}
+  {%- if page and page.is_homepage %}
+  <title>TabAgent: Distilling LLM Agent Components into Cheap Classifiers</title>
+  {%- else %}
+  {{ super() }}
+  {%- endif %}
+{% endblock %}
+
 {% block extrahead %}
   {{ super() }}
   {%- set ta_paper = "TabAgent: Distilling LLM Agent Components into Cheap Classifiers" -%}
-  {%- if page and page.is_homepage -%}
+  {%- set ta_home = page and page.is_homepage -%}
+  {%- set ta_meta = page.meta if page and page.meta else {} -%}
+  {%- set ta_base = config.site_url or "" -%}
+  {%- if ta_home -%}
     {%- set ta_title = ta_paper -%}
   {%- elif page and page.title -%}
     {%- set ta_title = page.title ~ " - " ~ config.site_name -%}
   {%- else -%}
     {%- set ta_title = config.site_name -%}
   {%- endif -%}
-  {%- set ta_description = (page.meta.description if page and page.meta and page.meta.description else config.site_description) %}
-  <meta property="og:type" content="website">
+  {%- set ta_description = ta_meta.description or config.site_description -%}
+  {%- set ta_image_alt = "TabAgent: Distilling LLM Agent Components into Cheap Classifiers. TabSchema, TabSynth and TabHead, at 2.682 ms vs 7.50 s and $2.0×10⁻⁷ vs $0.052 per decision." %}
+  {%- if config.extra.google_site_verification %}
+  <meta name="google-site-verification" content="{{ config.extra.google_site_verification | e }}">
+  {%- endif %}
+  {%- if config.extra.bing_site_verification %}
+  <meta name="msvalidate.01" content="{{ config.extra.bing_site_verification | e }}">
+  {%- endif %}
+  <meta name="robots" content="index, follow, max-image-preview:large, max-snippet:-1">
+  <meta property="og:type" content="{{ 'article' if ta_home else 'website' }}">
   <meta property="og:site_name" content="{{ config.site_name }}">
-  <meta property="og:title" content="{{ ta_title }}">
-  <meta property="og:description" content="{{ ta_description }}">
+  <meta property="og:title" content="{{ ta_title | e }}">
+  <meta property="og:description" content="{{ ta_description | e }}">
+  <meta property="og:locale" content="en_US">
   {%- if page and page.canonical_url %}
   <meta property="og:url" content="{{ page.canonical_url }}">
   {%- endif %}
   {%- if config.site_url %}
   <meta property="og:image" content="{{ config.site_url }}assets/brand/social-preview.png">
-  <meta property="og:image:alt" content="{{ ta_paper }}">
+  <meta property="og:image:width" content="1280">
+  <meta property="og:image:height" content="640">
+  <meta property="og:image:alt" content="{{ ta_image_alt | e }}">
   <meta name="twitter:image" content="{{ config.site_url }}assets/brand/social-preview.png">
+  <meta name="twitter:image:alt" content="{{ ta_image_alt | e }}">
   {%- endif %}
   <meta name="twitter:card" content="summary_large_image">
-  <meta name="twitter:title" content="{{ ta_title }}">
-  <meta name="twitter:description" content="{{ ta_description }}">
-  {%- if page and page.is_homepage %}
+  <meta name="twitter:title" content="{{ ta_title | e }}">
+  <meta name="twitter:description" content="{{ ta_description | e }}">
+  {%- if config.extra.goatcounter %}
+  <script data-goatcounter="https://{{ config.extra.goatcounter | e }}.goatcounter.com/count" async src="https://gc.zgo.at/count.js"></script>
+  {%- endif %}
+  {%- if ta_home %}
+    {%- if config.site_url %}
+  <link rel="alternate" type="text/plain" href="{{ config.site_url }}llms.txt" title="llms.txt">
+    {%- endif %}
+    {%- if ta_meta.keywords %}
+  <meta name="keywords" content="{{ ta_meta.keywords | join(', ') | e }}">
+    {%- endif %}
+    {# named #}
+    {%- set ta_authors = [
+      {"name": "Ido Levy", "cite": "Levy, Ido", "affiliations": ["IBM", "Weizmann Institute of Science"],
+       "profiles": ["https://scholar.google.com/citations?user=Ok_7M80AAAAJ", "https://github.com/dolev31",
+                    "https://huggingface.co/dolev31", "https://www.linkedin.com/in/idolevi31/"]},
+      {"name": "Segev Shlomov", "cite": "Shlomov, Segev", "affiliations": ["IBM"]},
+      {"name": "Avi Yaeli", "cite": "Yaeli, Avi", "affiliations": ["IBM"]},
+      {"name": "Nir Mashkif", "cite": "Mashkif, Nir", "affiliations": ["IBM"]},
+      {"name": "Asaf Adi", "cite": "Adi, Asaf", "affiliations": ["IBM"]},
+      {"name": "Yinon Goldstein", "cite": "Goldstein, Yinon", "affiliations": ["IBM"]},
+      {"name": "Eilam Shapira", "cite": "Shapira, Eilam", "affiliations": ["IBM"]},
+      {"name": "Leshem Choshen", "cite": "Choshen, Leshem", "affiliations": ["IBM", "Weizmann Institute of Science"]},
+    ] %}
+    {#- The first public version: arXiv 2602.16429 v1, 2026-02-18, under the paper's earlier title. #}
+    {%- set ta_arxiv_id = "2602.16429" %}
+    {%- set ta_arxiv_url = "https://arxiv.org/abs/2602.16429" %}
+    {%- set ta_date = "2026-02-18" %}
+  <meta name="author" content="{{ ta_authors | map(attribute='name') | join(', ') }}">
+    {#- Google Scholar's Highwire Press tags. No citation_pdf_url: Scholar attaches a PDF only from the page's own
+        directory, so the arXiv PDF on another host would be ignored; Scholar reads that PDF on arXiv itself. #}
+  <meta name="citation_title" content="{{ ta_paper }}">
+    {%- for a in ta_authors %}
+  <meta name="citation_author" content="{{ a.cite }}">
+      {%- for org in a.affiliations %}
+  <meta name="citation_author_institution" content="{{ org }}">
+      {%- endfor %}
+    {%- endfor %}
+  <meta name="citation_publication_date" content="{{ ta_date | replace('-', '/') }}">
+  <meta name="citation_arxiv_id" content="{{ ta_arxiv_id }}">
+  <meta name="citation_language" content="en">
+    {%- if ta_meta.abstract %}
+  <meta name="citation_abstract" content="{{ ta_meta.abstract | e }}">
+    {%- endif %}
+    {%- if page.canonical_url %}
+  <meta name="citation_abstract_html_url" content="{{ page.canonical_url }}">
+    {%- endif %}
+    {%- if ta_meta.keywords %}
+  <meta name="citation_keywords" content="{{ ta_meta.keywords | join('; ') | e }}">
+    {%- endif %}
+    {# /named #}
   <script type="application/ld+json">
     {
       "@context": "https://schema.org",
-      "@type": "SoftwareSourceCode",
-      "name": "TabAgent",
-      "description": {{ config.site_description | tojson }},
-      {%- if config.site_url %}
-      "url": {{ config.site_url | tojson }},
-      {%- endif %}
-      {%- if config.repo_url %}
-      "codeRepository": {{ config.repo_url | tojson }},
-      {%- endif %}
-      "programmingLanguage": "Python",
-      "license": "https://www.apache.org/licenses/LICENSE-2.0",
-      "keywords": ["LLM agents", "tool selection", "tabular classification", "distillation", "CatBoost"],
-      "citation": {
-        "@type": "ScholarlyArticle",
-        "name": {{ ta_paper | tojson }},
-{# named #}
-        "author": [
-          {"@type": "Person", "name": "Ido Levy", "affiliation": [{"@type": "Organization", "name": "IBM"}, {"@type": "Organization", "name": "Weizmann Institute of Science"}]},
-          {"@type": "Person", "name": "Segev Shlomov", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Avi Yaeli", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Nir Mashkif", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Asaf Adi", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Yinon Goldstein", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Eilam Shapira", "affiliation": {"@type": "Organization", "name": "IBM"}},
-          {"@type": "Person", "name": "Leshem Choshen", "affiliation": [{"@type": "Organization", "name": "IBM"}, {"@type": "Organization", "name": "Weizmann Institute of Science"}]}
-        ],
-{# /named #}
-        "headline": {{ ta_paper | tojson }}
-      }
+      "@graph": [
+        {
+          "@type": "ScholarlyArticle",
+          "@id": {{ (ta_base ~ "#paper") | tojson }},
+          "name": {{ ta_paper | tojson }},
+          "headline": {{ ta_paper | tojson }},
+          {# named #}
+          "author": [
+            {%- for a in ta_authors %}
+            {
+              "@type": "Person",
+              "name": {{ a.name | tojson }},
+              "affiliation": [{% for org in a.affiliations %}{"@type": "Organization", "name": {{ org | tojson }}}{{ ", " if not loop.last }}{% endfor %}]
+              {%- if a.profiles %},
+              "sameAs": {{ a.profiles | tojson }}
+              {%- endif %}
+            }{{ "," if not loop.last }}
+            {%- endfor %}
+          ],
+          "datePublished": {{ ta_date | tojson }},
+          "identifier": {{ ("arXiv:" ~ ta_arxiv_id) | tojson }},
+          "sameAs": [{{ ta_arxiv_url | tojson }}],
+          {# /named #}
+          {%- if ta_meta.abstract %}
+          "abstract": {{ ta_meta.abstract | tojson }},
+          {%- endif %}
+          {%- if ta_meta.keywords %}
+          "keywords": {{ ta_meta.keywords | tojson }},
+          {%- endif %}
+          {%- if ta_meta.terms %}
+          "about": [
+            {%- for t in ta_meta.terms %}
+            {"@type": "DefinedTerm", "name": {{ t.name | tojson }}, "description": {{ t.definition | tojson }}}{{ "," if not loop.last }}
+            {%- endfor %}
+          ],
+          {%- endif %}
+          {%- if page.canonical_url %}
+          "url": {{ page.canonical_url | tojson }},
+          "mainEntityOfPage": {{ page.canonical_url | tojson }},
+          {%- endif %}
+          {%- if config.site_url %}
+          "image": {{ (config.site_url ~ "assets/brand/social-preview.png") | tojson }},
+          {%- endif %}
+          "description": {{ ta_description | tojson }},
+          "inLanguage": "en",
+          "isAccessibleForFree": true
+        },
+        {
+          "@type": "SoftwareSourceCode",
+          "@id": {{ (ta_base ~ "#code") | tojson }},
+          "name": "TabAgent",
+          "description": {{ config.site_description | tojson }},
+          {%- if config.site_url %}
+          "url": {{ config.site_url | tojson }},
+          {%- endif %}
+          {%- if config.repo_url %}
+          "codeRepository": {{ config.repo_url | tojson }},
+          {%- endif %}
+          "programmingLanguage": "Python",
+          "license": "https://www.apache.org/licenses/LICENSE-2.0",
+          "keywords": ["LLM agents", "tool selection", "tabular classification", "distillation", "CatBoost"],
+          "citation": {"@id": {{ (ta_base ~ "#paper") | tojson }}},
+          "subjectOf": {"@id": {{ (ta_base ~ "#paper") | tojson }}}
+        }
+      ]
     }
+  </script>
+  {%- endif %}
+{% endblock %}
+
+{% block scripts %}
+  {{ super() }}
+  {%- if config.extra.goatcounter %}
+  <script>
+    /* count.js counts the first page and binds the tagged links itself. Instant navigation swaps later pages in
+       without a reload, so count each of those here, and tag the links into the code repository (the header's
+       included) so their clicks count as "code". */
+    (function () {
+      var first = true, repo = {{ (config.repo_url or "") | tojson }};
+      document$.subscribe(function () {
+        if (repo) document.querySelectorAll('a[href^="' + repo + '"]:not([data-goatcounter-click])').forEach(function (a) {
+          a.setAttribute("data-goatcounter-click", "code");
+        });
+        var later = !first, gc = window.goatcounter;
+        first = false;
+        if (!gc || !gc.count) return;
+        if (later) gc.count({ path: location.pathname + location.search });
+        gc.bind_events();
+      });
+    })();
   </script>
   {%- endif %}
 {% endblock %}

@@ -361,12 +361,17 @@
   text-wrap: balance;
 }
 
-.md-typeset .ta-hero__actions > p {
+/* The buttons may come in more than one paragraph (an HTML comment between them splits it): lay them out as one row. */
+.md-typeset .ta-hero__actions {
   display: flex;
   flex-wrap: wrap;
   gap: 0.6rem;
   justify-content: center;
   margin: 1.4rem 0 0;
+}
+
+.md-typeset .ta-hero__actions > p {
+  display: contents;
 }
 
 .md-typeset .ta-hero__actions .md-button {
@@ -656,6 +661,101 @@
   font-size: 0.74rem;
 }
 
+/* ---------------------------------------------------------------- landing: the paper (abstract, terms, questions) */
+
+.md-typeset .ta-abstract {
+  background-color: var(--ta-surface-alt);
+  border: 1px solid var(--ta-border);
+  border-left: 3px solid var(--ta-blue);
+  border-radius: var(--ta-radius);
+  font-size: 0.76rem;
+  line-height: 1.7;
+  padding: 1rem 1.25rem;
+}
+
+.md-typeset .ta-abstract > p {
+  margin: 0;
+}
+
+.md-typeset .ta-abstract__source {
+  color: var(--ta-muted);
+  font-size: 0.68rem;
+  margin: 0.7rem 0 0;
+}
+
+.md-typeset .ta-terms {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 1rem 0 0;
+}
+
+.md-typeset .ta-terms > div {
+  background-color: var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: var(--ta-radius);
+  box-shadow: var(--ta-shadow-sm);
+  padding: 0.85rem 1rem 0.9rem;
+}
+
+.md-typeset .ta-terms dt {
+  color: var(--ta-ink);
+  font-size: 0.78rem;
+  font-weight: 600;
+}
+
+[dir] .md-typeset .ta-terms dd {
+  font-size: 0.72rem;
+  line-height: 1.6;
+  margin: 0.3rem 0 0;
+}
+
+.md-typeset .ta-faq details.question {
+  background-color: var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: var(--ta-radius);
+  box-shadow: var(--ta-shadow-sm);
+  font-size: 0.76rem;
+  margin: 0 0 0.6rem;
+  padding: 0 1.1rem;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+
+.md-typeset .ta-faq details.question:hover,
+.md-typeset .ta-faq details.question[open] {
+  border-color: var(--ta-border-strong);
+}
+
+.md-typeset .ta-faq details.question:focus-within {
+  box-shadow: 0 0 0 0.2rem var(--ta-tint-blue);
+}
+
+[dir] .md-typeset .ta-faq .question > summary {
+  background-color: transparent;
+  border-radius: var(--ta-radius);
+  color: var(--ta-ink);
+  font-weight: 600;
+  margin: 0 -1.1rem;
+  padding: 0.75rem 2.6rem 0.75rem 2.9rem;
+}
+
+[dir] .md-typeset .ta-faq .question > summary::before {
+  background-color: var(--ta-blue);
+  left: 1.1rem;
+  top: 0.82rem;
+}
+
+[dir] .md-typeset .ta-faq .question > summary::after {
+  color: var(--ta-muted);
+  right: 1rem;
+  top: 0.82rem;
+}
+
+.md-typeset .ta-faq .question > p {
+  line-height: 1.65;
+  margin: 0 0 0.95rem;
+}
+
 /* ---------------------------------------------------------------- landing: responsive */
 
 @media screen and (max-width: 76.234375em) {
@@ -670,7 +770,8 @@
 
 @media screen and (max-width: 59.984375em) {
   [dir] .md-typeset .ta-steps ol,
-  .md-typeset .ta-stats {
+  .md-typeset .ta-stats,
+  .md-typeset .ta-terms {
     grid-template-columns: minmax(0, 1fr);
   }
 }
@@ -698,7 +799,7 @@
     padding-top: 0.6rem;
   }
 
-  .md-typeset .ta-hero__actions > p {
+  .md-typeset .ta-hero__actions {
     flex-direction: column;
     align-items: stretch;
   }
