@@ -13,7 +13,14 @@ from fake_logs import (
     openai_run,
 )
 
-from tabagent.adapters import NEXT_TOOL_CALL, TOOL_SHORTLIST, OpenAIMessagesAdapter, normalize_messages
+from tabagent.adapters import (
+    NEXT_TOOL_CALL,
+    TEXT_REPLY,
+    TOOL_SHORTLIST,
+    OpenAIMessagesAdapter,
+    normalize_messages,
+)
+from tabagent.tabschema.trajectory import Trajectory
 
 
 def _load(tmp_path, runs, **kw):
@@ -165,6 +172,47 @@ def test_langchain_serializations_legacy_calls_and_responses_items():
         ("user", "weather?", [], ""),
         ("assistant", "Checking.", ["get_weather"], ""),
         ("tool", "sunny", [], "get_weather"),
+    ]
+
+
+def test_llm_calls_are_the_assistant_turns_in_every_dialect():
+    def with_usage(run, key, usage):
+        for m in run["messages"]:
+            if m.get("role") == "assistant" or m.get("type") == "ai":
+                m[key] = usage
+        return run
+
+    runs = {
+        "openai": with_usage(openai_run(0), "usage", {"prompt_tokens": 50, "completion_tokens": 5}),
+        "anthropic": with_usage(messages_api_run(0), "usage", {"input_tokens": 50, "output_tokens": 5}),
+        "langchain": with_usage(langchain_run(0), "usage_metadata", {"input_tokens": 50, "output_tokens": 5}),
+    }
+    adapter = OpenAIMessagesAdapter()
+    for name, run in runs.items():
+        calls = adapter.llm_calls(Trajectory(name, run))
+        assert [(c.component, c.choices) for c in calls] == [
+            (TEXT_REPLY, None),
+            (NEXT_TOOL_CALL, ("search_flights",)),
+            (NEXT_TOOL_CALL, ("book_flight",)),
+            (TEXT_REPLY, None),
+        ], name
+        assert all(c.tokens == 55 for c in calls), name
+        assert calls[1].decisions == (TOOL_SHORTLIST, NEXT_TOOL_CALL)
+    assert set(adapter.llm_calls(Trajectory("o", runs["openai"]))[1].catalog) == set(TOOLS)
+    assert adapter.llm_calls(Trajectory("l", runs["langchain"]))[1].catalog is None  # no tools recorded
+
+    responses = [  # the output items of one response (reasoning, message, call) are one LLM call
+        {"type": "message", "role": "user", "content": [{"type": "input_text", "text": "weather?"}]},
+        {"type": "reasoning", "summary": []},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Checking."}]},
+        {"type": "function_call", "call_id": "call_1", "name": "get_weather", "arguments": "{}"},
+        {"type": "function_call_output", "call_id": "call_1", "output": "sunny"},
+        {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Sunny."}]},
+    ]
+    calls = adapter.llm_calls(Trajectory("r", {"messages": responses}))
+    assert [(c.component, c.choices, c.text_chars) for c in calls] == [
+        (NEXT_TOOL_CALL, ("get_weather",), len("Checking.") + len("{}")),
+        (TEXT_REPLY, None, len("Sunny.")),
     ]
 
 

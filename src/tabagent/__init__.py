@@ -16,6 +16,7 @@ import logging
 from tabagent.agent import TabAgent
 from tabagent.api import TabAgentHead, load, onboard
 from tabagent.evaluation import cross_validate
+from tabagent.scanner import ScanReport, scan
 from tabagent.sklearn import TabAgentClassifier, TabAgentRanker, TabAgentRouter, pointwise, scorer
 from tabagent.tabhead import TabHead
 from tabagent.table import DecisionSpec, DecisionTable, LeakageError
@@ -32,6 +33,7 @@ __all__ = [
     "Feature",
     "FeatureCard",
     "LeakageError",
+    "ScanReport",
     "TabAgent",
     "TabAgentClassifier",
     "TabAgentHead",
@@ -45,5 +47,6 @@ __all__ = [
     "load",
     "onboard",
     "pointwise",
+    "scan",
     "scorer",
 ]

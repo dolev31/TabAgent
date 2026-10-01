@@ -5,8 +5,9 @@
     python examples/03_onboard_agent_logs.py ./my_agent_logs --max-cost 50 --price-in IN --price-out OUT
 
 Supported formats are detected automatically (OpenAI / Anthropic Messages API / LangChain tool-call logs,
-τ²-bench results, CUGA trajectories, generic JSON with a `steps` list). Run `tabagent components <logs>` to
-list the decisions you can replace. The dry run reports what TabSchema would read and send before any call.
+τ²-bench results, CUGA trajectories, generic JSON with a `steps` list). Run `tabagent scan <logs>` to rank
+the LLM calls worth replacing, and `tabagent components <logs>` to list the decisions you can replace. The
+dry run reports what TabSchema would read and send before any call.
 A cost budget (`--max-cost`) needs the model's prices, IN and OUT, in USD per 1M input and output tokens.
 """
 

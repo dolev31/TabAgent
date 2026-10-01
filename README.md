@@ -181,6 +181,7 @@ five skills TabAgent would hand the agent for a held-out task. The paper reports
 
 ```bash
 export OPENAI_API_KEY=...        # or OPENAI_BASE_URL for any OpenAI-compatible server, or ANTHROPIC/GEMINI keys
+tabagent scan ./agent_logs                                    # which LLM calls are worth replacing?
 tabagent components ./agent_logs                              # which decisions can be replaced?
 tabagent onboard ./agent_logs --decision ToolShortlist --dry-run   # what it will process and cost
 tabagent onboard ./agent_logs --decision ToolShortlist --out ./my_head
@@ -247,7 +248,7 @@ included yet.
 |---|---|
 | [Concepts](docs/concepts.md) | the decision table, the four decision kinds, leakage safety, the evaluation protocol |
 | [Components](docs/components.md) | TabSchema, TabSynth and TabHead in detail |
-| [Onboard an agent](docs/onboarding.md) | log formats, privacy and cost controls, reviewing the generated extractor |
+| [Onboard an agent](docs/onboarding.md) | finding the LLM calls worth replacing, log formats, privacy and cost controls, reviewing the generated extractor |
 | [Bring your own table](docs/bring_your_own_data.md) | the scikit-learn estimators and automatic recipe selection |
 | [Deploy](docs/deployment.md) | saved heads, the HTTP service, the tool filter, the confidence gate |
 | [Datasets](docs/datasets.md) | every public dataset, its pinned source, license and the paper result it backs |

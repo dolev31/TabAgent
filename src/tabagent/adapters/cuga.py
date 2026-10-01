@@ -12,6 +12,11 @@ seen for that app across the loaded runs), and the labels are the APIs the ``Cod
 (``call_api(app, api)``, app-prefixed as ``<app>_<api>``) before the next shortlisting. The prefix is the
 trajectory truncated before the step, without ``score``, ``eval``, ``actions_count`` (a post-hoc count) and
 the ``EvaluationResult`` step. Other components work with ``candidates_fn`` and ``labels_fn``.
+
+For ``tabagent.scan``, every step of an agent node (or with recorded prompts) is an LLM call, one per recorded
+generation: the shortlister's choices are the APIs it returned, other nodes report the categorical fields of
+their JSON output, and the code, answer and chat nodes generate free text. CUGA records no tokens, cost or
+latency per step (its ``results.json`` holds per-task totals only), so a scan reports them as not recorded.
 """
 
 from __future__ import annotations
@@ -24,7 +29,17 @@ from pathlib import Path
 from typing import Any
 
 from tabagent.adapters.common import SKIP_FILES, iter_files, parse_catalog, run_id
-from tabagent.tabschema.trajectory import Candidate, DecisionPoint, GenericJsonAdapter, Trajectory, redact
+from tabagent.tabschema.trajectory import (
+    Candidate,
+    DecisionPoint,
+    GenericJsonAdapter,
+    LLMCall,
+    Trajectory,
+    output_fields,
+    parse_json,
+    read_usage,
+    redact,
+)
 
 SHORTLISTER = "ShortlisterAgent"
 CUGA_STEPS = frozenset(
@@ -46,27 +61,17 @@ CUGA_STEPS = frozenset(
         "Raw_Assistant_Response",
     }
 )
+#: Nodes whose output is free text (code, answers, chat), whatever its shape.
+FREE_TEXT_STEPS = frozenset(
+    {"CodeAgent", "FinalAnswerAgent", "QaAgent", "ChatAgent", "Assistant_code", "Raw_Assistant_Response"}
+)
+_GENERATION_ROLES = frozenset({"assistant", "generation", "ai"})
 _AVAILABLE = re.compile(r'`Available APIs`:\s*"""(.*?)"""', re.S)
 _APP = re.compile(r"`Current Application`:\s*([^\s`]+)")
 _Q = r"""\\?["']"""  # a quote, possibly escaped when the code sits inside a JSON string
 _CALL = re.compile(
     rf"call_api\(\s*(?:\w+\s*=\s*)?{_Q}([^\"'\\]+){_Q}\s*,\s*(?:\w+\s*=\s*)?{_Q}([^\"'\\]+){_Q}"
 )
-_FENCE = re.compile(r"```(?:json)?\s*(.*?)```", re.S)
-
-
-def _json(text: Any) -> Any:
-    """A step's ``data`` or prompt value as JSON (tolerating Markdown fences), or None."""
-    if isinstance(text, (dict, list)):
-        return text
-    if not isinstance(text, str) or not text.strip():
-        return None
-    for s in (text, *_FENCE.findall(text)):
-        try:
-            return json.loads(s)
-        except ValueError:
-            continue
-    return None
 
 
 def _prefixed(app: str, api: str) -> str:
@@ -88,7 +93,7 @@ def available_apis(step: dict[str, Any]) -> dict[str, Candidate]:
     for p in step.get("prompts") or []:
         m = _AVAILABLE.search(str(p.get("value", "")) if isinstance(p, dict) else "")
         if m:
-            data = _json(m.group(1))
+            data = parse_json(m.group(1))
             if isinstance(data, (dict, list)):
                 return _clean(parse_catalog(data))
     return {}
@@ -98,14 +103,14 @@ def called_apis(step: dict[str, Any]) -> set[tuple[str, str]]:
     """``(app, api)`` pairs a step called: ``call_api(app, api)`` in CodeAgent code, or an ``api_call``."""
     data = step.get("data") or ""
     if step.get("name") == "api_call":
-        d = _json(data)
+        d = parse_json(data)
         if isinstance(d, dict) and d.get("function_name"):
             app = str(d.get("app_name") or "")
             return {(app, _prefixed(app, str(d["function_name"])))}
         return set()
     if step.get("name") != "CodeAgent":
         return set()
-    d = _json(data)
+    d = parse_json(data)
     code = d.get("code", "") if isinstance(d, dict) else str(data)
     return {(app.strip(), _prefixed(app.strip(), api.strip())) for app, api in _CALL.findall(str(code))}
 
@@ -121,11 +126,24 @@ def decision_app(dp: DecisionPoint) -> str | None:
         if s.get("name") != "APIPlannerAgent":
             continue
         for text in (s.get("data"), *(p.get("value") for p in reversed(s.get("prompts") or []))):
-            d = _json(text)
+            d = parse_json(text)
             if isinstance(d, dict) and isinstance(d.get("action_input_shortlisting_agent"), dict):
                 return d["action_input_shortlisting_agent"].get("app_name")
         break
     return None
+
+
+def _shortlisted(output: Any, offered: dict[str, Candidate]) -> tuple[str, ...] | None:
+    """The APIs a shortlister returned (``{"result": [{"name": ...}]}``), named as in its catalog."""
+    items = output.get("result") if isinstance(output, dict) else output
+    if not isinstance(items, list):
+        return None
+    names = [str(i.get("name") or i.get("api_name") or "") if isinstance(i, dict) else str(i) for i in items]
+    return tuple(
+        n if n in offered or not offered else next((k for k in offered if k.endswith(f"_{n}")), n)
+        for n in names
+        if n
+    )
 
 
 def _score_positive(raw: dict) -> bool:
@@ -138,6 +156,11 @@ def _score_positive(raw: dict) -> bool:
 class CugaAdapter(GenericJsonAdapter):
     """CUGA trajectories -> decision points for any agent node; candidates and labels built in for the
     ``ShortlisterAgent`` (see the module docstring). A run succeeds when ``score > 0``."""
+
+    scan_notes = (
+        "CUGA trajectories record no tokens, cost or latency per step (results.json holds per-task "
+        "totals), so this scan ranks components by their LLM calls",
+    )
 
     def __init__(
         self,
@@ -177,6 +200,34 @@ class CugaAdapter(GenericJsonAdapter):
             group = tid if tid and tid != "default" else f.stem
             self._observe(raw)
             out.append(Trajectory(run_id(root, f), raw, bool(self.success(raw)), group, f.name))
+        return out
+
+    def llm_calls(self, traj: Trajectory) -> list[LLMCall]:
+        """The LLM calls of a run, for ``tabagent.scan``: each step of an agent node (or with recorded
+        prompts), one call per recorded generation (see the module docstring)."""
+        out: list[LLMCall] = []
+        for s in traj.raw.get(self.steps_key, []):
+            if not isinstance(s, dict):
+                continue
+            name = s.get(self.step_name_key)
+            prompts = [p for p in s.get("prompts") or [] if isinstance(p, dict)]
+            if not name or name in self.outcome_steps or not (name in CUGA_STEPS or prompts):
+                continue
+            gens = [p.get("value") for p in prompts if str(p.get("role", "")).lower() in _GENERATION_ROLES]
+            raw_output = s.get("data") or (gens[-1] if gens else "")
+            output = parse_json(raw_output)
+            out.extend(LLMCall(name) for _ in gens[1:])  # earlier generations of the step (retries)
+            usage = read_usage(s)
+            if name == SHORTLISTER:
+                offered = available_apis(s)
+                choices = _shortlisted(output, offered)
+                out.append(LLMCall(name, choices=choices, catalog=tuple(offered) or None, **usage))
+            elif name in FREE_TEXT_STEPS:
+                text = raw_output if isinstance(raw_output, str) else json.dumps(raw_output)
+                out.append(LLMCall(name, text_chars=len(text), **usage))
+            else:
+                fields, chars = output_fields(raw_output if output is None else output)
+                out.append(LLMCall(name, fields=fields, text_chars=chars, **usage))
         return out
 
     def _observe(self, raw: dict) -> None:

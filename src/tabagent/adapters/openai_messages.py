@@ -21,6 +21,9 @@ Two decision targets:
   user messages before it; the labels are all the tools the run called (G(t), read from the full run).
 * ``NextToolCall`` (``granularity="step"``): one decision per assistant turn that calls tools. The prefix
   holds every message before that turn; the labels are the tools called in it.
+
+For ``tabagent.scan``, every assistant turn is one LLM call: a ``NextToolCall`` when it calls tools, else a
+``TextReply`` (free text), with the tokens, cost and latency the message records, if any.
 """
 
 from __future__ import annotations
@@ -33,9 +36,10 @@ from pathlib import Path
 from typing import Any
 
 from tabagent.adapters.common import iter_files, parse_catalog, run_id
-from tabagent.tabschema.trajectory import Candidate, DecisionPoint, Trajectory
+from tabagent.tabschema.trajectory import Candidate, DecisionPoint, LLMCall, Trajectory, read_usage
 
 TOOL_SHORTLIST, NEXT_TOOL_CALL = "ToolShortlist", "NextToolCall"
+TEXT_REPLY = "TextReply"  # an assistant turn without a tool call (free text; reported by tabagent.scan)
 TASK_KEYS = ("task_id", "instruction", "task", "query", "question", "goal", "intent", "domain")
 OUTCOME_KEYS = (
     "success",
@@ -117,8 +121,8 @@ def _call(tc: dict) -> Call | None:
     return str(tc.get("call_id") or tc.get("id") or ""), str(f["name"]), keys
 
 
-def _calls(msg: dict) -> list[Call]:
-    """Tool calls of one message, from the first dialect that has any (skips LangChain duplicates)."""
+def _raw_calls(msg: dict) -> list[dict]:
+    """Tool-call records of one message, from the first dialect that has any (skips LangChain duplicates)."""
     blocks = msg["content"] if isinstance(msg.get("content"), list) else []
     sources = (
         msg.get("tool_calls"),  # OpenAI, tau2, LangChain
@@ -128,7 +132,21 @@ def _calls(msg: dict) -> list[Call]:
         [b for b in blocks if isinstance(b, dict) and b.get("type") == "tool_use"],
     )
     raw = next((s for s in sources if s), [])
-    return [c for c in (_call(tc) for tc in raw if isinstance(tc, dict)) if c]
+    return [tc for tc in raw if isinstance(tc, dict)]
+
+
+def _calls(msg: dict) -> list[Call]:
+    """Tool calls of one message (see :func:`_raw_calls`)."""
+    return [c for c in map(_call, _raw_calls(msg)) if c]
+
+
+def _args_chars(tc: dict) -> int:
+    """Length of a tool call's arguments as written (generated text)."""
+    f = tc["function"] if isinstance(tc.get("function"), dict) else tc
+    args = f.get("arguments", f.get("args", f.get("input")))
+    if args is None:
+        return 0
+    return len(args) if isinstance(args, str) else len(json.dumps(args, default=str))
 
 
 def message_role(msg: dict) -> str:
@@ -206,6 +224,25 @@ def _normalize(messages: Any, system: Any, max_chars: int | None) -> tuple[list[
     return steps, [c for c in agent_calls if c[1] not in missing]
 
 
+def assistant_turns(messages: list[dict]) -> list[list[int]]:
+    """Indices of each assistant turn (one LLM call) in unwrapped messages: an assistant message, or the
+    consecutive output items (reasoning, messages, function calls) of one OpenAI Responses API response."""
+    turns: list[list[int]] = []
+    in_response = False
+    for i, m in enumerate(messages):
+        kind = m.get("type")
+        if kind in ("function_call", "reasoning") or (kind == "message" and message_role(m) == "assistant"):
+            if not in_response:
+                turns.append([])
+            turns[-1].append(i)
+            in_response = True
+            continue
+        if message_role(m) == "assistant":
+            turns.append([i])
+        in_response = False
+    return turns
+
+
 def normalize_messages(messages: list, system: Any = None, max_chars: int | None = 20_000) -> list[dict]:
     """Chat messages in any supported dialect -> steps ``{"name", "content", "tool_calls", "tool_name"}``."""
     return _normalize(messages, system, max_chars)[0]
@@ -236,6 +273,7 @@ class OpenAIMessagesAdapter:
     """
 
     targets = (TOOL_SHORTLIST, NEXT_TOOL_CALL)
+    scan_notes: tuple[str, ...] = ()
 
     def __init__(
         self,
@@ -396,6 +434,49 @@ class OpenAIMessagesAdapter:
             if t.success and any(s["name"] == "assistant" and s["tool_calls"] for s in self._steps(t.raw)[0])
         )
         return {self.target: n} if n else {}
+
+    # ------------------------------------------------------------------ tabagent.scan
+    def llm_calls(self, traj: Trajectory) -> list[LLMCall]:
+        """The agent's LLM calls in a run, for ``tabagent.scan``: one per assistant turn (see
+        :func:`assistant_turns`). A turn that calls tools is a ``NextToolCall``: its choices are the tools it
+        called, its catalog the run's ``tools`` (else the catalog given here), its free text the content and
+        the arguments it wrote. A turn that only writes text is a ``TextReply``. Usage is read from the turn's
+        own fields (``usage``, ``usage_metadata``, ``response_metadata``, ``cost``, ...) when recorded."""
+        run = traj.raw
+        catalog = tuple(sorted(parse_catalog(run.get("tools")) or self.catalog)) or None
+        msgs = [unwrap_message(m) for m in run.get("messages") or [] if isinstance(m, dict)]
+        decisions = (self.target, *(t for t in self.targets if t != self.target))
+        model = self._model(run)
+        out: list[LLMCall] = []
+        for turn in assistant_turns(msgs):
+            items = [msgs[i] for i in turn]
+            if not self._is_llm_call(items[0]):
+                continue
+            records = [r for m in items for r in ([m] if m.get("type") == "function_call" else _raw_calls(m))]
+            tools = tuple(c[1] for c in map(_call, records) if c)
+            text = sum(len(_text(m.get("content"))) for m in items) + sum(map(_args_chars, records))
+            usage = next((u for u in map(read_usage, items) if u), {})
+            if "latency_s" not in usage and (latency := self._latency(msgs, turn[0])) is not None:
+                usage["latency_s"] = latency
+            if model and "model" not in usage:
+                usage["model"] = model
+            if tools:
+                kw = {"choices": tools, "catalog": catalog, "decisions": decisions}
+                out.append(LLMCall(NEXT_TOOL_CALL, text_chars=text, **kw, **usage))
+            else:
+                out.append(LLMCall(TEXT_REPLY, text_chars=text, **usage))
+        return out
+
+    def _is_llm_call(self, msg: dict) -> bool:
+        """Whether an assistant turn came from the LLM (adapters for logs with scripted turns override it)."""
+        return True
+
+    def _latency(self, msgs: list[dict], i: int) -> float | None:
+        """Seconds the LLM call that wrote ``msgs[i]`` took, when no latency field records it."""
+        return None
+
+    def _model(self, run: dict) -> str | None:
+        return run["model"] if isinstance(run.get("model"), str) and run["model"] else None
 
     def live_prefix(self, run: dict, target: str | None = None) -> dict[str, Any]:
         """The prefix of a live decision, built exactly as in training; ``run["messages"]`` holds the

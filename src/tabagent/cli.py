@@ -1,5 +1,7 @@
 """Command line interface.
 
+    tabagent scan LOGS [--price-in X --price-out Y] [--format text|markdown|json]
+                                                  rank the LLM calls in agent logs that TabAgent can replace
     tabagent components LOGS                      list the decision components found in agent logs
     tabagent onboard LOGS --decision NAME --out DIR [--dry-run]
     tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor]
@@ -65,6 +67,25 @@ def _configure_logging(verbose: int) -> None:
 
 
 # --------------------------------------------------------------------------- commands
+def _prices(args) -> tuple[float, float] | None:
+    if (args.price_in is None) != (args.price_out is None):
+        raise ValueError("--price-in and --price-out go together")
+    return None if args.price_in is None else (args.price_in, args.price_out)
+
+
+def _scan(args) -> int:
+    from tabagent.scanner import scan
+
+    if args.top < 1:
+        raise ValueError("--top must be at least 1")
+    report = scan(args.logs, prices=_prices(args), top=args.top)
+    if args.format == "json":
+        print(report.to_json())
+    else:
+        print(report.to_markdown() if args.format == "markdown" else report.summary(), end="")
+    return 0
+
+
 def _components(args) -> int:
     from tabagent.adapters import detect_adapter
 
@@ -79,11 +100,10 @@ def _onboard(args) -> int:
     import tabagent
     from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
 
-    if (args.price_in is None) != (args.price_out is None):
-        raise ValueError("--price-in and --price-out go together")
+    price = _prices(args)
     llm = None if args.dry_run else auto_llm(args.model)
     model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
-    prices = None if args.price_in is None else {model: (args.price_in, args.price_out)}
+    prices = None if price is None else {model: price}
     result = tabagent.onboard(
         args.logs,
         args.decision,
@@ -232,6 +252,28 @@ def build_parser() -> argparse.ArgumentParser:
         help="log progress (-vv: also tracebacks)",
     )
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
+
+    p = sub.add_parser(
+        "scan",
+        help="find the LLM calls in agent logs that TabAgent can replace",
+        description=(
+            "Rank every component of the agent that calls an LLM: its calls per run and, where the logs "
+            "record usage, its share of the agent's LLM tokens, latency and cost; whether its outputs come "
+            "from a closed set of candidates (the decisions TabAgent replaces), with the evidence; how many "
+            "successful runs contain it; and the onboard command for the top candidates. Reads the logs "
+            "only: no LLM is called."
+        ),
+        formatter_class=_FORMATTER,
+        parents=[verbose],
+    )
+    p.add_argument("logs", help="a log file or a directory of logs")
+    p.add_argument(
+        "--price-in", type=float, help="USD per 1M input tokens, to price every call from its recorded tokens"
+    )
+    p.add_argument("--price-out", type=float, help="USD per 1M output tokens (with --price-in)")
+    p.add_argument("--format", default="text", choices=["text", "markdown", "json"], help="output format")
+    p.add_argument("--top", type=int, default=3, help="closed-set candidates to detail, with their next step")
+    p.set_defaults(fn=_scan)
 
     p = sub.add_parser(
         "components",

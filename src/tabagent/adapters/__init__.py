@@ -5,6 +5,11 @@ An adapter implements ``load(path) -> list[Trajectory]``, ``decision_points(traj
 point's ``prefix`` holds only what was known before the decision (``{<task fields>, "steps": [{"name": ...,
 ...}]}``); ``labels`` may read the full run (for tool shortlisting, the tools the successful run used).
 
+For ``tabagent.scan`` an adapter may also implement ``llm_calls(traj) -> list[LLMCall]``: every LLM call of a
+run, with what it chose, what it was offered, the free text it wrote and the tokens, latency and cost the log
+records (``read_usage`` reads the common shapes), plus ``scan_notes`` on how its logs record them. All the
+adapters below implement it.
+
 * ``OpenAIMessagesAdapter``: chat-message runs (OpenAI, Anthropic Messages API format, LangChain dumps);
 * ``Tau2Adapter``: τ²-bench results files;
 * ``CugaAdapter``: CUGA agent trajectories (the API shortlister built in);
@@ -17,23 +22,28 @@ from tabagent.adapters.cuga import SHORTLISTER, CugaAdapter
 from tabagent.adapters.detect import detect_adapter, detect_format
 from tabagent.adapters.openai_messages import (
     NEXT_TOOL_CALL,
+    TEXT_REPLY,
     TOOL_SHORTLIST,
     OpenAIMessagesAdapter,
     normalize_messages,
 )
 from tabagent.adapters.tau2 import Tau2Adapter
-from tabagent.tabschema.trajectory import GenericJsonAdapter
+from tabagent.tabschema.trajectory import GenericJsonAdapter, LLMCall, output_fields, read_usage
 
 __all__ = [
     "NEXT_TOOL_CALL",
     "SHORTLISTER",
+    "TEXT_REPLY",
     "TOOL_SHORTLIST",
     "CugaAdapter",
     "GenericJsonAdapter",
+    "LLMCall",
     "OpenAIMessagesAdapter",
     "Tau2Adapter",
     "detect_adapter",
     "detect_format",
     "normalize_messages",
+    "output_fields",
     "parse_catalog",
+    "read_usage",
 ]

@@ -16,17 +16,33 @@ and agents of one task never straddle CV folds. Candidates are the domain's tool
 file has them, else a ``tools`` catalog given here, else the tools the agents called across the loaded
 files, with the argument names observed in the calls as hints. User-side device tools are excluded, except
 for solo agents, which operate the device themselves and so get their own per-domain pool.
+
+For ``tabagent.scan``, the agent's messages record their tokens (``usage``) and cost; the latency of a call
+is the time since the previous message, from the per-message timestamps.
 """
 
 from __future__ import annotations
 
 import json
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
 from tabagent.adapters.common import iter_files, run_id
 from tabagent.adapters.openai_messages import OUTCOME_KEYS, OpenAIMessagesAdapter
 from tabagent.tabschema.trajectory import Trajectory
+
+
+def _seconds(ts: Any) -> float | None:
+    """A τ²-bench message timestamp (ISO 8601, or epoch seconds) in epoch seconds."""
+    if isinstance(ts, (int, float)) and not isinstance(ts, bool):
+        return float(ts)
+    if isinstance(ts, str) and ts:
+        try:
+            return datetime.fromisoformat(ts.replace("Z", "+00:00")).timestamp()
+        except ValueError:
+            return None
+    return None
 
 
 def _solved(run: dict) -> bool:
@@ -39,6 +55,13 @@ def _solved(run: dict) -> bool:
 
 class Tau2Adapter(OpenAIMessagesAdapter):
     """τ²-bench simulations -> trajectories and tool-selection decision points (see the module docstring)."""
+
+    scan_notes = (
+        "only the agent's LLM calls are counted: the user simulator's turns and the scripted greeting "
+        "(no usage, zero cost) are not",
+        "latency is the time from the previous message to the agent's message: τ²-bench records a "
+        "timestamp per message, not a duration per call",
+    )
 
     def __init__(
         self,
@@ -59,6 +82,18 @@ class Tau2Adapter(OpenAIMessagesAdapter):
 
     def _pool(self, run: dict) -> str:  # solo agents also hold the user's device tools
         return f"{run.get('domain', '')}{'/solo' if run.get('solo') else ''}"
+
+    def _is_llm_call(self, msg: dict) -> bool:  # the scripted greeting records no usage and costs nothing
+        return not ("usage" in msg and msg["usage"] is None and not msg.get("cost"))
+
+    def _latency(self, msgs: list[dict], i: int) -> float | None:
+        if i == 0:
+            return None
+        now, before = _seconds(msgs[i].get("timestamp")), _seconds(msgs[i - 1].get("timestamp"))
+        return now - before if now is not None and before is not None and now >= before else None
+
+    def _model(self, run: dict) -> str | None:
+        return run.get("agent") or None
 
     def load(self, path: str | Path) -> list[Trajectory]:
         root = Path(path)

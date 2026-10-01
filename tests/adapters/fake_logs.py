@@ -1,6 +1,7 @@
 """Fabricated mini-logs in each supported format (no real agent data)."""
 
 import json
+from datetime import datetime, timedelta
 
 TOOLS = {
     "search_flights": ("search flights between two airports", ["origin", "destination", "date"]),
@@ -194,6 +195,65 @@ def tau2_results(domain, sims, implementation="llm_agent", tool_defs=None):
             for k, (t, called, r) in enumerate(sims)
         ],
     }
+
+
+def tau2_with_usage(results, step_s=1.5):
+    """Timestamps ``step_s`` apart on every message, and usage and cost on every LLM turn (agent and user
+    simulator), as the τ²-bench release records them; the scripted greeting records no usage and costs 0."""
+    t0 = datetime(2025, 1, 1, 12, 0, 0)
+    for sim in results["simulations"]:
+        for k, m in enumerate(sim["messages"]):
+            m["timestamp"] = (t0 + timedelta(seconds=step_s * k)).isoformat()
+            if m["role"] in ("assistant", "user"):
+                m["usage"] = None if k == 0 else {"prompt_tokens": 1000, "completion_tokens": 20}
+                m["cost"] = 0.0 if k == 0 else 0.002
+    return results
+
+
+# --------------------------------------------------------------------------- generic JSON
+ROUTES = ["billing", "shipping", "returns"]
+
+
+def generic_run(i, usage=True, cost=True, model=None):
+    """A run of a made-up agent: an LLM router (closed set), a yes/no LLM check (closed set), a tool lookup
+    (no LLM) and an LLM writer (free text). With ``usage``, LLM steps record tokens and latency; with
+    ``cost``, their cost in USD."""
+
+    def llm(name, output, tokens_in, tokens_out, usd, ms):
+        step = {"name": name, "output": output}
+        if usage:
+            step |= {"usage": {"prompt_tokens": tokens_in, "completion_tokens": tokens_out}, "latency_ms": ms}
+        if cost:
+            step["cost_usd"] = usd
+        if model:
+            step["model"] = model
+        return step
+
+    route = ROUTES[i % len(ROUTES)]
+    return {
+        "task_id": f"t{i}",
+        "steps": [
+            llm("router", route, 1000, 5, 0.004, 800),
+            {"name": "lookup", "result": f"order {i} found"},
+            llm("check", "yes" if i % 2 else "no", 100, 1, 0.0004, 200),
+            llm(
+                "writer",
+                f"Dear customer {i}, about your {route} request: " + "details " * 40,
+                2000,
+                400,
+                0.01,
+                5000,
+            ),
+        ],
+        "score": 0.0 if i % 5 == 4 else 1.0,
+    }
+
+
+def write_generic_logs(d, n=10, **kw):
+    d.mkdir(parents=True, exist_ok=True)
+    for i in range(n):
+        (d / f"run{i:02d}.json").write_text(json.dumps(generic_run(i, **kw)))
+    return d
 
 
 # --------------------------------------------------------------------------- CUGA
