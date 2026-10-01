@@ -50,7 +50,8 @@ embed = ["torch>=2.1", "transformers>=4.40"]
 tabschema = ["openai>=1.40"]
 llm = ["litellm>=1.40"]
 serve = ["fastapi>=0.110", "uvicorn>=0.29"]
-all = ["tabagent[embed,tabschema,llm,serve]"]
+hub = ["huggingface_hub>=0.23"]  # tabagent.load("hf://OWNER/REPO")
+all = ["tabagent[embed,tabschema,llm,serve,hub]"]
 
 [project.urls]
 Homepage = "https://github.com/dolev31/TabAgent"

@@ -32,7 +32,7 @@ class ToolFilter:
 
     Parameters
     ----------
-    head: a ``TabAgentHead`` or the directory it was saved to.
+    head: a ``TabAgentHead``, the directory it was saved to, or ``hf://OWNER/REPO[@REVISION]``.
     k: tools to keep.
     always: tool names that are always kept.
     defer_to_all: when the head's gate defers the decision, keep every tool.

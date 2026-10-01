@@ -142,19 +142,21 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
 
 
 def load(path: str | Path, verify: bool = True, trust_code: bool = False):
-    """Load a ``TabAgent`` saved with :func:`save`.
+    """Load a ``TabAgent`` saved with :func:`save`, from a directory or ``hf://OWNER/REPO[@REVISION]``
+    (downloaded first, see ``tabagent.hub``).
 
     With ``verify``, every file must match the manifest's SHA-256. ``trust_code`` allows card features that
     import a module outside ``tabagent`` (see ``FeatureCard.load``).
     """
     from catboost import CatBoostClassifier
 
+    from tabagent import hub
     from tabagent.agent import TabAgent
     from tabagent.tabhead import TabHead
     from tabagent.tabschema.card import FeatureCard
     from tabagent.tabschema.fitted import FITTED
 
-    src = Path(path)
+    src = hub.resolve(path)
     manifest = json.loads((src / "manifest.json").read_text())
     if manifest["format_version"] > FORMAT_VERSION:
         raise ValueError("artifact format is newer than this library")

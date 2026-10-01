@@ -253,6 +253,9 @@ included yet.
 The guides are also published as a searchable site at [dolev31.github.io/TabAgent](https://dolev31.github.io/TabAgent/).
 <!-- /named -->
 `make docs` builds the same site locally (mkdocs-material).
+<!-- named -->
+Pretrained heads for [SkillsBench skill selection](https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection) and [τ²-bench tool shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) load with `tabagent.load("hf://...")`, and a [demo Space](https://huggingface.co/spaces/dolev31/tabagent-skill-shortlisting) runs one live ([Deploy](docs/deployment.md#pretrained-heads-and-the-demo)).
+<!-- /named -->
 
 ## Data policy
 

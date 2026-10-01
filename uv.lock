@@ -4775,6 +4775,7 @@ dependencies = [
 [package.optional-dependencies]
 all = [
     { name = "fastapi" },
+    { name = "huggingface-hub" },
     { name = "litellm" },
     { name = "openai" },
     { name = "torch" },
@@ -4784,6 +4785,9 @@ all = [
 embed = [
     { name = "torch" },
     { name = "transformers" },
+]
+hub = [
+    { name = "huggingface-hub" },
 ]
 llm = [
     { name = "litellm" },
@@ -4829,6 +4833,8 @@ requires-dist = [
     { name = "catboost", specifier = ">=1.2" },
     { name = "fastapi", marker = "extra == 'all'", specifier = ">=0.110" },
     { name = "fastapi", marker = "extra == 'serve'", specifier = ">=0.110" },
+    { name = "huggingface-hub", marker = "extra == 'all'", specifier = ">=0.23" },
+    { name = "huggingface-hub", marker = "extra == 'hub'", specifier = ">=0.23" },
     { name = "litellm", marker = "extra == 'all'", specifier = ">=1.40" },
     { name = "litellm", marker = "extra == 'llm'", specifier = ">=1.40" },
     { name = "numpy", specifier = ">=1.24" },
@@ -4844,7 +4850,7 @@ requires-dist = [
     { name = "uvicorn", marker = "extra == 'all'", specifier = ">=0.29" },
     { name = "uvicorn", marker = "extra == 'serve'", specifier = ">=0.29" },
 ]
-provides-extras = ["all", "embed", "llm", "serve", "tabschema"]
+provides-extras = ["all", "embed", "hub", "llm", "serve", "tabschema"]
 
 [package.metadata.requires-dev]
 dev = [

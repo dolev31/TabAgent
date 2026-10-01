@@ -26,7 +26,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from tabagent import auto
+from tabagent import auto, hub
 from tabagent.agent import TabAgent
 from tabagent.tabhead import confidence, decode
 from tabagent.table import DecisionTable
@@ -248,13 +248,14 @@ class TabAgentHead:
 
     @classmethod
     def load(cls, path: str | Path, trust_extractor: bool = False, trust_code: bool = False) -> TabAgentHead:
-        """Load a saved head. ``extract.py`` must match the hash recorded in the card.
+        """Load a saved head from a directory or ``hf://OWNER/REPO[@REVISION]`` (``tabagent.hub``).
+        ``extract.py`` must match the hash recorded in the card.
 
         ``trust_extractor=True`` runs the extractor in-process (fast); only do this for an extractor you have
         reviewed. Otherwise it runs in the sandbox. ``trust_code`` allows card features computed by modules
         outside ``tabagent``.
         """
-        src = Path(path)
+        src = hub.resolve(path)
         meta = json.loads((src / "head.json").read_text())
         agent = TabAgent.load(src / "model", trust_code=trust_code)
         code = (src / "extract.py").read_text() if meta.get("has_extractor") else None
@@ -454,11 +455,15 @@ def load(
     """Load a saved head: a ``TabAgentHead`` for a directory written by ``onboard`` (it has ``head.json``),
     else the ``TabAgent`` artifact written by ``TabAgent.save``.
 
+    ``path`` is a local directory or a Hugging Face Hub repository, ``hf://OWNER/REPO[@REVISION]``, which is
+    downloaded first (``pip install "tabagent[hub]"``; see ``tabagent.hub``) and then loaded and verified
+    exactly as a local directory.
+
     A ``TabAgentHead`` decides from a trajectory prefix (``decide(prefix, candidates, k=...)``); a bare
     ``TabAgent`` decides from candidate rows (``decide(rows, k=...)``). ``trust_extractor`` and
     ``trust_code`` are described in :meth:`TabAgentHead.load`.
     """
-    p = Path(path)
+    p = hub.resolve(path)
     if (p / "head.json").exists():
         return TabAgentHead.load(p, trust_extractor, trust_code)
     return TabAgent.load(p, trust_code=trust_code)

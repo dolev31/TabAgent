@@ -204,8 +204,9 @@ class TabAgent:
 
     @classmethod
     def load(cls, path: str | Path, verify: bool = True, trust_code: bool = False) -> TabAgent:
-        """Load an artifact written by ``save``. ``verify`` checks every file against the manifest's SHA-256;
-        ``trust_code`` allows card features computed by modules outside ``tabagent`` (``python:`` sources)."""
+        """Load an artifact written by ``save`` from a directory or ``hf://OWNER/REPO[@REVISION]``.
+        ``verify`` checks every file against the manifest's SHA-256; ``trust_code`` allows card features
+        computed by modules outside ``tabagent`` (``python:`` sources)."""
         from tabagent import artifact
 
         return artifact.load(path, verify, trust_code=trust_code)

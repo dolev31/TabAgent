@@ -2,7 +2,7 @@
 
     tabagent components LOGS                      list the decision components found in agent logs
     tabagent onboard LOGS --decision NAME --out DIR [--dry-run]
-    tabagent serve DIR [--port 8077] [--trust-extractor]
+    tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor]
     tabagent datasets                             list the public benchmark datasets
     tabagent datasets NAME [--download]           describe one dataset, or build it
     tabagent datasets --all --download            fetch and build every public dataset
@@ -291,7 +291,7 @@ def build_parser() -> argparse.ArgumentParser:
         formatter_class=_FORMATTER,
         parents=[verbose],
     )
-    p.add_argument("path", help="the directory of a head saved by onboard")
+    p.add_argument("path", help="a head saved by onboard: its directory, or hf://OWNER/REPO[@REVISION]")
     p.add_argument("--host", default="127.0.0.1", help="interface to listen on")
     p.add_argument("--port", type=int, default=8077, help="port to listen on")
     p.add_argument(

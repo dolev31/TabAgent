@@ -47,7 +47,8 @@ def create_app(head) -> Any:
 
 
 def serve(path: str, host: str = "127.0.0.1", port: int = 8077, trust_extractor: bool = False) -> None:
-    """Load the head saved at ``path`` and serve it until interrupted. ``trust_extractor`` runs its
+    """Load the head saved at ``path`` (a directory or ``hf://OWNER/REPO[@REVISION]``) and serve it until
+    interrupted. ``trust_extractor`` runs its
     extractor in-process instead of in the sandbox (only for an extractor you have reviewed)."""
     try:
         import uvicorn
