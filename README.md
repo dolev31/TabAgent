@@ -151,6 +151,10 @@ repository and run `uv sync --extra embed`.
 
 ## Quickstart
 
+<!-- named -->
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb)
+<!-- /named -->
+
 ```bash
 git clone https://github.com/dolev31/TabAgent && cd TabAgent
 pip install -e ".[embed]"
