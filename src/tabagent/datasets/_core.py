@@ -112,6 +112,27 @@ class Source:
             raise FileNotFoundError(f"{self.id}: no download URL recorded for {rel}")
         return _fetch(entry["url"], p, entry.get("sha256"))
 
+    def prefetch(self, rels: list[str], download: bool = True, workers: int = 8) -> None:
+        """Fetch the missing files among ``rels`` concurrently, each verified as in ``path``.
+
+        Builders that read many small files call this first, so a cold cache downloads them in parallel
+        rather than one request at a time. Files already in the mirror or the cache are not fetched again.
+        """
+        if not download:
+            return
+        missing = []
+        for rel in rels:
+            try:
+                self.path(rel)
+            except FileNotFoundError:
+                missing.append(rel)
+        if len(missing) < 2:
+            return
+        from concurrent.futures import ThreadPoolExecutor
+
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            list(pool.map(lambda rel: self.path(rel, download=True), missing))
+
     def files(self, prefix: str = "") -> list[str]:
         """The release paths under ``prefix`` recorded in the manifest."""
         return sorted(p for p in self.manifest if p.startswith(prefix))

@@ -107,6 +107,7 @@ def actions_path(source: Source = SOURCE, download: bool = False) -> Path:
     except FileNotFoundError:
         pass
     # train_0, train_1, train_10, train_2, ...: the task order of the paper runs
+    source.prefetch(source.files("data/train/"), download)
     originals = [source.path(rel, download) for rel in source.files("data/train/")]
     if not originals:
         raise FileNotFoundError(f"{source.id}: the manifest lists no train files")

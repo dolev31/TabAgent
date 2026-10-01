@@ -83,7 +83,11 @@ def bundle(source: Source, task: str) -> list[str]:
 def read_tasks(source: Source, names, download: bool = False) -> dict[str, dict]:
     """``{task: {"text": task.md, "skills": {skill: SKILL.md}}}`` in task-name order."""
     out = {}
-    for name in sorted(set(names)):
+    names = sorted(set(names))
+    wanted = [f"{TASKS}{n}/task.md" for n in names]
+    wanted += [f"{TASKS}{n}/environment/skills/{s}/SKILL.md" for n in names for s in bundle(source, n)]
+    source.prefetch(wanted, download)
+    for name in names:
         skills = bundle(source, name)
         md = {s: _read(source, f"{TASKS}{name}/environment/skills/{s}/SKILL.md", download) for s in skills}
         out[name] = {"text": _read(source, f"{TASKS}{name}/task.md", download).strip(), "skills": md}
