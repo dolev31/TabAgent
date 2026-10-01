@@ -1,15 +1,42 @@
-# TabAgent
+<div align="center">
+
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/wordmark-dark.svg">
+    <img src="docs/assets/brand/wordmark-light.svg" alt="TabAgent" width="380">
+  </picture>
+</h1>
+
+<h3>Distilling LLM Agent Components into Cheap Classifiers</h3>
 
 **Replace an LLM agent's repeated closed-set decisions with a cheap classifier trained on the agent's own
-successful runs.** Code for the paper *TabAgent: Distilling LLM Agent Components into Cheap Classifiers*.
+successful runs.**
 
 <!-- named -->
-Ido Levy, Segev Shlomov, Avi Yaeli, Nir Mashkif, Asaf Adi, Yinon Goldshtein, Eilam Shapira, Leshem Choshen
+Ido Levy · Segev Shlomov · Avi Yaeli · Nir Mashkif · Asaf Adi · Yinon Goldshtein · Eilam Shapira · Leshem Choshen
 
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](pyproject.toml)
+[![Docs](https://img.shields.io/badge/docs-dolev31.github.io%2FTabAgent-1B5EA8)](https://dolev31.github.io/TabAgent/)
 [![CI](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml/badge.svg)](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml)
+[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-1B5EA8)](pyproject.toml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-1B5EA8)](LICENSE)
+[![Code style: ruff](https://img.shields.io/badge/code%20style-ruff-E8590C)](https://github.com/astral-sh/ruff)
 <!-- /named -->
+
+[Quickstart](#quickstart) · [Results](#results-at-a-glance) · [How it works](#how-it-works) ·
+[Use it on your agent](#three-ways-to-use-it) · [Reproduce the paper](docs/reproducing.md) ·
+[Documentation](#documentation)
+
+</div>
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/hero-dark.svg">
+    <img src="docs/assets/brand/hero-light.svg" width="100%"
+         alt="Today an LLM agent sends each closed-set decision, such as shortlisting tools, to a frontier-LLM call of about 21k tokens, 7.50 s and $0.052. With TabAgent, its successful runs pass through TabSchema, TabSynth and TabHead, and one classifier pass returns the ranked shortlist in 2.682 ms for $2.0×10⁻⁷.">
+  </picture>
+</p>
+
+## Why TabAgent
 
 Agents call a frontier LLM again and again for decisions whose answer comes from a fixed set: which tools to
 shortlist, which skill or application to use, which model or sub-agent to route to, whether to activate a
@@ -18,18 +45,18 @@ classifier, with the surrounding agent left unchanged.
 
 | AppWorld tool shortlisting, per decision | GPT-5.4 shortlister | TabAgent head |
 |---|---|---|
-| latency | 7.50 s | 2.682 ms (more than 10³× lower) |
-| cost | $0.052 | $2.0×10⁻⁷ (about 10⁵× lower) |
+| latency | 7.50 s | **2.682 ms** (more than 10³× lower) |
+| cost | $0.052 | **$2.0×10⁻⁷** (about 10⁵× lower) |
 | quality | the reference | recovers essentially all of the tools the shortlister used on its successful runs (Recall@9) |
 
 <p align="center">
   <img src="docs/assets/pareto.png" width="640"
        alt="Per-decision latency against shortlisting quality: TabAgent is the fastest and cheapest point, near the top on quality">
+  <br>
+  <sub><em>Per-decision latency (x, log ms) against shortlisting quality P@R (y) on AppWorld. TabAgent (star) is the
+  fastest and cheapest point while remaining near the top on quality; filled circles are fine-tuned small LLMs,
+  open circles the same models few-shot. Figure from the paper.</em></sub>
 </p>
-
-*Per-decision latency (x, log ms) against shortlisting quality P@R (y). TabAgent (star) is the fastest and
-cheapest point while remaining near the top on quality; filled circles are fine-tuned small LLMs, open circles
-the same models few-shot. Figure from the paper.*
 
 What the paper finds, across three decision families and seven agent benchmarks:
 
@@ -44,16 +71,48 @@ What the paper finds, across three decision families and seven agent benchmarks:
 - **Few traces.** The head reaches 90% of its full-pool P@R from 118 successful trajectories on AppWorld and
   from 37 to 51 on the four τ²-bench agents.
 
-## How it works
+## Results at a glance
 
-```mermaid
-flowchart LR
-    T[successful agent<br/>trajectories] --> S[TabSchema<br/>LLM-driven feature discovery]
-    S --> C[feature card<br/>+ compiled extractor]
-    C --> Y[TabSynth<br/>label-preserving paraphrases]
-    Y --> H[TabHead<br/>CatBoost over the card]
-    H --> D[decision:<br/>top-k / label / route]
-```
+| Decision | Benchmark | Metric | Best baseline | TabAgent | Reproducible here |
+|---|---|---|---:|---:|:---:|
+| Tool shortlisting | AppWorld, five apps | P@R | 52–70 | **66–96** | traces not released |
+| Tool shortlisting | τ²-bench, three domains, 38 tools | P@R | 42 | **78** | ✓ |
+| Skill shortlisting | SkillsBench, 195 skills | P@R | 74 | **80** | ✓ |
+| Application selection | AppWorld, multi-label | macro&#8209;F1 | 92 | **97** | traces not released |
+| Operation selection | Mind2Web, three-way | macro&#8209;F1 | 84 | **92** | ✓ |
+| GUI element selection | Mind2Web, three domains | R@3 | 15–23 | **68–74** | ✓ |
+| Model routing | LLMRouterBench, 12 models | route@1 | 70 | **71**&nbsp;(on&nbsp;par) | ✓ opt-in download |
+
+<sub>Percentages from the paper's Table 1. TabAgent is the better of its real-only and +synth variants. Best
+baseline is the strongest of BM25, DSR (zero-shot and fine-tuned) and the few-shot LLM in each row; on model
+routing it is the best single model applied to every task. A fine-tuned 8B small LLM, a reference at about
+10²–10⁴× TabAgent's cost, is excluded as in the paper; it scores higher on four of the five AppWorld apps. The
+AppWorld rows use the CUGA agent's own trajectories, which are not released. The paper's table also covers the
+OAK and BPO enterprise benchmarks, where the small trajectory pools leave TabAgent behind or level with the best
+baseline, and sub-agent routing and skill gating, where it is on par with the best fixed default. [Reproducing the paper](docs/reproducing.md) recomputes every public row.</sub>
+
+<table>
+  <tr>
+    <td width="50%" valign="top">
+      <img src="docs/assets/card_ablation.png" width="100%"
+           alt="Ten classifier heads on skill selection: each reaches useful P@R with the TabSchema card and collapses to 0.10 to 0.21 without it">
+      <br>
+      <sub><b>The features carry the decision, not the head.</b> Every classifier head, from trees to tabular
+      foundation models, reaches useful P@R with the TabSchema card (blue) and collapses to 0.10–0.21 without it
+      (red). Skill selection, means of 3 seeds.</sub>
+    </td>
+    <td width="50%" valign="top">
+      <img src="docs/assets/candidate_overload.png" width="100%"
+           alt="P@R against candidate-set size on skill and element selection: the TabAgent classifier stays highest at every size while the LLM regimes degrade sharply">
+      <br>
+      <sub><b>Resilient to candidate overload.</b> As the candidate set grows, every LLM adaptation regime
+      (generative SFT, cross-encoder, few-shot) degrades sharply, while the TabAgent classifier follows a shallow
+      power law (R² ≥ 0.97) and stays highest at every measured size.</sub>
+    </td>
+  </tr>
+</table>
+
+## How it works
 
 1. **TabSchema** reads your agent's own logs and, with an LLM, proposes behavior-grounded features, writes and
    sandbox-tests the code that extracts them, and keeps only those a judge ensemble accepts. The output is a
@@ -65,11 +124,11 @@ flowchart LR
 
 <p align="center">
   <img src="docs/assets/tabschema.png" width="760" alt="TabSchema: feature analyzer, code extractor and validator, feature aggregator, three judges and a meta-judge produce the feature schema">
-  <br><em>TabSchema compiles trajectory-derived schema, state, and dependency signals into tabular features.</em>
+  <br><sub><em>TabSchema compiles trajectory-derived schema, state, and dependency signals into tabular features.</em></sub>
 </p>
 <p align="center">
   <img src="docs/assets/tabhead.png" width="760" alt="TabHead: numerical, categorical and textual features plus the tool catalog go into one tabular-textual unit that outputs a ranked shortlist">
-  <br><em>TabHead consumes features and candidates to output per-candidate probabilities.</em>
+  <br><sub><em>TabHead consumes features and candidates to output per-candidate probabilities.</em></sub>
 </p>
 
 ## Install
@@ -85,7 +144,7 @@ pip install "tabagent[serve]"           # + HTTP decision service
 `pip` resolves the newest dependency releases. For the exact versions pinned in `uv.lock`, clone the
 repository and run `uv sync --extra embed`.
 
-## Try it
+## Quickstart
 
 ```bash
 git clone https://github.com/dolev31/TabAgent && cd TabAgent
@@ -185,12 +244,21 @@ included yet.
 | [Datasets](docs/datasets.md) | every public dataset, its pinned source, license and the paper result it backs |
 | [Reproducing the paper](docs/reproducing.md) | each paper cell, the command that recomputes it, paper vs released values |
 
-`make docs` builds these pages as a searchable site (mkdocs-material).
+<!-- named -->
+The guides are also published as a searchable site at [dolev31.github.io/TabAgent](https://dolev31.github.io/TabAgent/).
+<!-- /named -->
+`make docs` builds the same site locally (mkdocs-material).
 
 ## Data policy
 
 TabAgent ships no benchmark data and no agent trajectories. Public datasets are downloaded from their upstream
 releases at pinned revisions and verified by SHA-256; licenses are listed in [NOTICE](NOTICE).
+
+## Contributing
+
+Issues and pull requests are welcome: new agent log formats, decision kinds, classifier heads and benchmark
+loaders (the public OAK and BPO benchmarks are next). See [CONTRIBUTING.md](CONTRIBUTING.md) for the setup and
+the checks, and [SECURITY.md](SECURITY.md) for how generated extraction code is sandboxed.
 
 <!-- named -->
 ## Citation
@@ -209,4 +277,4 @@ If you use TabAgent, please cite the paper:
 <!-- /named -->
 ## License
 
-Apache-2.0.
+Apache-2.0 (see [LICENSE](LICENSE)). The benchmarks keep their own licenses, listed in [NOTICE](NOTICE).

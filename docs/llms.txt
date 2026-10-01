@@ -1,0 +1,27 @@
+# TabAgent
+
+> TabAgent replaces an LLM agent's repeated closed-set decisions (which tools to shortlist, which skill or application to use, which model or sub-agent to route to, whether to activate a skill) with a cheap tabular classifier trained on the agent's own successful runs, with the surrounding agent left unchanged. It is the code for the paper "TabAgent: Distilling LLM Agent Components into Cheap Classifiers": TabSchema discovers behavior-grounded features from the agent's trajectories with an LLM, TabSynth adds label-preserving paraphrases where trajectories are scarce, and TabHead (CatBoost) scores every candidate of a decision in one pass.
+
+On AppWorld tool shortlisting, the TabAgent head decides in 2.682 ms for $2.0×10⁻⁷ per decision, against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces. Install with `pip install "tabagent @ git+https://github.com/dolev31/TabAgent"` until the PyPI release (extras: `tabschema`, `embed`, `serve`). Python 3.10+, Apache-2.0.
+
+## Docs
+
+- [Home](https://dolev31.github.io/TabAgent/): overview, results at a glance, install, quickstart and citation
+- [Concepts](https://dolev31.github.io/TabAgent/concepts/): the decision table, the four decision kinds, leakage safety, the evaluation protocol
+- [Components](https://dolev31.github.io/TabAgent/components/): TabSchema, TabSynth and TabHead in detail
+- [Onboard an agent](https://dolev31.github.io/TabAgent/onboarding/): log formats, privacy and cost controls, reviewing the generated extractor
+- [Bring your own table](https://dolev31.github.io/TabAgent/bring_your_own_data/): the scikit-learn estimators and automatic recipe selection
+- [Deploy](https://dolev31.github.io/TabAgent/deployment/): saved heads, the HTTP service, the tool filter, the confidence gate
+- [Datasets](https://dolev31.github.io/TabAgent/datasets/): every public dataset, its pinned source, license and the paper result it backs
+- [Reproducing the paper](https://dolev31.github.io/TabAgent/reproducing/): each paper cell, the command that recomputes it, paper vs released values
+
+## Code
+
+- [Repository](https://github.com/dolev31/TabAgent): source code, issues and the Apache-2.0 license
+- [Examples](https://github.com/dolev31/TabAgent/tree/main/examples): five runnable scripts, from the SkillsBench quickstart to cross-agent transfer on τ²-bench
+- [README](https://github.com/dolev31/TabAgent/blob/main/README.md): overview, the three ways to use TabAgent, results and citation
+
+## Optional
+
+- [Citation metadata](https://github.com/dolev31/TabAgent/blob/main/CITATION.cff): how to cite the paper
+- [Third-party notices](https://github.com/dolev31/TabAgent/blob/main/NOTICE): licenses of the public benchmarks

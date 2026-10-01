@@ -20,7 +20,10 @@ authors = [
   { name = "Eilam Shapira" },
   { name = "Leshem Choshen" },
 ]
-keywords = ["llm-agents", "tool-selection", "tabular-classification", "distillation", "catboost"]
+keywords = [
+  "llm-agents", "tool-selection", "tool-shortlisting", "llm-routing", "skill-selection",
+  "tabular-classification", "distillation", "agent-efficiency", "catboost",
+]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Intended Audience :: Science/Research",
@@ -53,7 +56,7 @@ all = ["tabagent[embed,tabschema,llm,serve]"]
 [project.urls]
 Homepage = "https://github.com/dolev31/TabAgent"
 Source = "https://github.com/dolev31/TabAgent"
-Documentation = "https://github.com/dolev31/TabAgent/tree/main/docs"
+Documentation = "https://dolev31.github.io/TabAgent/"
 Issues = "https://github.com/dolev31/TabAgent/issues"
 
 [dependency-groups]

@@ -1,0 +1,22 @@
+name: Feature request
+description: A new log format, decision kind, benchmark or capability
+labels: [enhancement]
+body:
+  - type: dropdown
+    id: kind
+    attributes:
+      label: Kind
+      options:
+        - a new agent log format
+        - a new decision kind
+        - a new benchmark loader
+        - something else
+    validations:
+      required: true
+  - type: textarea
+    id: need
+    attributes:
+      label: What you need and why
+      description: The decision your agent makes, what its logs look like (a redacted example helps), and what you would like TabAgent to do.
+    validations:
+      required: true

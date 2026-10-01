@@ -1,17 +1,77 @@
 site_name: TabAgent
 site_description: Replace an LLM agent's closed-set decisions with a cheap classifier trained on its own traces.
+site_url: https://dolev31.github.io/TabAgent/
 repo_url: https://github.com/dolev31/TabAgent
+repo_name: TabAgent
+copyright: Copyright &copy; 2026 The TabAgent authors. Code released under the Apache-2.0 license.
+
+# Theme overrides live under docs/ but are templates, not pages.
+exclude_docs: |
+  /overrides/
+
 theme:
   name: material
-  features: [navigation.sections, content.code.copy]
+  custom_dir: docs/overrides
+  logo: assets/brand/logo.svg
+  favicon: assets/brand/favicon.png
+  icon:
+    repo: fontawesome/brands/github
+  font:
+    text: Inter
+    code: JetBrains Mono
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: custom
+      accent: custom
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+  features:
+    - navigation.sections
+    - navigation.top
+    - navigation.footer
+    - navigation.instant
+    - search.suggest
+    - search.highlight
+    - content.code.copy
+    - content.code.annotate
+    - toc.follow
+
+extra_css:
+  - stylesheets/extra.css
+
 markdown_extensions:
   - admonition
   - tables
+  - attr_list
+  - md_in_html
+  - toc:
+      permalink: true
+  - pymdownx.emoji:
+      emoji_index: !!python/name:material.extensions.emoji.twemoji
+      emoji_generator: !!python/name:material.extensions.emoji.to_svg
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+      pygments_lang_class: true
+  - pymdownx.inlinehilite
+  - pymdownx.details
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
           class: mermaid
           format: !!python/name:pymdownx.superfences.fence_code_format
+
 nav:
   - Home: index.md
   - Concepts: concepts.md
