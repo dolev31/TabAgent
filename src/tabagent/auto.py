@@ -11,11 +11,15 @@
 ``select`` chooses among a small grid of recipes (TabSynth off / k=2 / k=4, candidate prior on / off, head
 preset) by nested, grouped inner cross-validation on the **training data only**, and returns the winner and
 the full table of inner scores. This operationalizes the paper's rule of adopting +synth only where it beats
-the real-only head (App. A, "Where synthesis backfires") without ever looking at held-out data.
+the real-only head (App. A, "Where synthesis backfires") without ever looking at held-out data. For a
+TabSchema card, the winner is then tried once more without the generic context text and the context-candidate
+similarities (``CONTEXT``), which rich LLM features can make redundant; they are dropped only when that scores
+strictly better.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import time
 from dataclasses import dataclass, field
@@ -32,6 +36,9 @@ from tabagent.tabsynth import TabSynth
 
 PRIMARY_METRIC = {"ranking": "p@r", "multilabel": "ml_f1", "policy": "route@1", "single": "accuracy"}
 PRIOR = "candidate_prior"
+# The context text TabSchema appends to every extractor, and the context-candidate similarities (computed over
+# the extractor's text columns).
+CONTEXT = ("context_text", "context_candidate_lex", "context_candidate_sim")
 
 
 def infer_type(s: pd.Series) -> str:
@@ -120,24 +127,47 @@ def _without(card: FeatureCard, names: set[str]) -> FeatureCard:
 
 @dataclass
 class Recipe:
-    """One training recipe: TabSynth variants per row (0 = off), the candidate prior on or off, and the
-    CatBoost preset; ``scores`` holds its inner-validation scores."""
+    """One training recipe: TabSynth variants per row (0 = off), the candidate prior on or off, the CatBoost
+    preset, and the context text (``CONTEXT``) on or off; ``scores`` holds its inner-validation scores."""
 
     synth_k: int = 0
     prior: bool = True
     preset: str = "paper"
     scores: dict = field(default_factory=dict)
+    context: bool = True
 
     def label(self) -> str:
-        """A short description, for example ``synth=k2 prior=on paper``."""
+        """A short description, for example ``synth=k2 prior=on paper`` (``context=off`` when off)."""
         synth = f"k{self.synth_k}" if self.synth_k else "off"
-        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}"
+        context = "" if self.context else " context=off"
+        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}{context}"
+
+
+def _without_context(card: FeatureCard) -> FeatureCard:
+    drop = set(CONTEXT)
+    return dataclasses.replace(
+        card,
+        features=[f for f in card.features if f.name not in drop],
+        synth_text=[c for c in card.synth_text if c not in drop],
+        provenance=dict(card.provenance),
+        _fitted=None,
+    )
+
+
+def can_drop_context(card: FeatureCard) -> bool:
+    """Whether ``card`` has context-text features (``CONTEXT``) and other state features to rank without
+    them."""
+    names = {f.name for f in card.features}
+    state = [f for f in card.features if f.family == "state" and f.name not in CONTEXT]
+    return bool(names & set(CONTEXT)) and bool(state)
 
 
 def build_agent(card: FeatureCard, recipe: Recipe, seed: int = 0, **head_overrides) -> TabAgent:
     """The ``TabAgent`` of ``recipe`` on ``card`` (``head_overrides`` go to the CatBoost head)."""
     has_prior = any(f.name == PRIOR for f in card.features)
     c = card if (recipe.prior or not has_prior) else _without(card, {PRIOR})
+    if not recipe.context and can_drop_context(c):
+        c = _without_context(c)
     synth = TabSynth(k=recipe.synth_k) if recipe.synth_k and c.synth_text else None
     head = TabHead(c.spec.kind, preset=recipe.preset, seed=seed, **head_overrides)
     return TabAgent(c, head=head, synth=synth, seed=seed)
@@ -167,9 +197,11 @@ def select(
     """Nested selection of the training recipe on ``table`` (training data only).
 
     Every recipe of :func:`recipes` is scored by ``inner_folds``-fold grouped cross-validation with one
-    seed on the card's primary metric; the best wins, ties going to the simpler (earlier) recipe. With
-    ``time_budget`` (seconds), recipes left when it runs out are skipped. Returns the winner and a table of
-    every recipe's inner score.
+    seed on the card's primary metric; the best wins, ties going to the simpler (earlier) recipe. When the
+    card has context-text features and other state features (:func:`can_drop_context`), the winner is scored
+    once more without the context text, which replaces it only when strictly better. With ``time_budget``
+    (seconds), recipes left when it runs out are skipped. Returns the winner and a table of every recipe's
+    inner score.
     """
     metric = PRIMARY_METRIC[card.spec.kind]
     grid = recipes(card, search)
@@ -177,10 +209,11 @@ def select(
     if len(grid) == 1 or n_groups < 2 * inner_folds:
         return grid[0], pd.DataFrame([{"recipe": grid[0].label(), metric: np.nan, "note": "no search"}])
     rows, start = [], time.monotonic()
-    for r in grid:
+
+    def score(r: Recipe) -> bool:
         if time_budget is not None and time.monotonic() - start > time_budget and rows:
             rows.append({"recipe": r.label(), metric: np.nan, "note": "skipped (time budget)"})
-            continue
+            return False
         res = cross_validate(
             build_agent(card, r, seed, **head_overrides),
             table,
@@ -190,6 +223,14 @@ def select(
         )
         r.scores[metric] = float(res.per_decision(metric).mean())
         rows.append({"recipe": r.label(), metric: r.scores[metric], "note": ""})
+        return True
+
+    for r in grid:
+        score(r)
     scored = [r for r in grid if metric in r.scores]
     best = max(scored, key=lambda r: r.scores[metric])  # ties keep the simpler (earlier) recipe
+    if can_drop_context(card):
+        lean = dataclasses.replace(best, scores={}, context=False)
+        if score(lean) and lean.scores[metric] > best.scores[metric]:
+            best = lean
     return best, pd.DataFrame(rows)

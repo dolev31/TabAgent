@@ -16,6 +16,14 @@ decision table, selects the training recipe by nested validation, evaluates the 
 cross-validation (quality with CIs against BM25 and chance, latency and cost per decision), fits the final head
 and saves it.
 
+The recipe search (on the training rows only) chooses TabSynth off, k=2 or k=4, the candidate prior on or off,
+and, for a card whose LLM features include other state, whether to keep the generic context text and the
+context-candidate similarities. Rich LLM features can make those redundant: on the next-tool-call decision of
+the τ²-bench GPT-4.1 logs, a card discovered from 20 decision points scored P@R 0.853 without them against 0.841
+with them, while a card from 10 points needed them (0.810 against 0.761). Choosing by nested validation inside
+each training fold reached 0.850 and 0.810. They are dropped only when the inner validation is strictly better;
+the report names the recipe (`context=off`).
+
 ## Find what to replace
 
 `tabagent scan` reads the logs, calls no LLM and sends nothing anywhere. It ranks every component of the agent
