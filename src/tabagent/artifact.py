@@ -145,8 +145,11 @@ def load(path: str | Path, verify: bool = True, trust_code: bool = False):
     """Load a ``TabAgent`` saved with :func:`save`, from a directory or ``hf://OWNER/REPO[@REVISION]``
     (downloaded first, see ``tabagent.hub``).
 
-    With ``verify``, every file must match the manifest's SHA-256. ``trust_code`` allows card features that
-    import a module outside ``tabagent`` (see ``FeatureCard.load``).
+    With ``verify``, the manifest must list every artifact file and each must match its SHA-256 (a missing
+    entry is refused, not skipped). ``card.yaml`` in turn pins the hash of a TabSchema ``extract.py``. This
+    detects modified or corrupted files; it is not a signature (whoever can rewrite every file and the
+    manifest can make them agree). ``trust_code`` allows card features that import a module outside
+    ``tabagent`` (see ``FeatureCard.load``).
     """
     from catboost import CatBoostClassifier
 
@@ -161,6 +164,9 @@ def load(path: str | Path, verify: bool = True, trust_code: bool = False):
     if manifest["format_version"] > FORMAT_VERSION:
         raise ValueError("artifact format is newer than this library")
     if verify:
+        unlisted = [f for f in FILES if f not in (manifest.get("sha256") or {})]
+        if unlisted:
+            raise ValueError(f"the manifest lists no hash for {', '.join(unlisted)} (modified artifact)")
         for f, digest in manifest["sha256"].items():
             if _sha256(src / f) != digest:
                 raise ValueError(f"{f} does not match the manifest hash (modified or corrupted artifact)")

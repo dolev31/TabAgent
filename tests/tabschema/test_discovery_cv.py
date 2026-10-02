@@ -20,7 +20,8 @@ def logs(tmp_path):
 
 
 def _run(logs, tmp_path, llm, **kw):
-    cfg = kw.pop("config", TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False))
+    # usefulness=False: the usefulness estimate runs in every fold; one test below keeps it
+    cfg = kw.pop("config", TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False, usefulness=False))
     return tabagent.cross_validate_discovery(
         logs,
         "ShortlisterAgent",
@@ -44,7 +45,9 @@ def test_discovery_runs_on_the_training_fold_only(logs, tmp_path, monkeypatch):
         return discover(self, trajectories, target, kind, name)
 
     monkeypatch.setattr(TabSchema, "discover", spy)
-    res = _run(logs, tmp_path, ScriptedLLM(responder), seeds=(0, 1))
+    # a fold estimates usefulness only to prune (a report nobody reads per fold is skipped)
+    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False, prune_harmful=True)
+    res = _run(logs, tmp_path, ScriptedLLM(responder), seeds=(0, 1), config=cfg)
 
     assert isinstance(res, DiscoveryCVResult) and len(seen) == 3  # once per fold, reused by the second seed
     groups = set(map(str, res.table.groups))
@@ -57,13 +60,17 @@ def test_discovery_runs_on_the_training_fold_only(logs, tmp_path, monkeypatch):
     assert {"user_intent", "plan_note"} <= set(res.discoveries[0].card.feature_names)
     assert res.summary(["p@r"]).loc["p@r", "value"] > 0.9
     assert res.cost_usd is None  # the scripted model has no price
+    for d in res.discoveries.values():  # the usefulness estimate saw the fold's training decisions only
+        assert d.report.usefulness["decisions"] == d.report.n_decision_points < len(res.table.groups)
 
 
 def test_held_out_rows_use_their_fold_extractor_and_reruns_resume(logs, tmp_path):
     llm = ScriptedLLM(responder)
-    first = _run(logs, tmp_path, llm)
+    report_only = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False)  # usefulness on, no pruning
+    first = _run(logs, tmp_path, llm, config=report_only)
+    assert all(d.report.usefulness == {} for d in first.discoveries.values())  # not paid again per fold
     n_calls = len(llm.calls)
-    again = _run(logs, tmp_path, llm)
+    again = _run(logs, tmp_path, llm, config=report_only)
     assert len(llm.calls) == n_calls  # every fold resumes from its run directory
     assert (first.oof[0] == again.oof[0]).all()
     assert len({d.report.run_dir for d in first.discoveries.values()}) == 3
@@ -71,13 +78,18 @@ def test_held_out_rows_use_their_fold_extractor_and_reruns_resume(logs, tmp_path
 
 def test_the_budget_covers_all_folds(logs, tmp_path):
     prices = {"scripted": (1.0, 1.0)}
-    priced = TabSchemaConfig(n_analyze=2, workers=1, pair_embeddings=False, prices=prices)
+    priced = TabSchemaConfig(n_analyze=2, workers=1, pair_embeddings=False, prices=prices, usefulness=False)
     res = _run(logs, tmp_path / "a", ScriptedLLM(responder, model="scripted"), config=priced)
     per_fold = [d.report.cost["total_usd"] for d in res.discoveries.values()]
     assert res.cost_usd == pytest.approx(sum(per_fold)) and min(per_fold) > 0
 
     capped = TabSchemaConfig(
-        n_analyze=2, workers=1, pair_embeddings=False, prices=prices, max_cost_usd=1.5 * max(per_fold)
+        n_analyze=2,
+        workers=1,
+        pair_embeddings=False,
+        prices=prices,
+        max_cost_usd=1.5 * max(per_fold),
+        usefulness=False,
     )
     llm = ScriptedLLM(responder, model="scripted")
     with pytest.raises(BudgetExceeded):
@@ -86,7 +98,7 @@ def test_the_budget_covers_all_folds(logs, tmp_path):
 
 
 def test_recipe_selection_runs_on_each_training_fold(logs, tmp_path):
-    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False)
+    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False, usefulness=False)
     res = tabagent.cross_validate_discovery(
         logs,
         "ShortlisterAgent",

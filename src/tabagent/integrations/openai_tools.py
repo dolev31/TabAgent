@@ -69,7 +69,8 @@ class ToolFilter:
     trust_extractor: when loading ``head`` from a directory, run its extractor in-process.
     task: run-level task fields sent with every call (``{"domain": "airline"}``, say); ``__call__``,
         ``select`` and ``session`` take further fields (``{"instruction": ...}``), which take precedence.
-    sandbox, redact: when loading ``head`` from a directory, see ``TabAgentHead.load``.
+    sandbox, redact, allow_unpinned: when loading ``head`` from a directory or the Hub, see
+        ``TabAgentHead.load`` (a served head is loaded, and checked, by ``tabagent serve``).
 
     ``last`` holds the head's answer for the latest ``select`` on this filter; a session keeps its own.
     """
@@ -86,9 +87,10 @@ class ToolFilter:
         task: dict[str, Any] | None = None,
         sandbox: Any = None,
         redact: Callable[[dict], dict] | str | None = None,
+        allow_unpinned: bool = False,
     ):
         if isinstance(head, str) and head.startswith(("http://", "https://")):
-            if sandbox is not None or redact is not None or trust_extractor:
+            if sandbox is not None or redact is not None or trust_extractor or allow_unpinned:
                 raise ValueError("a served head runs its extractor where it is served; set these on `serve`")
             from tabagent.serve import RemoteHead
 
@@ -96,9 +98,18 @@ class ToolFilter:
         elif isinstance(head, (str, Path)):
             from tabagent.api import TabAgentHead
 
-            head = TabAgentHead.load(head, trust_extractor=trust_extractor, sandbox=sandbox, redact=redact)
-        elif sandbox is not None or redact is not None:
-            raise ValueError("sandbox= and redact= apply when loading a head; set them on the head instead")
+            head = TabAgentHead.load(
+                head,
+                trust_extractor=trust_extractor,
+                sandbox=sandbox,
+                redact=redact,
+                allow_unpinned=allow_unpinned,
+            )
+        elif sandbox is not None or redact is not None or allow_unpinned:
+            raise ValueError(
+                "sandbox=, redact= and allow_unpinned= apply when loading a head; set them on the head "
+                "instead"
+            )
         self.head, self.k, self.always, self.defer_to_all = head, k, set(always), defer_to_all
         self.adapter = adapter
         self.task = dict(task or {})

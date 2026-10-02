@@ -18,20 +18,28 @@ component needs:
    rate, length); it then gets a frozen type: the plan's type for the feature itself, the data's for a
    sub-key;
 5. a kept column that lists earlier candidates (the tools called before the decision, say) becomes the
-   context of the card's fitted co-usage statistic (``co_usage_context``).
+   context of the card's fitted co-usage statistic (``co_usage_context``);
+6. the release's verification (``tabagent.tabschema.verify``, not in the paper) runs the final code on a
+   sample of decision points: columns that are nondeterministic or change when outcome fields or the
+   run's future change are dropped, and how the code copes with short or incomplete prefixes is reported.
+   Golden tests (``extractor_tests.json``) are recorded for ``tabagent verify-head``.
 """
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import warnings
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
 
 import numpy as np
 import pandas as pd
 
+from tabagent.defaults import DEFAULT_SEED
+from tabagent.tabschema import verify as V
 from tabagent.tabschema.agents import (
     CodeExecutor,
     CodeExtractor,
@@ -56,17 +64,18 @@ class ExtractionError(RuntimeError):
 
 
 #: Appended to every compiled extractor (``context_text=True``): the decision's context as plain text, not
-#: written by the LLM. It reads the prefix's task-level text fields and the texts of its steps (system
-#: prompts, identical across decisions, are skipped) and keeps the start and the latest part of a long
-#: history. Being part of ``extract.py``, it runs identically at training and at inference. It gives the card
-#: a context text for the context-candidate similarity features, TabSynth's paraphrases and BM25.
+#: written by the LLM. It reads the prefix's task-level text fields (never the adapter's outcome fields,
+#: should a prefix carry one) and the texts of its steps (system prompts, identical across decisions, are
+#: skipped) and keeps the start and the latest part of a long history. Being part of ``extract.py``, it runs
+#: identically at training and at inference. It gives the card a context text for the context-candidate
+#: similarity features, TabSynth's paraphrases and BM25.
 CONTEXT_TEXT_CODE = """
 
 # --- appended by TabAgent (not LLM-written): the decision's context as text ---
-def _tabagent_context_text(trajectory_data, limit=4000):
+def _tabagent_context_text(trajectory_data, limit=4000, skip=__TABAGENT_SKIP__):
     parts = []
     for key, value in trajectory_data.items():
-        if key != "steps" and isinstance(value, str) and value.strip():
+        if key != "steps" and key not in skip and isinstance(value, str) and value.strip():
             parts.append(value.strip())
     for step in trajectory_data.get("steps") or []:
         if not isinstance(step, dict) or step.get("name") == "system":
@@ -87,14 +96,20 @@ if isinstance(features, dict):
 CONTEXT_TEXT_COLUMN = "context_text"
 
 
-def context_text_code(column: str) -> str:
-    """The appended context-text code, writing ``column``."""
-    return CONTEXT_TEXT_CODE.replace("__TABAGENT_CONTEXT_COLUMN__", repr(column))
+def context_text_code(column: str, skip: Iterable[str] = ()) -> str:
+    """The appended context-text code, writing ``column`` and ignoring the top-level fields in ``skip`` (the
+    adapter's outcome fields)."""
+    keys = repr(tuple(dict.fromkeys(str(k) for k in skip)))
+    return CONTEXT_TEXT_CODE.replace("__TABAGENT_CONTEXT_COLUMN__", repr(column)).replace(
+        "__TABAGENT_SKIP__", keys
+    )
 
 
-def context_texts(prefixes: list[dict], column: str = CONTEXT_TEXT_COLUMN) -> list[str]:
+def context_texts(
+    prefixes: list[dict], column: str = CONTEXT_TEXT_COLUMN, skip: Iterable[str] = ()
+) -> list[str]:
     """The context texts the appended code computes for ``prefixes`` (run here, on JSON copies)."""
-    code = compile(context_text_code(column), "<context_text>", "exec")
+    code = compile(context_text_code(column, skip), "<context_text>", "exec")
     out = []
     for p in prefixes:
         ns: dict[str, Any] = {"features": {}, "trajectory": json.loads(json.dumps(p, default=str))}
@@ -106,7 +121,11 @@ def context_texts(prefixes: list[dict], column: str = CONTEXT_TEXT_COLUMN) -> li
 @dataclass
 class CompiledExtractor:
     """The compiled extractor: its code, the output columns with their frozen types, the feature plan each
-    column implements, what was dropped and why, and per-column quality statistics."""
+    column implements, what was dropped and why, and per-column quality statistics.
+
+    ``verification`` is the record of the release's compile-time checks (``tabagent.tabschema.verify``),
+    ``tests`` the golden tests saved as ``extractor_tests.json``, and ``outputs`` the code's features on each
+    onboarding decision point, in order (None where it failed), before the context text was appended."""
 
     code: str
     features: dict[str, str]  # output column -> frozen type (text / num / cat)
@@ -116,11 +135,37 @@ class CompiledExtractor:
     attempts: int = 1
     notes: list[str] = field(default_factory=list)
     co_usage_context: str | None = None  # the column listing earlier candidates, if any
+    verification: dict[str, Any] = field(default_factory=dict)
+    tests: dict[str, Any] | None = None
+    outputs: list[dict | None] = field(default_factory=list, repr=False, compare=False)
 
     @property
     def sha256(self) -> str:
         """SHA-256 of the code (recorded in the card, checked when a head is loaded)."""
         return hashlib.sha256(self.code.encode()).hexdigest()
+
+    @property
+    def llm_columns(self) -> list[str]:
+        """The kept columns the LLM wrote (every column but the ones TabAgent appended)."""
+        return [c for c in self.features if not self.specs.get(c, {}).get("added_by")]
+
+    def drop(self, column: str, reason: str) -> None:
+        """Leave ``column`` out of the card, recording ``reason`` (the code keeps computing it)."""
+        self.features.pop(column, None)
+        self.specs.pop(column, None)
+        self.dropped[column] = reason
+        if self.co_usage_context == column:
+            self.co_usage_context = None
+
+    def without(self, columns: Iterable[str]) -> CompiledExtractor:
+        """A copy without ``columns`` (the code unchanged), for cards that leave features out."""
+        out = set(columns)
+        return dataclasses.replace(
+            self,
+            features={c: t for c, t in self.features.items() if c not in out},
+            specs={c: s for c, s in self.specs.items() if c not in out},
+            co_usage_context=None if self.co_usage_context in out else self.co_usage_context,
+        )
 
 
 def _resolve_type(spec_type: str, col: pd.Series) -> str:
@@ -182,12 +227,27 @@ def compile_extractor(
     reserved: frozenset[str] | set[str] = frozenset(),
     candidate_ids: frozenset[str] | set[str] = frozenset(),
     context_text: bool = True,
+    verify: bool = True,
+    verify_samples: int = V.DEFAULT_SAMPLES,
+    future: Callable[[DecisionPoint], dict] | None = None,
+    goldens: int = V.DEFAULT_GOLDENS,
+    seed: int = DEFAULT_SEED,
+    steps_key: str = "steps",
+    label_of: Callable[[DecisionPoint], Iterable[Any]] | None = None,
+    adapter_name: str = "",
 ) -> CompiledExtractor:
     """Write, check and quality-gate one extractor for the ``accepted`` features (see the module docstring).
     Output columns named like a column of the decision table (``reserved``) are dropped; ``candidate_ids``
     (the decision's candidates) find the co-usage context.
 
-    Raises ``ExtractionError`` when no code runs on enough decision points or no column passes the gates.
+    With ``verify``, the final code runs again on every decision point and is checked on ``verify_samples``
+    coverage-sampled ones (:func:`tabagent.tabschema.verify.verify_extractor`; ``future`` is the adapter's
+    :class:`~tabagent.tabschema.verify.FutureCheck`, ``label_of`` its labels), and failing columns are
+    dropped. Up to ``goldens`` golden tests are recorded in ``tests``.
+
+    Raises ``ExtractionError`` when no code runs on enough decision points or no column passes the gates, and
+    :class:`~tabagent.tabschema.verify.PrefixLeakError` when the adapter's prefixes change with the run's
+    future (``adapter_name`` names it in the message).
     """
     if not accepted:
         raise ExtractionError("no accepted features to compile")
@@ -256,18 +316,93 @@ def compile_extractor(
     if candidate_ids:
         result.co_usage_context = _co_usage_context(result, frame.loc[ok_rows], set(candidate_ids))
     if context_text:  # after the co-usage search: the context text is free text, never a candidate list
-        _add_context_text(result, prefixes, set(reserved) | set(frame.columns))
+        _add_context_text(result, prefixes, set(reserved) | set(frame.columns), outcome_keys)
+    result.outputs = outputs
+    if verify:
+        _verify(
+            result,
+            decision_points,
+            sandbox,
+            outcome_keys,
+            future,
+            verify_samples,
+            seed,
+            steps_key,
+            label_of,
+            adapter_name,
+        )
+    result.tests = V.make_tests(
+        result.code,
+        list(result.features),
+        decision_points,
+        sandbox=sandbox,
+        outcome_keys=outcome_keys,
+        n=goldens,
+        seed=seed,
+        steps_key=steps_key,
+        verification=result.verification,
+        label_of=label_of,
+    )
+    stats = result.tests["golden_stats"]
+    if stats["raised"]:
+        result.notes.append(
+            f"golden tests: {stats['recorded']} of {stats['requested']} recorded; {stats['raised']} of "
+            f"{stats['snapshots']} masked snapshots made the extractor raise "
+            f"({stats.get('first_error', '')}), "
+            "and verify-head fails a head whose goldens fall short because of that"
+        )
     return result
 
 
-def _add_context_text(result: CompiledExtractor, prefixes: list[dict], taken: set[str]) -> None:
+def _verify(
+    result: CompiledExtractor,
+    decision_points: list[DecisionPoint],
+    sandbox: SubprocessSandbox | None,
+    outcome_keys: tuple[str, ...],
+    future: Callable[[DecisionPoint], dict] | None,
+    samples: int,
+    seed: int,
+    steps_key: str,
+    label_of: Callable[[DecisionPoint], Iterable[Any]] | None,
+    adapter_name: str,
+) -> None:
+    """Run the compile-time checks on the final code and drop the columns that fail them; fail closed when
+    the adapter's prefixes change with the run's future."""
+    rec = V.verify_extractor(
+        result.code,
+        list(result.features),
+        decision_points,
+        outputs=result.outputs,
+        output_columns=result.llm_columns,
+        sandbox=sandbox,
+        outcome_keys=outcome_keys,
+        future=future,
+        samples=samples,
+        seed=seed,
+        steps_key=steps_key,
+        label_of=label_of,
+    )
+    result.verification = rec
+    if rec["future"].get("leaks"):
+        raise V.PrefixLeakError(V.leak_message(adapter_name or "used", rec["future"]), rec)
+    for col, reason in rec["dropped"].items():
+        result.drop(col, reason)
+    result.notes += [f"verification: {n}" for n in rec["notes"]]
+    if not result.llm_columns:
+        reasons = "; ".join(f"{k}: {v}" for k, v in rec["dropped"].items())
+        raise ExtractionError(f"every compiled feature failed the verification checks ({reasons[:1000]})")
+
+
+def _add_context_text(
+    result: CompiledExtractor, prefixes: list[dict], taken: set[str], skip: Iterable[str] = ()
+) -> None:
     """Append the context-text code to the extractor when its text varies across decision points."""
     column = CONTEXT_TEXT_COLUMN if CONTEXT_TEXT_COLUMN not in taken else f"tabagent_{CONTEXT_TEXT_COLUMN}"
-    values = pd.Series(context_texts(prefixes, column))
+    values = pd.Series(context_texts(prefixes, column, skip))
     if values.nunique() <= 1:
         result.notes.append("no context text added: the prefixes hold no text that varies across decisions")
         return
-    result.code += context_text_code(column)
+    result.code += context_text_code(column, skip)
     result.features[column] = "text"
     result.specs[column] = {
         "feature_name": column,

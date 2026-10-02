@@ -9,6 +9,10 @@ They complement the CodeValidator (an LLM judge, paper App. D.1) with rules that
 * every constant key path it reads from the trajectory exists in the union schema of the onboarding
   prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for);
 * it never reads the trajectory's top-level post-hoc outcome fields (scores, rewards, evaluator results);
+* it never reads the clock (``datetime.now()``, ``date.today()``, ``utcnow()``) or a per-process value
+  (``hash()``, ``id()``): a feature must be a function of the prefix alone (the CodeExtractor prompt's
+  contract), or it drifts between training and serving (``random``, ``time``, ``uuid``, ``os`` and
+  ``secrets`` are not importable at all);
 * its output is a flat dict of JSON scalars.
 """
 
@@ -49,6 +53,12 @@ FORBIDDEN_CALLS = {
     "setattr",
     "delattr",
 }
+#: Calls whose result depends on when or in which process the code runs, not on the prefix: ``now()``,
+#: ``today()`` and ``utcnow()`` on ``datetime``/``date`` (resolved through ``import`` aliases), ``hash()`` and
+#: ``id()``.
+CLOCK_METHODS = {"now", "today", "utcnow"}
+CLOCK_CLASSES = {"datetime", "date"}
+PROCESS_CALLS = {"hash", "id"}
 ROOTS = ("trajectory_data", "trajectory")
 ALLOWED_DUNDERS = {"__name__", "__init__"}  # ``if __name__ == "__main__":``, ``type(v).__name__``, classes
 
@@ -57,7 +67,7 @@ ALLOWED_DUNDERS = {"__name__", "__init__"}  # ``if __name__ == "__main__":``, ``
 class Issue:
     """One rule violation found in extraction code or its output."""
 
-    kind: str  # syntax | import | call | dunder | uses_get | unknown_field | outcome_field | output
+    kind: str  # syntax | import | call | dunder | uses_get | unknown_field | outcome_field | clock | output
     detail: str
 
     def __str__(self) -> str:
@@ -141,6 +151,28 @@ def _covered(path: tuple[str, ...], known: set[tuple]) -> bool:
     return True
 
 
+def _clock_names(tree: ast.AST) -> set[str]:
+    """Names bound to the ``datetime`` module or its ``datetime``/``date`` classes (``import datetime as dt``,
+    ``from datetime import datetime``); ``datetime`` and ``date`` themselves count too."""
+    names = set(CLOCK_CLASSES)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            names |= {a.asname or a.name for a in node.names if a.name.split(".")[0] == "datetime"}
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "datetime":
+            names |= {a.asname or a.name for a in node.names}
+    return names
+
+
+def _is_clock(receiver: ast.AST, names: set[str]) -> bool:
+    """Whether ``receiver`` (of a ``.now()`` call, say) is ``datetime``, ``date`` or an alias of them, rather
+    than an object of the extraction code's own."""
+    if isinstance(receiver, ast.Name):
+        return receiver.id in names
+    if isinstance(receiver, ast.Attribute):
+        return receiver.attr in CLOCK_CLASSES and _is_clock(receiver.value, names | CLOCK_CLASSES)
+    return False
+
+
 def check_code(
     code: str, known_paths: set[tuple] | None = None, outcome_keys: tuple[str, ...] = ()
 ) -> list[Issue]:
@@ -154,6 +186,7 @@ def check_code(
         for child in ast.iter_child_nodes(parent):
             child.parent = parent  # type: ignore[attr-defined]
     issues: list[Issue] = []
+    clock = _clock_names(tree)
     for node in ast.walk(tree):
         if isinstance(node, ast.Import):
             mods = [a.name.split(".")[0] for a in node.names]
@@ -168,6 +201,22 @@ def check_code(
                 issues.append(Issue("call", f.id))
             if isinstance(f, ast.Attribute) and f.attr == "get":
                 issues.append(Issue("uses_get", f"line {node.lineno}: use dict['key'] instead of .get()"))
+            if isinstance(f, ast.Attribute) and f.attr in CLOCK_METHODS and _is_clock(f.value, clock):
+                issues.append(
+                    Issue(
+                        "clock",
+                        f"line {node.lineno}: .{f.attr}() reads the clock; compute features from the "
+                        "trajectory only (use its timestamps), or they drift between training and serving",
+                    )
+                )
+            if isinstance(f, ast.Name) and f.id in PROCESS_CALLS:
+                issues.append(
+                    Issue(
+                        "clock",
+                        f"line {node.lineno}: {f.id}() differs between processes; compute features from the "
+                        "trajectory only",
+                    )
+                )
         name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else ""
         if name.startswith("__") and name.endswith("__") and name not in ALLOWED_DUNDERS:
             issues.append(Issue("dunder", f"line {node.lineno}: {name}"))

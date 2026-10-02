@@ -1,6 +1,7 @@
 """End-to-end TabSchema discovery on fabricated toy-agent trajectories with a scripted LLM (no network)."""
 
 import json
+import re
 
 import numpy as np
 import pytest
@@ -159,6 +160,11 @@ def responder(role, prompt, n):
                 ]
             )
             + "\n```"
+        )
+    if role == "auditor":
+        names = re.findall(r'"feature_name": "([^"]+)"', prompt)
+        return json.dumps(
+            {"features": [{"feature_name": x, "verdict": "correct", "reason": "."} for x in names]}
         )
     raise AssertionError(role)
 

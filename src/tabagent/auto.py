@@ -115,6 +115,7 @@ def infer_card(
 
 
 def _without(card: FeatureCard, names: set[str]) -> FeatureCard:
+    """``card`` without the features in ``names``; its compiled extractor (and that code's hash) is kept."""
     return FeatureCard(
         card.name,
         card.spec,
@@ -122,6 +123,7 @@ def _without(card: FeatureCard, names: set[str]) -> FeatureCard:
         card.synth_text,
         card.synth_k,
         dict(card.provenance),
+        extractor=card.extractor,
     )
 
 

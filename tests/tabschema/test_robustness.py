@@ -223,6 +223,9 @@ DEFAULT = {
     "meta_judge": lambda p, n: json.dumps(
         [{"feature_name": x, "final_decision": "accept", "meta_score": 5} for x in names_in(p)]
     ),
+    "auditor": lambda p, n: json.dumps(
+        {"features": [{"feature_name": x, "verdict": "correct", "reason": "."} for x in names_in(p)]}
+    ),
 }
 
 
@@ -254,7 +257,8 @@ class FakeLLM:
 
 
 def config(**kw) -> TabSchemaConfig:
-    # context_text=False: these tests pin the LLM-written features (the context text has its own tests)
+    # context_text=False: these tests pin the LLM-written features (the context text has its own tests);
+    # usefulness=False: the usefulness estimate (cross-validated CatBoost fits) has its own tests
     return TabSchemaConfig(
         **{
             "n_analyze": 3,
@@ -262,6 +266,7 @@ def config(**kw) -> TabSchemaConfig:
             "pair_embeddings": False,
             "timeout_s": 30,
             "context_text": False,
+            "usefulness": False,
             **kw,
         }
     )
@@ -1155,7 +1160,8 @@ def test_onboard_reruns_resume_from_the_run_directory(tmp_path):
     assert (run_dir / "config.json").exists()  # run_dir is the run directory itself
     first = FakeLLM()
     head = tabagent.onboard(runs(), TARGET, llm=first, **kw)
-    assert set(first.roles()) == {"meta_judge", "extractor", "validator"}  # the rest came from the cache
+    # the rest came from the cache (the auditor runs after the MetaJudge, so it was never reached)
+    assert set(first.roles()) == {"meta_judge", "extractor", "validator", "auditor"}
     again = FakeLLM()
     assert tabagent.onboard(runs(), TARGET, llm=again, **kw).card.to_dict() == head.card.to_dict()
     assert again.calls == []  # a complete run directory answers everything
@@ -1283,7 +1289,9 @@ def test_same_inputs_and_answers_give_a_byte_identical_card(tmp_path):
     pa, pb = a.save(tmp_path / "out_a"), b.save(tmp_path / "out_b")
     assert (pa / "card.yaml").read_bytes() == (pb / "card.yaml").read_bytes()
     assert (pa / "extract.py").read_bytes() == (pb / "extract.py").read_bytes()
+    assert (pa / "extractor_tests.json").read_bytes() == (pb / "extractor_tests.json").read_bytes()
     assert str(tmp_path) not in (pa / "card.yaml").read_text()  # no local paths in a shareable card
+    assert str(tmp_path) not in (pa / "extractor_tests.json").read_text()
     assert set(a.card.provenance["prompts_sha256"]) == set(prompts.PROMPTS)  # the validator's prompt too
 
 

@@ -21,9 +21,27 @@
    function that adds the decision's context as text (`context_text`), so every card can match the context
    against the candidates' text.
 
+The release adds four checks of the values the compiled extractor computes. **They are not in the paper**, and
+each can be turned off in `TabSchemaConfig` ([details](onboarding.md#how-the-generated-code-is-verified)):
+
+* **Verification** (`tabagent.tabschema.verify`, in the compile step): determinism on every decision point
+  (fresh interpreters, shuffled order) and invariance to the run's outcome fields; columns that fail are
+  dropped. Invariance of the adapter's prefixes to the run's future (rebuilt from changed runs): a failure stops
+  onboarding. Robustness on short or incomplete prefixes is only reported.
+* **OutputAuditor** (`tabagent.tabschema.audit`, stage `auditor`): an LLM judges each feature's value on 12
+  coverage-sampled decision points as correct, incorrect or cannot tell; a feature is dropped only when its
+  incorrect rate is confidently above the threshold (a Wilson lower bound). Its prompt, `output_auditor.txt`,
+  is the release's.
+* **Usefulness** (`tabagent.tabschema.usefulness`): drop-column importance by task-grouped cross-validation on
+  the onboarding rows, CAAFE-style (Hollmann et al., 2023), with Holm-adjusted p-values. It is a report, or
+  prunes features harmful under two seeds with `prune_harmful=True`.
+* **Golden tests** (`extractor_tests.json`, saved with the head): `tabagent verify-head` re-runs them before
+  deployment.
+
 The seven prompts the paper prints (FeatureAnalyzer, CodeExtractor, FeatureAggregator, the three judges and the
 MetaJudge, App. D.2 and D.3) are reproduced verbatim and hash-pinned in the tests. The paper prints no
-CodeValidator prompt: the release wrote one from the validator's description (App. D.1). The paper describes the
+CodeValidator prompt: the release wrote one from the validator's description (App. D.1). The OutputAuditor's
+prompt is the release's too, for a stage the paper does not have; both are hash-pinned as well. The paper describes the
 CodeExecutor's retries but not the text added to the CodeExtractor prompt after a failed attempt; the wording of
 that retry block is the release's too. Every LLM call is cached in a run directory (a resumed run costs
 nothing), priced by a cost meter with a budget stop, and the extractor runs in a subprocess sandbox with an empty

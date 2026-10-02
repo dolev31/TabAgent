@@ -81,7 +81,7 @@ def test_onboard_end_to_end(logs, tmp_path):
 
 def test_gate_calibration(logs, tmp_path):
     llm = ScriptedLLM(responder, model="scripted")
-    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False)
+    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False, usefulness=False)
     head = tabagent.onboard(
         logs,
         "ShortlisterAgent",

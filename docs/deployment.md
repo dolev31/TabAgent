@@ -2,10 +2,14 @@
 
 A saved model is a directory with no pickle: `card.yaml`, fitted statistics (`fitted.json`, `fitted.npz`),
 `featurizer.json`, CatBoost's `model.cbm`, and a `manifest.json` with the SHA-256 of every file (a modified
-artifact is refused). A head saved by `onboard` adds the compiled extractor `extract.py` and `head.json` (the
+artifact is refused). A head saved by `onboard` adds the compiled extractor `extract.py`, its golden tests
+`extractor_tests.json` (snapshots of onboarding prefixes; `tabagent verify-head` re-runs them, see
+[How the generated code is verified](onboarding.md#how-the-generated-code-is-verified)) and `head.json` (the
 decision, the gate threshold and, when the head knows them, the log adapter with its prefix settings and the
-redaction function's import path). `tabagent.load(path)` reads both kinds, and the kind decides what a decision
-takes as input:
+redaction function's import path). The card pins the SHA-256 of `extract.py`, and loading refuses code that
+does not match it, or a card that pins none. For a head saved by an earlier version, `allow_unpinned=True`
+(`tabagent serve --allow-unpinned`) overrides the latter with a warning, and saving the head again pins the
+hash. `tabagent.load(path)` reads both kinds, and the kind decides what a decision takes as input:
 
 | saved by | `tabagent.load` returns | decide from | call |
 |---|---|---|---|

@@ -6,6 +6,8 @@
     tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION]
     tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox docker]
                    [--redact MODULE:FUNCTION]
+    tabagent verify-head DIR|hf://OWNER/REPO [--sandbox docker] [--require-goldens]
+                                                  re-run a saved head's extractor tests (exit 1 on failure)
     tabagent datasets                             list the public benchmark datasets
     tabagent datasets NAME [--download]           describe one dataset, or build it
     tabagent datasets --all --download            fetch and build every public dataset
@@ -150,6 +152,7 @@ def _adapter_for(logs: str, catalog: str | None):
 
 def _onboard(args) -> int:
     import tabagent
+    from tabagent.tabschema import TabSchemaConfig
     from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
 
     price = _prices(args)
@@ -158,16 +161,28 @@ def _onboard(args) -> int:
     llm = None if args.dry_run else auto_llm(args.model)
     model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
     prices = {**({} if price is None else {model: price}), **_model_prices(args.price)} or None
+    settings = {
+        "model": args.model,
+        "n_analyze": args.n_analyze,
+        "max_cost_usd": args.max_cost,
+        "prices": prices,
+        "stage_models": _pairs(args.stage_model, "--stage-model") or None,
+        "fallback_model": args.fallback_model,
+    }
+    config = TabSchemaConfig(
+        **{k: v for k, v in settings.items() if v is not None},
+        audit=not args.no_audit,
+        verify=not args.no_verify_extractor,
+        verify_adapter=not args.no_verify_adapter,
+        prune_harmful=args.prune_harmful,
+    )
     result = tabagent.onboard(
         args.logs,
         args.decision,
         adapter=adapter,
         llm=llm,
-        model=args.model,
         kind=args.kind,
-        n_analyze=args.n_analyze,
-        max_cost_usd=args.max_cost,
-        prices=prices,
+        config=config,
         dry_run=args.dry_run,
         redact=redact,
         search=args.search,
@@ -175,8 +190,6 @@ def _onboard(args) -> int:
         trust_extractor=args.trust_extractor,
         run_dir=args.run_dir,
         gate_coverage=args.gate_coverage,
-        stage_models=_pairs(args.stage_model, "--stage-model") or None,
-        fallback_model=args.fallback_model,
     )
     print(result if args.dry_run else result.report)
     if not args.dry_run and args.out:
@@ -193,8 +206,24 @@ def _serve(args) -> int:
     from tabagent.serve import serve
 
     _redact(args.redact)
-    serve(args.path, args.host, args.port, args.trust_extractor, sandbox=args.sandbox, redact=args.redact)
+    serve(
+        args.path,
+        args.host,
+        args.port,
+        args.trust_extractor,
+        sandbox=args.sandbox,
+        redact=args.redact,
+        allow_unpinned=args.allow_unpinned,
+    )
     return 0
+
+
+def _verify_head(args) -> int:
+    from tabagent.tabschema.verify import verify_head
+
+    report = verify_head(args.path, sandbox=args.sandbox, require_goldens=args.require_goldens)
+    print(report, end="")
+    return 0 if report.passed else 1
 
 
 def _short_license(text: str) -> str:
@@ -379,7 +408,7 @@ def build_parser() -> argparse.ArgumentParser:
         action="append",
         metavar="STAGE=MODEL",
         help="a model for one TabSchema stage (analyzer, extractor, validator, aggregator, judges, "
-        "meta_judge); repeatable",
+        "meta_judge, auditor); repeatable",
     )
     p.add_argument(
         "--fallback-model",
@@ -416,6 +445,30 @@ def build_parser() -> argparse.ArgumentParser:
         help="a function applied to every trajectory before any LLM call (an import path, e.g. "
         "mypkg.privacy:scrub); recorded in head.json, and applied when serving only if passed again",
     )
+    p.add_argument(
+        "--no-audit",
+        action="store_true",
+        help="skip the OutputAuditor, the LLM check of the extracted values (saves its LLM calls)",
+    )
+    p.add_argument(
+        "--no-verify-extractor",
+        action="store_true",
+        help="skip the compile-time checks of the extracted values (determinism, outcome and future "
+        "invariance, robustness)",
+    )
+    p.add_argument(
+        "--no-verify-adapter",
+        action="store_true",
+        help="skip only the check that the log adapter's prefixes hold no post-decision data (it runs "
+        "before any LLM call and stops a leaking adapter); for an adapter whose prefixes hold the decision "
+        "step's own input, declare decision_input_keys instead",
+    )
+    p.add_argument(
+        "--prune-harmful",
+        action="store_true",
+        help="drop the features whose removal clearly helps in grouped CV on the onboarding rows (by "
+        "default the usefulness estimate is a report only)",
+    )
     p.add_argument("--dry-run", action="store_true", help="estimate the work and cost, call no LLM")
     p.set_defaults(fn=_onboard)
 
@@ -444,7 +497,39 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="MODULE:FUNCTION",
         help="the redaction function the head was onboarded with, applied to every run before its prefix",
     )
+    p.add_argument(
+        "--allow-unpinned",
+        action="store_true",
+        help="serve a head whose card pins no hash for extract.py (saved by an earlier version); review "
+        "extract.py first, and save the head again to pin it",
+    )
     p.set_defaults(fn=_serve)
+
+    p = sub.add_parser(
+        "verify-head",
+        help="re-run a saved head's extractor tests, for CI and deployment gates",
+        description=(
+            "Check a head saved by onboard: extract.py matches the card's hash, and re-running it in the "
+            "sandbox on the golden prefixes of extractor_tests.json reproduces every recorded feature, "
+            "twice, with outcome fields making no difference. Exits with status 1 when a check fails."
+        ),
+        formatter_class=_FORMATTER,
+        parents=[verbose],
+    )
+    p.add_argument("path", help="a head saved by onboard: its directory, or hf://OWNER/REPO[@REVISION]")
+    p.add_argument(
+        "--sandbox",
+        default="subprocess",
+        metavar="{subprocess,docker,docker:IMAGE}",
+        help="where the extractor runs (docker for a head you do not trust, e.g. from the Hub)",
+    )
+    p.add_argument(
+        "--require-goldens",
+        action="store_true",
+        help="fail when the head has no golden prefixes (by default that passes with a warning: a head "
+        "onboarded with goldens=0 carries no trajectory text)",
+    )
+    p.set_defaults(fn=_verify_head)
 
     p = sub.add_parser(
         "datasets",

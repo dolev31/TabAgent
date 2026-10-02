@@ -194,6 +194,7 @@ tabagent scan ./agent_logs                                    # which LLM calls 
 tabagent components ./agent_logs                              # which decisions can be replaced?
 tabagent onboard ./agent_logs --decision ToolShortlist --dry-run   # what it will process and cost
 tabagent onboard ./agent_logs --decision ToolShortlist --out ./my_head
+tabagent verify-head ./my_head                                # re-run the extractor's golden tests
 tabagent serve ./my_head --port 8077
 ```
 

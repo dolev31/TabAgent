@@ -16,6 +16,12 @@ component:
    Sec. 3.3), and dependency statistics (priors, context-candidate similarity) that the card fits on the
    training rows of each fold (Sec. 4.3).
 
+The release adds three checks the paper does not have, between compiling and the card: the compile step's
+**verification** of the values (determinism, outcome and future invariance, robustness; ``verify``) with
+golden tests saved as ``extractor_tests.json``; the **OutputAuditor**, an LLM judge of the values on a sample
+of decision points (``audit``); and a **usefulness** estimate of each feature by grouped cross-validation on
+the onboarding rows (``usefulness``). Each can be turned off in ``TabSchemaConfig``.
+
 Discovery runs once, on the onboarding trajectories it is given. The compiled extractor is a stateless
 function of one trajectory prefix, so applying it to held-out decisions leaks nothing; every label-derived
 statistic is fitted by the card inside ``cross_validate``'s training folds. Running discovery itself inside
@@ -42,6 +48,7 @@ import pandas as pd
 from tabagent.defaults import DEFAULT_SEED
 from tabagent.table import DecisionSpec, DecisionTable
 from tabagent.tabschema import prompts
+from tabagent.tabschema import verify as V
 from tabagent.tabschema.agents import (
     CodeExecutor,
     CodeExtractor,
@@ -54,8 +61,15 @@ from tabagent.tabschema.agents import (
     normalize_name,
     premerge,
 )
+from tabagent.tabschema.audit import OutputAuditor, run_audit
 from tabagent.tabschema.card import Feature, FeatureCard
-from tabagent.tabschema.compile import CompiledExtractor, ExtractionError, ExtractorRunner, compile_extractor
+from tabagent.tabschema.compile import (
+    CompiledExtractor,
+    ExtractionError,
+    ExtractorRunner,
+    compile_extractor,
+    context_texts,
+)
 from tabagent.tabschema.judges import DECISIONS, Judge, MetaJudge, judge_table, run_judges
 from tabagent.tabschema.llm import LLM, BudgetExceeded, CostMeter, auto_llm
 from tabagent.tabschema.runstore import RunStore
@@ -66,6 +80,12 @@ from tabagent.tabschema.trajectory import (
     GenericJsonAdapter,
     Trajectory,
     union_paths,
+)
+from tabagent.tabschema.usefulness import (
+    DEFAULT_MAX_DECISIONS,
+    DEFAULT_MAX_ROWS,
+    MIN_DECISIONS,
+    feature_usefulness,
 )
 
 logger = logging.getLogger(__name__)
@@ -124,6 +144,25 @@ class TabSchemaConfig:
     context_text: append to the extractor a fixed, non-LLM function that returns the decision's context as
         text (``context_text``), so every card has a context text for the context-candidate similarity
         features, TabSynth and the BM25 baseline, even when the LLM's features are all flags and counts.
+
+    The release's checks beyond the paper (see ``docs/onboarding.md``, "How the generated code is verified"):
+
+    verify: run the compiled extractor, sandboxed, on ``verify_samples`` decision points and drop the columns
+        that are nondeterministic or change when outcome fields or the run's future change; report how it
+        copes with short and incomplete prefixes (``tabagent.tabschema.verify``).
+    verify_samples: decision points of those checks (coverage-sampled).
+    verify_adapter: check, before any LLM call, that the adapter's prefixes do not change with the run's
+        future (``verify.FutureCheck``); a prefix that does stops discovery with ``PrefixLeakError``. Turning
+        it off (or ``verify``) skips the check with a warning; an adapter whose prefixes legitimately hold the
+        decision step's own input (its prompt) declares those keys in ``decision_input_keys`` instead.
+    goldens: golden tests recorded in ``extractor_tests.json`` and saved with the head (0: none).
+    audit: ask the OutputAuditor (stage ``auditor``) whether the extracted values are correct on
+        ``audit_samples`` decision points, and drop features judged incorrect on more than
+        ``audit_max_incorrect`` of the points (at least 3) where they were judged
+        (``tabagent.tabschema.audit``).
+    usefulness: estimate each feature's contribution by drop-column grouped cross-validation on the onboarding
+        rows, on at most ``usefulness_max_decisions`` decision points (``tabagent.tabschema.usefulness``); a
+        report only, unless ``prune_harmful`` also drops the features whose removal clearly helps.
     """
 
     model: str | None = None
@@ -150,6 +189,35 @@ class TabSchemaConfig:
     stage_models: dict[str, str] = field(default_factory=dict)
     fallback_model: str | None = None
     context_text: bool = True
+    verify: bool = True
+    verify_adapter: bool = True
+    verify_samples: int = V.DEFAULT_SAMPLES
+    goldens: int = V.DEFAULT_GOLDENS
+    audit: bool = True
+    audit_samples: int = 12
+    audit_max_incorrect: float = 0.25
+    usefulness: bool = True
+    prune_harmful: bool = False
+    usefulness_max_decisions: int = DEFAULT_MAX_DECISIONS
+    usefulness_max_rows: int = DEFAULT_MAX_ROWS
+
+    def __post_init__(self) -> None:
+        limits = {
+            "verify_samples": (self.verify_samples, 1),
+            "goldens": (self.goldens, 0),
+            "audit_samples": (self.audit_samples, 1),
+            "usefulness_max_decisions": (self.usefulness_max_decisions, 2),
+            "usefulness_max_rows": (self.usefulness_max_rows, 1),
+        }
+        for name, (value, low) in limits.items():
+            if not isinstance(value, int) or isinstance(value, bool) or value < low:
+                raise ValueError(
+                    f"TabSchemaConfig.{name} must be an integer of at least {low}, not {value!r}"
+                )
+        if not 0 <= self.audit_max_incorrect < 1:
+            raise ValueError(
+                f"TabSchemaConfig.audit_max_incorrect must be in [0, 1), not {self.audit_max_incorrect!r}"
+            )
 
 
 STAGE_ROLES = (
@@ -161,13 +229,15 @@ STAGE_ROLES = (
     "judge_generality",
     "judge_impact",
     "meta_judge",
+    "auditor",
 )
 
 
 @dataclass
 class DiscoveryReport:
     """What a discovery run did: the sampled and analyzed decision points, the aggregated, judged, compiled
-    and dropped features, the LLM cost and the run directory."""
+    and dropped features, the release's verification, output audit and usefulness records, the LLM cost and
+    the run directory."""
 
     target: str
     n_trajectories: int
@@ -182,6 +252,9 @@ class DiscoveryReport:
     cost: dict[str, Any] = field(default_factory=dict)
     run_dir: str = ""
     notes: list[str] = field(default_factory=list)
+    verification: dict[str, Any] = field(default_factory=dict)
+    audit: dict[str, Any] = field(default_factory=dict)
+    usefulness: dict[str, Any] = field(default_factory=dict)
 
     def to_markdown(self) -> str:
         """The report as Markdown (written to ``discovery.md``)."""
@@ -215,9 +288,137 @@ class DiscoveryReport:
         lines += ["", "## Compiled extractor features", ""] + [
             f"* `{k}` ({v})" for k, v in self.compiled.items()
         ]
+        lines += _verification_md(self.verification) + _audit_md(self.audit) + _usefulness_md(self.usefulness)
         if self.dropped:
             lines += ["", "## Dropped", ""] + [f"* `{k}`: {v}" for k, v in self.dropped.items()]
         return "\n".join(lines) + "\n"
+
+
+def _verification_md(v: dict[str, Any]) -> list[str]:
+    """The report's section on the compile-time checks (``verify``)."""
+    if not v:
+        return []
+    out = ["", "## Verification of the extracted values (TabAgent's addition, not in the paper)", ""]
+    det = v.get("determinism", {})
+    unstable = det.get("unstable") or {}
+    out.append(
+        f"* determinism: every decision point ({det.get('prefixes', 0)}) run again in fresh interpreters, "
+        "in a shuffled order: "
+        + (
+            f"{len(unstable)} column(s) differ and are dropped ({', '.join(unstable)})"
+            if unstable
+            else "identical"
+        )
+    )
+    oc = v.get("outcome", {})
+    if "skipped" in oc:
+        out.append(f"* outcome invariance: skipped ({oc['skipped']})")
+    else:
+        changed = oc.get("changed") or {}
+        keys = ", ".join(oc.get("keys", [])[:6])
+        out.append(
+            f"* outcome invariance: adding the outcome fields ({keys}) to {v.get('sample', 0)} prefixes "
+            + (
+                f"changed {len(changed)} column(s), dropped ({', '.join(changed)})"
+                if changed
+                else "changed no feature"
+            )
+        )
+    fu = v.get("future", {})
+    if not fu.get("checked"):
+        reasons = "; ".join(fu.get("reasons") or {}) or "no decision point could be checked"
+        out.append(f"* future invariance: **skipped**, not passed ({reasons})")
+    elif fu.get("leaks"):
+        leak = fu["leaks"][0]
+        out.append(
+            f"* future invariance: **FAILED**: the adapter's prefix changed with the run's future on "
+            f"{len(fu['leaks'])} of {fu['checked']} decision points (first {leak['decision_point']}, at "
+            f"{leak['path']})"
+        )
+    else:
+        skipped = f"; {fu['skipped']} skipped" if fu.get("skipped") else ""
+        out.append(
+            f"* future invariance: {fu['checked']} prefixes rebuilt by the adapter from runs changed after "
+            f"the decision (and cut after it) are unchanged{skipped}"
+        )
+    rob = v.get("robustness", {})
+    cases = rob.get("cases") or []
+    raised = [c for c in cases if c.get("raised")]
+    line = f"* robustness (reported, not dropped): {len(cases)} edge prefixes; the extractor raised on "
+    line += str(len(raised))
+    if raised:
+        line += " (" + "; ".join(f"{c['case']}: {c['raised']}" for c in raised[:4]) + ")"
+    out.append(line)
+    gone = [
+        f"{c['case']}: {', '.join(c['missing'][:5])}"
+        for c in cases
+        if not c.get("raised") and c.get("missing")
+    ]
+    if gone:
+        out.append("* columns missing from the output: " + "; ".join(gone[:4]))
+    out.append(f"* {v.get('batches', 0)} sandbox runs on {v.get('prefixes_run', 0)} prefixes")
+    return out
+
+
+def _audit_md(a: dict[str, Any]) -> list[str]:
+    """The report's section on the OutputAuditor (``audit``)."""
+    if not a:
+        return []
+    out = ["", "## Output audit (TabAgent's addition, not in the paper)", ""]
+    if a.get("skipped"):
+        return [*out, f"* skipped: {a['skipped']}"]
+    out.append(
+        f"* {a['answered']} of {a['samples']} sampled decision points judged by "
+        f"{a.get('model', 'the auditor')}; a feature is dropped when it was judged on at least "
+        f"{a['min_judged']} points, at least {a.get('min_incorrect', 2)} of them incorrect, and the "
+        f"one-sided 95% Wilson lower bound of its incorrect rate exceeds {a['max_incorrect']:.0%} (see "
+        "audit.json)"
+    )
+    if a.get("errors"):
+        out.append(f"* {len(a['errors'])} point(s) without a usable answer (first: {a['errors'][0][:200]})")
+    out += [
+        "",
+        "| feature | correct | incorrect | cannot tell | incorrect rate | kept |",
+        "|---|---|---|---|---|---|",
+    ]
+    for col, r in a.get("features", {}).items():
+        rate = "" if r["incorrect_rate"] is None else f"{r['incorrect_rate']:.0%}"
+        kept = "no" if col in a.get("dropped", {}) else "yes"
+        out.append(f"| {col} | {r['correct']} | {r['incorrect']} | {r['cannot_tell']} | {rate} | {kept} |")
+    return out
+
+
+def _usefulness_md(u: dict[str, Any]) -> list[str]:
+    """The report's section on the usefulness estimate (``usefulness``)."""
+    if not u:
+        return []
+    out = ["", "## Usefulness of the features (TabAgent's addition, not in the paper)", ""]
+    if u.get("skipped"):
+        return [*out, f"* skipped: {u['skipped']}"]
+    m = u["metric"]
+    out.append(
+        f"* drop-column importance on the onboarding rows: {u['decisions']} decision points "
+        f"({u.get('rows', '?')} rows) of {u['tasks']} tasks, {u['folds']} task-grouped folds, CatBoost with "
+        f"{u['iterations']} iterations, {u.get('seeds', 1)} seed(s); {m} {u.get('base', float('nan')):.3f} "
+        "with every feature"
+    )
+    pruning = u.get("pruned") is not None
+    out.append(
+        f"* delta: the head's {m} with the feature minus without it (95% bootstrap interval over tasks); "
+        "useful or harmful when the Holm-adjusted bootstrap p-value is below 0.05"
+        + (
+            " under every seed; harmful features are pruned"
+            if pruning
+            else "; a report only (prune_harmful=False)"
+        )
+    )
+    out += ["", f"| feature | delta {m} | 95% interval | Holm p | verdict |", "|---|---|---|---|---|"]
+    for col, r in sorted(u.get("features", {}).items(), key=lambda kv: -kv[1]["delta"]):
+        out.append(
+            f"| {col} | {r['delta']:+.4f} | [{r['ci'][0]:+.4f}, {r['ci'][1]:+.4f}] | {r.get('p_holm', '')} | "
+            f"{r['verdict']} |"
+        )
+    return out
 
 
 @dataclass
@@ -229,10 +430,13 @@ class DiscoveryResult:
     report: DiscoveryReport
 
     def save(self, path: str | Path) -> Path:
-        """Write ``extract.py``, ``card.yaml``, ``discovery.md`` and ``discovery.json`` to ``path``."""
+        """Write ``extract.py``, its golden tests (``extractor_tests.json``), ``card.yaml``, ``discovery.md``
+        and ``discovery.json`` to ``path``."""
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
         (out / "extract.py").write_text(self.extractor.code)
+        if self.extractor.tests:
+            (out / V.TESTS_FILE).write_text(json.dumps(self.extractor.tests, indent=1, ensure_ascii=False))
         self.card.save(out / "card.yaml")
         (out / "discovery.md").write_text(self.report.to_markdown())
         report = dataclasses.asdict(self.report)
@@ -354,8 +558,16 @@ class TabSchema:
             },
         )
         try:
-            compiled, decisions = self._run(dps, target, store, report, candidate_ids(self.adapter, dps))
+            future = self.check_adapter(good, target, dps)  # before any LLM call: a leak costs nothing
+            if future["notes"]:
+                report.notes += future["notes"]
+            compiled, decisions = self._run(
+                dps, target, store, report, candidate_ids(self.adapter, dps), good, kind, future
+            )
         except Exception as e:  # leave a partial report next to the paid answers, then fail
+            if isinstance(e, V.PrefixLeakError):
+                report.verification = e.record
+                report.notes.append(f"onboarding stopped before any LLM call: {e}")
             report.cost = self.meter.summary()
             store.write_text("report.md", report.to_markdown())
             if isinstance(e, (BudgetExceeded, ExtractionError, LLMFormatError)):
@@ -383,9 +595,13 @@ class TabSchema:
         store: RunStore,
         report: DiscoveryReport,
         candidates: frozenset[str] = frozenset(),
+        trajectories: list[Trajectory] | None = None,
+        kind: str = "ranking",
+        future: dict[str, Any] | None = None,
     ) -> tuple[CompiledExtractor, list[dict]]:
-        """The stages of :meth:`discover` after its checks: analysis, aggregation, judging and compilation.
-        Fills ``report`` as it goes; returns the compiled extractor and the MetaJudge's decisions."""
+        """The stages of :meth:`discover` after its checks: analysis, aggregation, judging, compilation and
+        the release's audit and usefulness estimate. Fills ``report`` as it goes; returns the compiled
+        extractor and the MetaJudge's decisions."""
         cfg = self.config
         known = union_paths(dp.prefix for dp in dps)
         outcome_keys = tuple(getattr(self.adapter, "outcome_keys", ()))
@@ -518,31 +734,235 @@ class TabSchema:
                 f"judges.json. TabSchemaConfig(accept=('accept', 'conditional')) also keeps conditional ones"
             )
 
-        compiled = compile_extractor(
-            accepted,
-            dps,
-            extractor,
-            validator,
-            target,
-            sandbox=self.sandbox,
-            known_paths=known,
-            outcome_keys=outcome_keys,
-            max_retries=cfg.max_code_retries,
-            min_success=cfg.compile_min_success,
-            max_null_rate=cfg.max_null_rate,
-            reserved=RESERVED,
-            candidate_ids=candidates,
-            context_text=cfg.context_text,
-        )
+        if future is None and trajectories:  # a caller that skipped discover's check
+            future = self.check_adapter(trajectories, target, dps)
+        try:
+            compiled = compile_extractor(
+                accepted,
+                dps,
+                extractor,
+                validator,
+                target,
+                sandbox=self.sandbox,
+                known_paths=known,
+                outcome_keys=outcome_keys,
+                max_retries=cfg.max_code_retries,
+                min_success=cfg.compile_min_success,
+                max_null_rate=cfg.max_null_rate,
+                reserved=RESERVED,
+                candidate_ids=candidates,
+                context_text=cfg.context_text,
+                verify=cfg.verify,
+                verify_samples=cfg.verify_samples,
+                future=future,
+                goldens=cfg.goldens,
+                seed=cfg.sample_seed,
+                steps_key=getattr(self.adapter, "steps_key", "steps"),
+                label_of=labels,
+                adapter_name=type(self.adapter).__name__,
+            )
+        except V.PrefixLeakError as e:  # the report says so, next to every paid answer
+            report.verification = e.record
+            report.notes.append(f"onboarding stopped: {e}")
+            raise
         store.write_text("extract.py", compiled.code)
+        report.verification = {k: v for k, v in compiled.verification.items() if k != "seconds"}
+        if cfg.audit:
+            self._audit(compiled, dps, target, store, report, frozenset(dp.id for dp in sample), labels)
+        if cfg.usefulness:
+            self._usefulness(compiled, dps, decisions, kind, store, report, outcome_keys)
+        compiled.tests = V.restrict_tests(compiled.tests, compiled.features)
+        if compiled.tests:
+            store.write_json(V.TESTS_FILE, compiled.tests)
         report.compiled = dict(compiled.features)
         report.dropped.update(compiled.dropped)
         report.notes += compiled.notes
         return compiled, decisions
 
+    # ------------------------------------------------------------------ the release's checks
+    def check_adapter(
+        self, trajectories: list[Trajectory], target: str, dps: list[DecisionPoint] | None = None
+    ) -> dict[str, Any]:
+        """The adapter's future-invariance check (``verify.check_adapter``) on the successful
+        ``trajectories``, before any LLM call: raises ``PrefixLeakError`` when the adapter's prefixes change
+        with the run's future. With ``verify`` or ``verify_adapter`` off it is skipped with a warning. The
+        result is kept, so discovery after a preflight does not run it twice."""
+        cfg = self.config
+        good = [t for t in trajectories if t.success]
+        key = (target, tuple(t.id for t in good))
+        if getattr(self, "_adapter_check", (None, None))[0] == key:
+            return self._adapter_check[1]
+        if not (cfg.verify and cfg.verify_adapter):
+            which = "verify=False" if not cfg.verify else "verify_adapter=False"
+            msg = (
+                f"the adapter's leak check (future invariance) was skipped ({which}): post-decision data in "
+                "prefixes would go unnoticed"
+            )
+            logger.warning("TabSchema: %s", msg)
+            rec = {**V.skipped_future(f"turned off ({which})"), "notes": [msg]}
+        else:
+            if dps is None:
+                dps = [dp for t in good for dp in self.adapter.decision_points(t, target)]
+            rec = V.check_adapter(
+                self.adapter,
+                good,
+                dps,
+                target,
+                samples=cfg.verify_samples,
+                seed=cfg.sample_seed,
+                label_of=getattr(self.adapter, "labels", None),
+            )
+        self._adapter_check = (key, rec)
+        return rec
+
+    def _audit(
+        self,
+        compiled: CompiledExtractor,
+        dps: list[DecisionPoint],
+        target: str,
+        store: RunStore,
+        report: DiscoveryReport,
+        analyzed: frozenset[str],
+        labels: Any = None,
+    ) -> None:
+        """Run the OutputAuditor on a sample of decision points and drop the features it judges incorrect too
+        often; writes ``audit.json``. The audit only ever removes features: when it would remove them all, it
+        removes none and says so."""
+        cfg = self.config
+        auditor = self._stage(OutputAuditor)
+        columns = {c: compiled.specs[c] for c in compiled.llm_columns}
+        logger.info(
+            "TabSchema: auditing the values of %d features on %d decision points",
+            len(columns),
+            cfg.audit_samples,
+        )
+        rec = run_audit(
+            auditor,
+            columns,
+            dps,
+            compiled.outputs,
+            target,
+            samples=cfg.audit_samples,
+            max_incorrect=cfg.audit_max_incorrect,
+            seed=cfg.sample_seed,
+            exclude=analyzed,
+            workers=cfg.workers,
+            label_of=labels,
+        )
+        rec["model"] = auditor.llm.model
+        if rec["dropped"] and len(rec["dropped"]) >= len(compiled.llm_columns):
+            rec["not_applied"] = rec.pop("dropped")
+            rec["dropped"] = {}
+            compiled.notes.append(
+                "**the OutputAuditor judged every LLM-written feature incorrect too often; none was dropped "
+                "(the audit never empties a card): review the features and audit.json before deploying**"
+            )
+        for col, reason in rec["dropped"].items():
+            compiled.drop(col, reason)
+        if rec["skipped"]:
+            compiled.notes.append(f"output audit skipped: {rec['skipped']}")
+        if rec.get("analyzed_points"):
+            compiled.notes.append(
+                f"output audit: {rec['analyzed_points']} of the audited decision points were also analyzed "
+                "(fewer unanalyzed points than audit_samples)"
+            )
+        store.write_json("audit.json", rec)
+        report.audit = {k: v for k, v in rec.items() if k != "points"}
+
+    def _usefulness(
+        self,
+        compiled: CompiledExtractor,
+        dps: list[DecisionPoint],
+        decisions: list[dict],
+        kind: str,
+        store: RunStore,
+        report: DiscoveryReport,
+        outcome_keys: tuple[str, ...],
+    ) -> None:
+        """Estimate each extractor feature's usefulness on the onboarding rows (and, with ``prune_harmful``,
+        drop the clearly harmful LLM-written ones); writes ``usefulness.json``."""
+        cfg = self.config
+        idx = {dp.id: i for i, dp in enumerate(dps)}
+        sample = (
+            dps
+            if len(dps) <= cfg.usefulness_max_decisions
+            else sample_decision_points(dps, cfg.usefulness_max_decisions, cfg.sample_seed, strategy="tasks")
+        )
+        appended = [c for c in compiled.features if compiled.specs.get(c, {}).get("added_by")]
+
+        def features_of(points: list[DecisionPoint]) -> list[dict]:
+            feats = [dict(compiled.outputs[idx[dp.id]] or {}) for dp in points]
+            for (
+                col
+            ) in appended:  # the appended context text is library code: computed here, as in the sandbox
+                texts = context_texts([dp.prefix for dp in points], col, outcome_keys)
+                for f, text in zip(feats, texts, strict=True):
+                    f[col] = text
+            return feats
+
+        def card_for(dropped: frozenset[str]) -> FeatureCard:
+            return self._card(
+                compiled.without(dropped), decisions, kind, "usefulness", len(dps), embeddings=False
+            )
+
+        try:
+            table = rows_to_table(card_for(frozenset()), sample, features_of(sample), self.adapter)
+            if len(table) > cfg.usefulness_max_rows and len(sample) > MIN_DECISIONS:  # bound the runtime
+                n = max(MIN_DECISIONS, int(len(sample) * cfg.usefulness_max_rows / len(table)))
+                sample = sample_decision_points(sample, n, cfg.sample_seed, strategy="tasks")
+                table = rows_to_table(card_for(frozenset()), sample, features_of(sample), self.adapter)
+            logger.info(
+                "TabSchema: estimating the usefulness of %d features on %d decision points (%d rows)",
+                len(compiled.features),
+                len(sample),
+                len(table),
+            )
+            rec = feature_usefulness(
+                table,
+                card_for,
+                list(compiled.features),
+                seed=cfg.sample_seed,
+                seeds=2 if cfg.prune_harmful else 1,
+            )
+        except Exception as e:  # a report only: no candidates or labels, one label value, a fit that fails
+            logger.warning("TabSchema: the usefulness estimate was skipped: %s: %s", type(e).__name__, e)
+            rec = {"skipped": f"{type(e).__name__}: {e}"[:300]}
+        if cfg.prune_harmful and not rec.get("skipped"):
+            harmful = [
+                c for c in compiled.llm_columns if rec["features"].get(c, {}).get("verdict") == "harmful"
+            ]
+            if harmful and len(harmful) >= len(compiled.llm_columns):
+                compiled.notes.append(
+                    "prune_harmful: every LLM-written feature looked harmful; none was pruned"
+                )
+                harmful = []
+            for col in harmful:
+                r = rec["features"][col]
+                compiled.drop(
+                    col,
+                    f"harmful (prune_harmful): removing it raised {rec['metric']} by {-r['delta']:.4f} "
+                    f"(Holm-adjusted p {r['p_holm']}, under {rec['seeds']} seeds) in grouped CV on the "
+                    "onboarding rows",
+                )
+            rec["pruned"] = harmful
+            if harmful:
+                compiled.notes.append(
+                    f"prune_harmful dropped {len(harmful)} feature(s) chosen on the onboarding rows, so "
+                    "cross-validation on those rows (the onboarding report) is optimistic; "
+                    "tabagent.cross_validate_discovery prunes inside each training fold"
+                )
+        store.write_json("usefulness.json", rec)
+        report.usefulness = {k: v for k, v in rec.items() if k != "seconds"}
+
     # ------------------------------------------------------------------ card and table
     def _card(
-        self, compiled: CompiledExtractor, decisions: list[dict], kind: str, name: str, n_dps: int
+        self,
+        compiled: CompiledExtractor,
+        decisions: list[dict],
+        kind: str,
+        name: str,
+        n_dps: int,
+        embeddings: bool | None = None,
     ) -> FeatureCard:
         cfg = self.config
         meta = {normalize_name(d["feature_name"]): d for d in decisions}
@@ -573,7 +993,7 @@ class TabSchema:
                         "context_candidate_lex", "schema", "num", "jaccard", {"a": context, "b": cand_text}
                     )
                 )
-            use_emb = cfg.pair_embeddings
+            use_emb = cfg.pair_embeddings if embeddings is None else embeddings
             if use_emb is None:
                 from tabagent.auto import embeddings_available
 

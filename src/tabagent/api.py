@@ -145,6 +145,8 @@ class TabAgentHead:
         sandbox instance.
     redact: the function applied to each training trajectory before discovery, as a callable or a
         ``"module:function"`` import path; ``live_prefix`` applies it to a live run too.
+    extractor_tests: the extractor's golden tests (``extractor_tests.json``: snapshots of onboarding
+        prefixes, after ``redact``, with the features they give), which ``tabagent.verify_head`` re-runs.
     """
 
     agent: TabAgent
@@ -157,6 +159,7 @@ class TabAgentHead:
     adapter: Any = None
     sandbox: Any = None
     redact: Callable[[dict], dict] | str | None = None
+    extractor_tests: dict | None = None
 
     def __post_init__(self) -> None:
         if self.trust_extractor and self.sandbox not in (None, "subprocess"):
@@ -353,15 +356,24 @@ class TabAgentHead:
 
     # ------------------------------------------------------------------ persistence
     def save(self, path: str | Path) -> Path:
-        """Write the head to the directory ``path``: the model artifact (``model/``), ``extract.py``,
-        ``head.json`` (with the adapter and its prefix settings, and the redaction function's import path,
-        when known) and, when present, the evaluation and discovery reports."""
+        """Write the head to the directory ``path``: the model artifact (``model/``), ``extract.py`` and its
+        golden tests (``extractor_tests.json``, trajectory snippets), ``head.json`` (with the adapter and its
+        prefix settings, and the redaction function's import path, when known) and, when present, the
+        evaluation and discovery reports. A card that pins no hash for the extractor gets the hash of
+        ``extract.py`` before it is written, so :meth:`load` can check the code."""
         from tabagent.adapters import describe_adapter
+        from tabagent.tabschema.verify import TESTS_FILE
 
         out = Path(path)
+        card = self.agent.card_
+        if self.extractor_code and not (card.extractor or {}).get("sha256"):
+            sha = hashlib.sha256(self.extractor_code.encode()).hexdigest()
+            card.extractor = {**(card.extractor or {}), "path": "extract.py", "sha256": sha}
         self.agent.save(out / "model")
         if self.extractor_code:
             (out / "extract.py").write_text(self.extractor_code)
+            if self.extractor_tests:
+                (out / TESTS_FILE).write_text(json.dumps(self.extractor_tests, indent=1, ensure_ascii=False))
         meta = {
             "format_version": HEAD_FORMAT,
             "target": self.target,
@@ -387,9 +399,12 @@ class TabAgentHead:
         sandbox: Any = None,
         redact: Callable[[dict], dict] | str | None = None,
         adapter: Any = None,
+        allow_unpinned: bool = False,
     ) -> TabAgentHead:
         """Load a saved head from a directory or ``hf://OWNER/REPO[@REVISION]`` (``tabagent.hub``).
-        ``extract.py`` must match the hash recorded in the card.
+        ``extract.py`` must match the hash recorded in the card. A card that records no hash (a head saved
+        before the hash was always pinned) is refused, since its code could not be checked; after reviewing
+        ``extract.py``, ``allow_unpinned=True`` loads it with a warning, and saving the head again pins it.
 
         ``trust_extractor=True`` runs the extractor in-process (fast); only do this for an extractor you have
         reviewed. Otherwise it runs in ``sandbox`` (see the class attributes). ``trust_code`` allows card
@@ -397,13 +412,35 @@ class TabAgentHead:
         ``head.json``. ``redact`` is never imported from ``head.json``: when the head records one and none is
         passed, a warning says so, since live runs then reach the extractor unredacted.
         """
+        from tabagent.tabschema.verify import TESTS_FILE, check_tests_file
+
         src = hub.resolve(path)
         meta = json.loads((src / "head.json").read_text())
         agent = TabAgent.load(src / "model", trust_code=trust_code)
         code = (src / "extract.py").read_text() if meta.get("has_extractor") else None
+        tests = None
+        if (src / TESTS_FILE).is_file():  # the tests are for verify-head: a broken file never stops serving
+            try:
+                tests = check_tests_file(json.loads((src / TESTS_FILE).read_text()))
+            except ValueError as e:
+                warnings.warn(f"{TESTS_FILE} is ignored: {e}", UserWarning, stacklevel=2)
         if code is not None:
             expected = (agent.card_.extractor or {}).get("sha256")
-            if expected and hashlib.sha256(code.encode()).hexdigest() != expected:
+            if not expected and not allow_unpinned:
+                raise ValueError(
+                    f"{path}: the card pins no hash for extract.py, so the code cannot be checked before it "
+                    "runs (a head saved before tabagent pinned it). Review extract.py, then load the head "
+                    "with allow_unpinned=True and save it again: the current version pins the hash. Or "
+                    "onboard again"
+                )
+            if not expected:
+                warnings.warn(
+                    "allow_unpinned=True: running an extract.py whose hash the card does not pin; save the "
+                    "head again to pin it",
+                    UserWarning,
+                    stacklevel=2,
+                )
+            elif hashlib.sha256(code.encode()).hexdigest() != expected:
                 raise ValueError("extract.py does not match the card's extractor hash")
         if redact is None and meta.get("redact"):
             warnings.warn(
@@ -421,6 +458,7 @@ class TabAgentHead:
             adapter=adapter if adapter is not None else meta.get("adapter"),
             sandbox=sandbox,
             redact=redact,
+            extractor_tests=tests,
         )
 
 
@@ -719,15 +757,45 @@ def onboard(
         except (ValueError, NotImplementedError) as e:
             problems = [str(e)]
         labels = getattr(adapter, "labels", None)
+        if dps and cfg.verify and cfg.verify_adapter:  # the adapter's leak check needs no LLM either
+            from tabagent.tabschema.verify import PrefixLeakError, check_adapter
+
+            try:
+                check_adapter(
+                    adapter,
+                    good,
+                    dps,
+                    decision,
+                    samples=cfg.verify_samples,
+                    seed=cfg.sample_seed,
+                    label_of=labels,
+                )
+            except PrefixLeakError as e:
+                problems.append(str(e))
         sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
         tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models)
+        if cfg.audit:  # the release's OutputAuditor, one call per audited decision point
+            from tabagent.tabschema.audit import estimate as audit_estimate
+
+            ain, aout = audit_estimate(
+                [
+                    dp.prefix
+                    for dp in sample_decision_points(
+                        dps, cfg.audit_samples, cfg.sample_seed, labels, "coverage"
+                    )
+                ]
+            )
+            price = cfg.prices.get(cfg.stage_models.get("auditor") or name)
+            tin, tout = tin + ain, tout + aout
+            cost = None if cost is None or price is None else cost + (ain * price[0] + aout * price[1]) / 1e6
         return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name, problems)
 
     llm = llm or auto_llm(cfg.model)
     box = _sandbox_from(sandbox, cfg.timeout_s)
     schema = TabSchema(llm, cfg, adapter, sandbox=box)  # checks the budget can be enforced
     _preflight(adapter, dps, decision, kind)  # and the data, still before any LLM call
+    schema.check_adapter(good, decision, dps)  # and that the adapter's prefixes hold no post-decision data
     run = Path(run_dir) if run_dir else None
     schema.store = RunStore(run.parent, run.name) if run else RunStore()
     result = schema.discover(good, decision, kind)
@@ -762,6 +830,7 @@ def onboard(
         adapter=adapter,  # head.json records it, so live prefixes are built as in training
         sandbox=sandbox,
         redact=redact,  # and the redaction function's import path
+        extractor_tests=result.extractor.tests,
     )
     if gate_coverage is not None:
         head.calibrate_gate(rep.cv, gate_coverage)

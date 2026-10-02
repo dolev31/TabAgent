@@ -102,6 +102,8 @@ class _FoldDiscovery:
                     f"in-fold discovery cost ${self.spent:.2f} reached max_cost_usd={cfg.max_cost_usd}"
                 )
             cfg = dataclasses.replace(cfg, max_cost_usd=remaining)
+        if cfg.usefulness and not cfg.prune_harmful:  # a per-fold report nobody reads: only when it prunes
+            cfg = dataclasses.replace(cfg, usefulness=False)
         store = RunStore(self.base_dir, f"fold-{digest(sorted(key))[:12]}")
         schema = TabSchema(self.llm, cfg, self.adapter, store=store, sandbox=self.sandbox)
         train = [t for t in self.trajs if _group(t) in key]

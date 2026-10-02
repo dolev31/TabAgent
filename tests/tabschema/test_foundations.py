@@ -210,6 +210,7 @@ def test_prompts_render_every_placeholder():
         "code_validator": dict(
             target_name="T", feature_specs="[]", trajectory_schema="{}", code="x=1", sample_output="[]"
         ),
+        "output_auditor": dict(target_name="T", trajectory_json="{}", features="[]"),
     }
     assert set(fields) == set(prompts.PROMPTS)
     for name, f in fields.items():
@@ -245,6 +246,8 @@ def test_runstore_cache_is_thread_safe(tmp_path):
 
 # Pinned hashes of the prompt files. The seven paper prompts reproduce App. D.2-D.3 word for word (verified
 # against the paper); any edit must be deliberate and re-verified against the paper before updating a hash.
+# The last two are the release's own prompts (prompts.RELEASE_PROMPTS), not the paper's: the CodeValidator's,
+# written from its description in App. D.1, and the OutputAuditor's, a stage the paper does not have.
 PAPER_PROMPT_SHA256 = {
     "feature_analyzer": "4acc8bb8e373377742fdd1bc18a60d82932e7d863c61e33076309c14bf51cea4",
     "code_extractor": "4216f68b43b8b5ed088b03d5596857cf2aaabdd9ba9806015d24cbd8e047c8d4",
@@ -254,8 +257,14 @@ PAPER_PROMPT_SHA256 = {
     "judge_impact": "a7221a62baf74ec714bce08e09da4322a30a351bcc477ef74b72bb1d21d5c8e3",
     "meta_judge": "c33677663ca48eeacbed1ebb6faaab702ebc75d7861af00063eb76ae90a90e70",
     "code_validator": "fdf390b3d21fb6f67e608f362e2015d4d8f18fd8d8d10357ec001e452c2f3109",
+    "output_auditor": "0825a280bcd7484ba2a64ad53d905305a55633e932c70c366d599c99c2d23735",
 }
 
 
 def test_prompts_are_pinned():
     assert {n: prompts.sha256(n) for n in prompts.PROMPTS} == PAPER_PROMPT_SHA256
+    assert set(prompts.RELEASE_PROMPTS) == {
+        "code_validator",
+        "output_auditor",
+    }  # the release's, not the paper's
+    assert not set(prompts.RELEASE_PROMPTS) & set(prompts.PAPER_PROMPTS)

@@ -108,12 +108,14 @@ def serve(
     trust_extractor: bool = False,
     sandbox: Any = None,
     redact: Any = None,
+    allow_unpinned: bool = False,
 ) -> None:
     """Load the head saved at ``path`` (a directory or ``hf://OWNER/REPO[@REVISION]``) and serve it until
     interrupted. ``trust_extractor`` runs its extractor in-process instead of in the sandbox (only for an
     extractor you have reviewed); ``sandbox`` (``"subprocess"``, ``"docker"``, ``"docker:<image>"``) and
     ``redact`` (a function or ``"module:function"``, applied to every ``run`` before its prefix is built) are
-    described in ``TabAgentHead.load``."""
+    described in ``TabAgentHead.load``, as is ``allow_unpinned`` (serve a head whose card pins no hash for its
+    extractor, with a warning)."""
     try:
         import uvicorn
     except ImportError as e:
@@ -121,5 +123,7 @@ def serve(
 
     from tabagent.api import TabAgentHead
 
-    head = TabAgentHead.load(path, trust_extractor=trust_extractor, sandbox=sandbox, redact=redact)
+    head = TabAgentHead.load(
+        path, trust_extractor=trust_extractor, sandbox=sandbox, redact=redact, allow_unpinned=allow_unpinned
+    )
     uvicorn.run(create_app(head), host=host, port=port)
