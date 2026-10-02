@@ -1638,3 +1638,17 @@ def test_the_context_text_never_shadows_an_llm_column_and_is_skipped_when_consta
     assert set(flat.features) == {"a"} and "no context text" in flat.notes[0]
     off = discover(tmp_path, FakeLLM(), context_text=False)
     assert "context_text" not in off.extractor.features
+
+
+def test_likely_duplicate_proposals_reach_the_aggregator_in_the_same_batch():
+    from tabagent.tabschema.agents import similar_together
+
+    names = [f"filler_{i}" for i in range(38)] + ["has_user_id", "order_total"] + ["user_id_present"]
+    specs = [FeatureSpec.from_dict(spec(n)) for n in names]
+    batches = similar_together(specs, 40)
+    where = {s.feature_name: i for i, b in enumerate(batches) for s in b}
+    assert where["has_user_id"] == where["user_id_present"]  # side by side, for the aggregator to decide
+    assert all(len(b) <= 40 for b in batches) and sum(map(len, batches)) == len(specs)
+    assert [s.feature_name for s in batches[0]][:3] == ["filler_0", "filler_1", "filler_2"]  # order kept
+    big = [FeatureSpec.from_dict(spec(f"x_{i}")) for i in range(90)]
+    assert [len(b) for b in similar_together(big, 40)] == [40, 40, 10]

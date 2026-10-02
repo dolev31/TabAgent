@@ -98,3 +98,31 @@ def test_recipe_selection_runs_on_each_training_fold(logs, tmp_path):
         run_dir=tmp_path / "infold",
     )
     assert set(res.recipes) == {0, 1, 2} and all("synth=" in r for r in res.recipes.values())
+
+
+def test_fold_discoveries_run_concurrently_and_match_sequential_runs(logs, tmp_path, monkeypatch):
+    import threading
+    import time
+
+    active, peak = [0], [0]
+    lock = threading.Lock()
+    discover = TabSchema.discover
+
+    def slow(self, *a, **kw):
+        with lock:
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+        time.sleep(0.2)
+        try:
+            return discover(self, *a, **kw)
+        finally:
+            with lock:
+                active[0] -= 1
+
+    monkeypatch.setattr(TabSchema, "discover", slow)
+    together = _run(logs, tmp_path / "together", ScriptedLLM(responder), fold_workers=3)
+    assert peak[0] == 3  # the three folds' discoveries overlapped
+    peak[0] = 0
+    one_by_one = _run(logs, tmp_path / "sequential", ScriptedLLM(responder), fold_workers=1)
+    assert peak[0] == 1
+    assert (together.oof[0] == one_by_one.oof[0]).all()

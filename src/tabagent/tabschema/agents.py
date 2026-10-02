@@ -458,7 +458,7 @@ class FeatureAggregator(Stage):
         support = {s.key: s.support for s in specs}
         kept: dict[str, FeatureSpec] = {}
         rejected: dict[str, FeatureSpec] = {}
-        batches = [specs[i : i + self.batch] for i in range(0, len(specs), self.batch)]
+        batches = similar_together(specs, self.batch)
         for k, r in in_parallel(self._aggregate, batches, self.workers):  # merged in batch order
             for s in k:
                 kept.setdefault(s.key, s)
@@ -483,6 +483,59 @@ class FeatureAggregator(Stage):
             return [s for s in map(FeatureSpec.from_dict, json_items(items)) if s.key]
 
         return parse(out.get("filtered_features")), parse(out.get("rejected_features"))
+
+
+#: Name words that say how a feature is encoded, not what it is about (``has_user_id``, ``user_id_present``).
+_ENCODING_WORDS = frozenset(
+    [
+        "has",
+        "is",
+        "flag",
+        "present",
+        "provided",
+        "count",
+        "num",
+        "number",
+        "of",
+        "the",
+        "in",
+        "any",
+        "bool",
+        "indicator",
+        "mentioned",
+        "mention",
+        "mentions",
+        "keyword",
+        "keywords",
+        "n",
+        "total",
+    ]
+)
+
+
+def _topic(spec: FeatureSpec) -> tuple[str, ...]:
+    """The words of a feature's name that say what it is about, for placing likely duplicates together."""
+    words = [w for w in re.split(r"[^a-z0-9]+", spec.feature_name.lower()) if w]
+    return tuple(sorted(set(words) - _ENCODING_WORDS)) or tuple(words)
+
+
+def similar_together(specs: list[FeatureSpec], batch: int) -> list[list[FeatureSpec]]:
+    """Split ``specs`` into batches of at most ``batch``, with features about the same thing (by the words of
+    their names) in the same batch, so the FeatureAggregator, which merges only within a call, sees likely
+    duplicates side by side and decides on them itself. Groups keep the given order (most supported first);
+    a group is split only when it is larger than a batch."""
+    groups: dict[tuple[str, ...], list[FeatureSpec]] = {}
+    for s in specs:
+        groups.setdefault(_topic(s), []).append(s)
+    batches: list[list[FeatureSpec]] = [[]]
+    for group in groups.values():
+        if len(batches[-1]) + len(group) > batch and batches[-1]:
+            batches.append([])
+        for s in group:
+            if len(batches[-1]) == batch:
+                batches.append([])
+            batches[-1].append(s)
+    return [b for b in batches if b]
 
 
 def premerge(specs: list[FeatureSpec]) -> list[FeatureSpec]:

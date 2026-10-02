@@ -282,6 +282,8 @@ For every fold it runs discovery on the training fold's trajectories only, build
 rows with that fold's extractor, selects the training recipe on the training rows (as `onboard` does on all of
 them) and scores the held-out decisions. With the same `n_splits`, its folds are those of `onboard`'s report,
 so the two estimates can be compared directly. It costs one discovery per fold, about five times the LLM cost
-of onboarding with the default five folds; one budget covers all folds. `redact=` works as in `onboard`, and
+of onboarding with the default five folds; one budget covers all folds. The folds' discoveries run three at a
+time by default (`fold_workers=`), each with an equal share of the budget, so the wall time is about that of
+two onboardings rather than five. `redact=` works as in `onboard`, and
 `sandbox=DockerSandbox()` runs the generated code in Docker. The head you deploy is still the one `onboard` fits
 on all the trajectories; this estimates how well that procedure generalizes to new tasks.

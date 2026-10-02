@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import threading
 from collections.abc import Callable, Iterable, Mapping
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -29,7 +30,7 @@ from typing import Any
 import pandas as pd
 
 from tabagent.defaults import DEFAULT_SEED, cache_root
-from tabagent.evaluation.cv import CVResult, cross_validate
+from tabagent.evaluation.cv import CVResult, assign_folds, cross_validate
 from tabagent.table import DecisionSpec, DecisionTable
 
 logger = logging.getLogger(__name__)
@@ -70,8 +71,20 @@ class _FoldDiscovery:
         self.recipes: dict[frozenset, Any] = {}
         self.features: dict[tuple[frozenset, str], dict | None] = {}
         self.spent, self.priced = 0.0, True
+        self._lock = threading.Lock()
 
-    def discover(self, train_groups: Iterable) -> frozenset:
+    def discover_all(self, trains: list[list], workers: int) -> None:
+        """Discover on every fold's training groups, ``workers`` folds at a time. With a budget, each
+        fold gets an equal share of what is left, so concurrent folds cannot overspend it together."""
+        from tabagent.tabschema.agents import in_parallel
+
+        todo = [t for t in trains if frozenset(map(str, t)) not in self.runs]
+        share = None
+        if self.config.max_cost_usd is not None and todo:
+            share = (self.config.max_cost_usd - self.spent) / len(todo)
+        in_parallel(lambda t: self.discover(t, budget=share), todo, workers)
+
+    def discover(self, train_groups: Iterable, budget: float | None = None) -> frozenset:
         from tabagent.tabschema.llm import BudgetExceeded
         from tabagent.tabschema.orchestrator import TabSchema
         from tabagent.tabschema.runstore import RunStore, digest
@@ -80,7 +93,9 @@ class _FoldDiscovery:
         if key in self.runs:
             return key
         cfg = self.config
-        if cfg.max_cost_usd is not None:  # one budget for all folds: each fold gets what is left
+        if budget is not None:  # a share of the budget, set by discover_all for concurrent folds
+            cfg = dataclasses.replace(cfg, max_cost_usd=budget)
+        elif cfg.max_cost_usd is not None:  # one budget for all folds: each fold gets what is left
             remaining = cfg.max_cost_usd - self.spent
             if remaining <= 0:
                 raise BudgetExceeded(
@@ -94,8 +109,9 @@ class _FoldDiscovery:
         try:
             result = schema.discover(train, self.target, self.kind)
         finally:
-            self.spent += schema.meter.total_usd
-            self.priced = self.priced and schema.meter.priced
+            with self._lock:
+                self.spent += schema.meter.total_usd
+                self.priced = self.priced and schema.meter.priced
         self.runs[key] = (schema, result)
         return key
 
@@ -168,6 +184,7 @@ def cross_validate_discovery(
     trust_extractor: bool = False,
     sandbox: Any = None,
     redact: Callable[[dict], dict] | None = None,
+    fold_workers: int = 3,
 ) -> DiscoveryCVResult:
     """Grouped cross-validation of the whole onboarding pipeline, with TabSchema discovery run inside every
     training fold (see the module docstring).
@@ -194,6 +211,8 @@ def cross_validate_discovery(
     sandbox: the sandbox for discovery and extraction (default ``SubprocessSandbox``; ``DockerSandbox()``
         when the logs or the code are untrusted).
     redact: applied to every raw trajectory before anything can reach the LLM provider.
+    fold_workers: folds whose discovery runs at the same time (each makes up to ``config.workers`` LLM calls
+        at once). With ``config.max_cost_usd``, each concurrent fold gets an equal share of the budget.
 
     Returns
     -------
@@ -249,9 +268,13 @@ def cross_validate_discovery(
         search=search,
         head_kw={} if iterations is None else {"iterations": iterations},
     )
-    res = cross_validate(
-        _InFoldModel(ctx), skeleton, folds=folds, n_splits=n_splits, fold_seed=fold_seed, seeds=seeds
-    )
+    # The folds cross_validate uses; their discoveries run first, fold_workers at a time, and are reused.
+    fold_map = dict(folds) if folds is not None else assign_folds(skeleton.groups, n_splits, fold_seed)
+    groups = list(dict.fromkeys(skeleton.groups))
+    fold_ids = sorted({fold_map.get(g, fold_map.get(str(g))) for g in groups})
+    trains = [[g for g in groups if fold_map.get(g, fold_map.get(str(g))) != f] for f in fold_ids]
+    ctx.discover_all(trains, max(1, fold_workers))
+    res = cross_validate(_InFoldModel(ctx), skeleton, folds=fold_map, seeds=seeds)
     groups = set(map(str, skeleton.groups))
     fold_of = {str(g): f for g, f in res.folds.items() if str(g) in groups}
     by_fold = {
