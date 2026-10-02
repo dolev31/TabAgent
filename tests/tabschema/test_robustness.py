@@ -1652,3 +1652,14 @@ def test_likely_duplicate_proposals_reach_the_aggregator_in_the_same_batch():
     assert [s.feature_name for s in batches[0]][:3] == ["filler_0", "filler_1", "filler_2"]  # order kept
     big = [FeatureSpec.from_dict(spec(f"x_{i}")) for i in range(90)]
     assert [len(b) for b in similar_together(big, 40)] == [40, 40, 10]
+
+
+def test_a_column_that_is_false_or_missing_is_constant_but_a_presence_flag_is_kept():
+    from tabagent.tabschema.compile import _is_flag
+
+    assert _is_flag(pd.Series([True, None, None, True]))
+    assert _is_flag(pd.Series([1, None, 1, None]))
+    assert not _is_flag(pd.Series([0.0, None, 0.0, None]))  # "no prior tool" where the key was written
+    assert not _is_flag(pd.Series([False, None, None, False]))
+    assert not _is_flag(pd.Series([True, False, None]))  # two values: an ordinary column
+    assert not _is_flag(pd.Series([True, True]))  # never missing: constant

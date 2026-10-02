@@ -157,12 +157,13 @@ def _match_spec(column: str, specs: dict[str, FeatureSpec]) -> tuple[FeatureSpec
 
 
 def _is_flag(values: pd.Series) -> bool:
-    """A presence flag: one boolean value where present and missing elsewhere (``True``/``None``)."""
+    """A presence flag: one true value where present (``True`` or ``1``) and missing elsewhere. A column
+    whose only present value is false (``0``, ``False``) says that nothing happened anywhere: not a flag."""
     present = values.dropna()
-    return (
-        bool(len(present) and len(present) < len(values) and present.map(lambda v: isinstance(v, bool)).all())
-        and present.nunique() == 1
-    )
+    if not len(present) or len(present) == len(values) or present.nunique() != 1:
+        return False
+    v = present.iloc[0]
+    return (isinstance(v, bool) and v) or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1)
 
 
 def compile_extractor(
@@ -234,7 +235,8 @@ def compile_extractor(
             result.dropped[col] = "not in the accepted feature plan"
         elif verdict in ("hallucinated_field", "plan_mismatch"):
             result.dropped[col] = f"CodeValidator: {verdict}"
-        elif q["n_unique"] <= 1:
+        elif q["n_unique"] <= 1 or (values.dropna().nunique() <= 1 and not flag):
+            # missing where the code skipped a key is no second value: a 0-or-missing column is constant
             result.dropped[col] = "constant across onboarding decision points"
         elif q["null_rate"] > max_null_rate:
             result.dropped[col] = f"null rate {q['null_rate']:.2f} > {max_null_rate}"
