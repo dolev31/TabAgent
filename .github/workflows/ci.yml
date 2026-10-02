@@ -25,7 +25,8 @@ jobs:
       - uses: astral-sh/setup-uv@v5
         with:
           python-version: ${{ matrix.python }}
-      - run: uv sync --group dev
+      # The TabSchema LLM clients (OpenAI and LiteLLM), so the provider tests run instead of skipping.
+      - run: uv sync --group dev --extra tabschema --extra llm
       - run: uv run pytest -m "not slow and not gpu and not network"
 
   docs:
