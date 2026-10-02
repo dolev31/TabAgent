@@ -127,7 +127,7 @@ class TabSchemaConfig:
     """
 
     model: str | None = None
-    n_analyze: int = 10
+    n_analyze: int = 20
     sample_seed: int = DEFAULT_SEED
     sample_strategy: str = "coverage"
     max_code_retries: int = 3

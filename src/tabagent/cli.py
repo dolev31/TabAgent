@@ -368,7 +368,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--kind", default="ranking", choices=["ranking", "multilabel", "single"], help="the decision pattern"
     )
     p.add_argument("--out", help="directory for the saved head")
-    p.add_argument("--n-analyze", type=int, default=10, help="decision points the LLM analyzes")
+    p.add_argument("--n-analyze", type=int, default=20, help="decision points the LLM analyzes")
     p.add_argument(
         "--max-cost", type=float, help="stop if TabSchema's LLM cost exceeds this (USD); needs prices"
     )

@@ -205,18 +205,25 @@ the offered ones (the catalog and the logged choices use different names), or se
 
 During discovery:
 
-* **The analyzed sample.** The FeatureAnalyzer reads `n_analyze` decision points, so they decide which
-  features can be found. Each pick goes to a task not sampled yet and, among those, to the decision point that
-  adds the most the sample has not covered: a source (log file), a position in the run (first, middle or last
-  decision), a prefix-length quartile and the decision's labels. On the public τ²-bench GPT-4.1 logs, the
-  default 10 points of the next-tool-call decision then cover all four positions and 16 of the 35 tools,
-  against two positions and 5 tools when each task gives its first decision. In four discovery runs per
-  sample there (Claude Opus 5.5, with GPT-6 Sol writing the code), the coverage sample gave heads with a mean
-  P@R of 0.820 against 0.812 (LLM features alone: 0.793 against 0.778), higher in three of the four runs, for
-  about $6.3 against $4.0 per discovery, since its proposals overlap less. That gain is within the spread
-  between runs. The run directory records the sample (`sample.json`) and its coverage
-  (`sample_coverage.json`, also a line of the report).
-  `TabSchemaConfig(sample_strategy="tasks")` restores the first-decision-per-task sample.
+* **The analyzed sample.** The FeatureAnalyzer reads `n_analyze` decision points (20 by default), so they
+  decide which features can be found. Each pick goes to a task not sampled yet and, among those, to the
+  decision point that adds the most the sample has not covered: a source (log file), a position in the run
+  (first, middle or last decision), a prefix-length quartile and the decision's labels. The run directory
+  records the sample (`sample.json`) and its coverage (`sample_coverage.json`, also a line of the report);
+  `TabSchemaConfig(sample_strategy="tasks")` restores the earlier sample, the first decision of each task.
+  Measured on the next-tool-call decision of the public τ²-bench GPT-4.1 logs (Claude Opus 5.5, with GPT-6 Sol
+  writing the code; P@R of the head in grouped 5-fold CV, the same folds for every card):
+
+  | analyzed sample | discovery runs | P@R, full card | P@R, LLM features only | LLM cost per run |
+  |---|---|---|---|---|
+  | 10, first decision of each task | 4 | 0.812 (0.799–0.818) | 0.778 (0.758–0.794) | $4.0 |
+  | 10, coverage | 4 | 0.820 (0.810–0.831) | 0.793 (0.761–0.820) | $6.3 |
+  | 20, coverage (the default) | 3 | 0.836 (0.825–0.842) | 0.851 (0.848–0.853) | $11.5 |
+
+  Ten points left the features to chance: two runs on the same logs differed by up to 6 points. Twenty points
+  cover all four positions in the run and most of the 35 tools, and three runs agreed within half a point.
+  Analyzing 40 points in one run did not improve on 20 (one run, 0.837, $21). A smaller `n_analyze` lowers the
+  cost (the dry run estimates it); expect a less stable card.
 * **A decision point that fails** (an unusable or truncated answer, a provider error such as a context
   overflow, code that never runs) is skipped, recorded in `analysis.json` with its error, and counted in the
   report; the run goes on with the others. When every point fails, the error names the first cause.

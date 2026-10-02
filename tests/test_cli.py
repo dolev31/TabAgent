@@ -23,7 +23,7 @@ def test_subcommand_help_shows_defaults(capsys):
     with pytest.raises(SystemExit):
         main(["onboard", "--help"])
     out = capsys.readouterr().out
-    assert "--trust-extractor" in out and "--price-in" in out and "(default: 10)" in out
+    assert "--trust-extractor" in out and "--price-in" in out and "(default: 20)" in out
 
 
 def test_version(capsys):

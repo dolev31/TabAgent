@@ -624,7 +624,7 @@ def onboard(
     llm, model: the TabSchema LLM, or the model name to build one from environment keys (default GPT-5.4).
     kind: the decision pattern: ``ranking``, ``multilabel`` or ``single``.
     out: save the head to this directory.
-    n_analyze: decision points analyzed by the LLM (default 10).
+    n_analyze: decision points analyzed by the LLM (default 20).
     max_cost_usd: stop TabSchema when its LLM cost exceeds this. Needs a known price for the model
         (``prices``); a budget without a price raises ``ValueError`` before any LLM call.
     prices: ``{model: (USD per 1M input tokens, USD per 1M output tokens)}``.

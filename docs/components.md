@@ -5,7 +5,7 @@
 `TabSchema(llm).discover(trajectories, target)` runs the paper's FeatureOrchestrator (Sec. 3.1, App. D):
 
 1. **FeatureAnalyzer** proposes features from sampled decision points (pre-decision prefix only). The sample
-   (`n_analyze`, 10 by default) takes each task once before repeating one, and covers the onboarding data's
+   (`n_analyze`, 20 by default) takes each task once before repeating one, and covers the onboarding data's
    sources, positions in the run, prefix lengths and decision labels (`sample_strategy="coverage"`, the
    release's choice; the paper does not say how its decision points were sampled).
 2. **CodeExtractor → CodeExecutor** write extraction code and run it in a sandbox, retrying up to three times
