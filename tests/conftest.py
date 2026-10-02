@@ -1,4 +1,9 @@
-"""Shared toy data: a fabricated tool-shortlisting problem (no real agent data)."""
+"""Shared toy data: a fabricated tool-shortlisting problem (no real agent data); a served head for tests."""
+
+import socket
+import threading
+import time
+from contextlib import contextmanager
 
 import numpy as np
 import pandas as pd
@@ -81,3 +86,31 @@ def table():
 @pytest.fixture
 def card():
     return make_card()
+
+
+@contextmanager
+def served(head):
+    """``head`` served by ``tabagent serve``'s app on a free local port, for the length of the block: yields
+    its URL."""
+    uvicorn = pytest.importorskip("uvicorn")
+    from tabagent.serve import create_app
+
+    sock = socket.socket()
+    sock.bind(("127.0.0.1", 0))
+    port = sock.getsockname()[1]
+    sock.close()
+    server = uvicorn.Server(
+        uvicorn.Config(create_app(head), host="127.0.0.1", port=port, log_level="warning")
+    )
+    thread = threading.Thread(target=server.run, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + 20
+    while not server.started:
+        if time.monotonic() > deadline or not thread.is_alive():
+            raise RuntimeError("the test head server did not start")
+        time.sleep(0.01)
+    try:
+        yield f"http://127.0.0.1:{port}"
+    finally:
+        server.should_exit = True
+        thread.join(10)

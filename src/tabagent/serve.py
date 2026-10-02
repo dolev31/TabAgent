@@ -10,10 +10,13 @@ adapter-normalized prefix; send ``"run"`` instead (the run so far in the format 
 its run-level task fields) to have the head build it with its recorded adapter. A single-class head takes no
 candidates and answers with ``choice``. An invalid request (no candidates for a ranking head, both a prefix
 and a run, ...) is answered with status 400. ``GET /health`` and ``GET /card`` describe the head. Requires
-``pip install "tabagent[serve]"``.
+``pip install "tabagent[serve]"``; ``RemoteHead`` is its client, standard library only.
 """
 
 # No `from __future__ import annotations`: FastAPI must see the request model class, not a string.
+import json
+import urllib.error
+import urllib.request
 from typing import Any, Optional
 
 _SERVE_EXTRA = 'serving a head needs the serve extra: pip install "tabagent[serve]"'
@@ -54,6 +57,48 @@ def create_app(head) -> Any:
             raise HTTPException(status_code=400, detail=str(e)) from e
 
     return app
+
+
+class RemoteHead:
+    """A head served by ``tabagent serve``, called over HTTP with the standard library (no extra needed).
+
+    ``decide`` takes the arguments of ``TabAgentHead.decide`` and returns the service's answer, so an agent
+    whose environment cannot host the head (``ToolFilter("http://...")``, say) uses it like a local one. Send
+    ``run=`` (the service builds the prefix with the head's recorded adapter) and JSON candidates (tool
+    schemas, ids or ``{"id", "description", "args"}`` records). When the service cannot be reached, times
+    out or fails (status 5xx), the decision is ``deferred`` with the reason in ``error``, as when a local
+    extractor fails; a request the service rejects (status 4xx) raises ``ValueError``.
+    """
+
+    def __init__(self, url: str, timeout: float = 10.0):
+        self.url, self.timeout = url.rstrip("/"), timeout
+
+    def decide(
+        self,
+        prefix: Optional[dict] = None,  # noqa: UP045
+        candidates: Optional[list] = None,  # noqa: UP045
+        k: Optional[int] = None,  # noqa: UP045
+        defer_below: Optional[float] = None,  # noqa: UP045
+        *,
+        run: Optional[dict] = None,  # noqa: UP045
+    ) -> dict[str, Any]:
+        """The service's ``POST /decide`` answer (see ``TabAgentHead.decide``)."""
+        body = {"prefix": prefix, "run": run, "candidates": candidates, "k": k, "defer_below": defer_below}
+        data = json.dumps({key: v for key, v in body.items() if v is not None}, default=str).encode()
+        request = urllib.request.Request(
+            self.url + "/decide", data=data, headers={"content-type": "application/json"}
+        )
+        try:
+            with urllib.request.urlopen(request, timeout=self.timeout) as response:
+                return json.loads(response.read())
+        except urllib.error.HTTPError as e:
+            detail = e.read().decode("utf-8", "replace")[:500]
+            if 400 <= e.code < 500:
+                raise ValueError(f"the head service rejected the request ({e.code}): {detail}") from e
+            error = f"the head service failed ({e.code}): {detail}"
+        except (OSError, ValueError) as e:  # unreachable, timed out, or an answer that is not JSON
+            error = f"the head service could not answer: {type(e).__name__}: {e}"
+        return {"candidates": [], "scores": {}, "confidence": None, "deferred": True, "error": error}
 
 
 def serve(

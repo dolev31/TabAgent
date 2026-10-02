@@ -5387,6 +5387,7 @@ dev = [
     { name = "pytest" },
     { name = "pytest-cov" },
     { name = "ruff" },
+    { name = "uvicorn" },
 ]
 docs = [
     { name = "mkdocs-material" },
@@ -5442,6 +5443,7 @@ dev = [
     { name = "pytest", specifier = ">=8.0" },
     { name = "pytest-cov", specifier = ">=5.0" },
     { name = "ruff", specifier = ">=0.6" },
+    { name = "uvicorn", specifier = ">=0.29" },
 ]
 docs = [{ name = "mkdocs-material", specifier = ">=9.5" }]
 heads = [

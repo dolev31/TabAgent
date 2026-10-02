@@ -50,6 +50,10 @@ head.live_prefix(run)  # the prefix exactly as in training (tabagent.adapters.li
 head.decide(run=run, candidates=tools, k=9)  # the same, in one call
 ```
 
+`candidates` takes the tool schemas as the agent holds them (OpenAI function tools, the Anthropic Messages API
+format, MCP tool listings), read exactly as the adapters read a training catalog, so their descriptions and
+parameter names reach the head as in training; tool ids or `{"id", "description", "args"}` records work too.
+
 `live_prefix` uses the adapter recorded in `head.json`. `tabagent onboard` records it; for a head onboarded from
 Python, set `head.adapter = adapter` (the adapter that read the logs) before `save`, or pass `adapter=` to
 `TabAgentHead.load` or `live_prefix`.
@@ -63,18 +67,22 @@ and points to the run-level fields to pass.
 **HTTP service** (`pip install "tabagent[serve]"`): `tabagent serve my_head --port 8077`, then
 `POST /decide {"prefix": {...}, "candidates": [...], "k": 9}`, or `{"run": {...}, ...}` to have the head build
 the prefix from the run. A failed extraction is answered with `"deferred": true` and its `"error"`; an invalid
-request (a ranking head without candidates, both a prefix and a run) with status 400.
+request (a ranking head without candidates, both a prefix and a run, a candidate without a name) with status 400.
 
-**In front of a tool-calling LLM**: `ToolFilter` sends the model only the shortlisted tools, and the full list
-when the head defers (unsure, or its extractor failed). Pass the run-level fields the training logs carried as
-`task`, once (`ToolFilter(..., task={"domain": "airline"})`) or per call.
+**In front of a tool-calling LLM**: `ToolFilter` sends the model only the tools the head shortlists, and the
+full list when the head defers (unsure, or its extractor failed). Start a session per conversation: it keeps
+every tool the agent already called (`keep_used`) and every tool it once showed (`sticky`), appending newly
+shown tools at the end in catalog order, so the list only grows; a `ToolFilter` itself keeps no state between
+calls. Pass the run-level fields the training logs carried as `task`, once (`ToolFilter(..., task={"domain":
+"airline"})`), per conversation (`session(task=...)`) or per call. The head may also be the URL of a `tabagent
+serve` service (`ToolFilter("http://host:8077", ...)`), for an agent whose environment cannot host it.
 
 ```python
 from tabagent.integrations.openai_tools import ToolFilter
 
-tool_filter = ToolFilter("my_head", k=9)
-tools_to_send = tool_filter(messages, tools, task={"instruction": goal})
-client.chat.completions.create(model=..., messages=messages, tools=tools_to_send)
+tool_filter = ToolFilter("my_head", k=7)
+session = tool_filter.session(task={"instruction": goal})  # one per conversation
+client.chat.completions.create(model=..., messages=messages, tools=session(messages, tools))
 ```
 
 **Sandbox**: an onboarded head runs its extractor in a resource-limited subprocess with an empty environment
@@ -92,6 +100,33 @@ warns. A head never imports it by itself, and `decide(prefix, ...)` takes the pr
 **Confidence gate**: `onboard(..., gate_coverage=0.9)` calibrates a threshold so that 90% of decisions stay
 with the head and the least confident 10% go back to the LLM (paper App. N.3, "Confidence-gated fallback";
 App. O.2 runs the gate in the loop).
+
+### Does filtering the tool list pay?
+
+Measured on τ²-bench (v1.0.1) with GPT-4.1 as agent and user simulator: 49 held-out airline and retail tasks,
+5 trials, paired by task, a `NextToolCall` head trained on the other tasks' runs, top 7 of 14 to 16 tools plus
+the tools already used, before every call ([details](https://github.com/dolev31/TabAgent/blob/main/experiments/live/README.md)):
+
+| | pass rate vs. every tool | prompt tokens per call | agent cost per run |
+|---|---|---|---|
+| re-ranked at every call (`sticky=False`) | −6.9 points [−13.9, −0.4] | −18.5% | +21% |
+| `sticky` (3 trials)¹ | +0.0 points [−9.5, +8.8] | −13.8% | +11% |
+
+¹ Measured before `ToolSession`, with the same tools at every call but in catalog order; the session appends
+newly shown tools instead, which leaves more of the list's prefix unchanged.
+
+Both cost more than sending every tool, for two reasons. A tool list that changes between calls defeats the
+provider's prompt caching (the share of prompt tokens served from the cache fell from 80% to 55%, and to 66%
+with `sticky`). And τ²-bench's tool schemas are a small share of its prompts: hiding about half of them saved
+620 to 1,050 of about 4,950 prompt tokens per call. Without `sticky`, the agent also lost tasks when a tool it
+needed was not shown: it used another tool or planned around the missing one.
+
+So filtering is likely to pay where those two effects reverse; we did not measure these cases:
+
+* large catalogs whose schemas dominate the prompt;
+* providers or self-hosted models without prefix caching;
+* replacing a separate LLM component outright, as the paper's tool shortlister does: there the head removes
+  a whole LLM call rather than shortening one.
 
 ## Pretrained heads and the demo
 

@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 import re
+import threading
 import warnings
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -210,6 +211,12 @@ class CoUsage(FittedFeature):
 
 
 # --------------------------------------------------------------------------- text encoders
+def _utf8(text: str) -> str:
+    """``text`` as valid Unicode: a lone surrogate (UTF-16 text cut inside a pair, which JSON can carry as a
+    ``\\udXXX`` escape) becomes ``?``. Tokenizers and byte hashing reject it; valid text is unchanged."""
+    return text.encode("utf-8", "replace").decode("utf-8")
+
+
 class HashingEncoder:
     """Deterministic, dependency-free text encoder (character trigram hashing, L2-normalized).
 
@@ -226,7 +233,7 @@ class HashingEncoder:
         """L2-normalized trigram-count vectors (``prefix`` is ignored)."""
         out = np.zeros((len(texts), self.dim), dtype="float32")
         for i, t in enumerate(texts):
-            s = f"  {(t or '').lower()}  "
+            s = f"  {_utf8(t or '').lower()}  "
             for j in range(len(s) - 2):
                 h = int.from_bytes(hashlib.md5(s[j : j + 3].encode()).digest()[:4], "little")
                 out[i, h % self.dim] += 1.0
@@ -300,7 +307,7 @@ class E5Encoder:
         """L2-normalized embeddings of ``prefix + text`` for each text (``query: `` or ``passage: ``)."""
         torch, out = self.torch, []
         for i in range(0, len(texts), self.batch_size):
-            chunk = [prefix + (t or " ") for t in texts[i : i + self.batch_size]]
+            chunk = [prefix + _utf8(t or " ") for t in texts[i : i + self.batch_size]]
             enc = self.tokenizer(
                 chunk, padding=True, truncation=True, max_length=self.max_length, return_tensors="pt"
             )
@@ -314,25 +321,46 @@ class E5Encoder:
 
 _ENCODERS: dict[str, Callable[[], Any]] = {"e5-small-v2": E5Encoder, "hashing": HashingEncoder}
 _ENCODER_CACHE: dict[str, Any] = {}
+# Loading an encoder imports torch and transformers and reads the weights: one thread at a time. Concurrent
+# first requests to a fresh HTTP service otherwise race on the lazy imports (ImportError) and load it twice.
+_LOAD_LOCK = threading.RLock()
 
 
 class CachedEncoder:
     """Memoizes embeddings per (encoder, prefix, text); encoders are deterministic, so caching across
-    folds changes nothing but speed."""
+    folds changes nothing but speed.
+
+    The memo keeps the ``max_items`` most recently used texts. A serving process sees a new context text at
+    almost every decision, so an unbounded memo would grow with every decision it answers. Thread-safe: the
+    HTTP service answers concurrent requests from one head."""
+
+    max_items = 100_000
 
     def __init__(self, name: str):
-        if name not in _ENCODER_CACHE:
-            _ENCODER_CACHE[name] = _ENCODERS[name]()
+        with _LOAD_LOCK:
+            if name not in _ENCODER_CACHE:
+                _ENCODER_CACHE[name] = _ENCODERS[name]()
         self.name, self.encoder = name, _ENCODER_CACHE[name]
         self.memo: dict[tuple[str, str], np.ndarray] = {}
+        self._lock = threading.Lock()
 
     def encode(self, texts: list[str], prefix: str) -> np.ndarray:
         """Embeddings of ``texts``, encoding only those not seen before with this prefix."""
-        todo = list(dict.fromkeys(t for t in texts if (prefix, t) not in self.memo))
-        if todo:
-            for t, v in zip(todo, self.encoder.encode(todo, prefix=prefix), strict=True):
-                self.memo[(prefix, t)] = v
-        return np.stack([self.memo[(prefix, t)] for t in texts]) if texts else np.zeros((0, 1), "float32")
+        if not texts:
+            return np.zeros((0, 1), "float32")
+        unique = list(dict.fromkeys(texts))
+        with self._lock:  # the hits, moved to the most recently used end
+            vecs = {t: self.memo.pop((prefix, t)) for t in unique if (prefix, t) in self.memo}
+            self.memo.update(((prefix, t), v) for t, v in vecs.items())
+        todo = [t for t in unique if t not in vecs]
+        if todo:  # encoded outside the lock: concurrent decisions still encode in parallel
+            new = dict(zip(todo, self.encoder.encode(todo, prefix=prefix), strict=True))
+            vecs.update(new)
+            with self._lock:
+                self.memo.update(((prefix, t), v) for t, v in new.items())
+                while len(self.memo) > self.max_items:
+                    del self.memo[next(iter(self.memo))]
+        return np.stack([vecs[t] for t in texts])
 
 
 _SHARED: dict[str, CachedEncoder] = {}
@@ -341,7 +369,9 @@ _SHARED: dict[str, CachedEncoder] = {}
 def encoder(name: str) -> CachedEncoder:
     """The process-wide cached encoder ``name`` (``e5-small-v2`` or ``hashing``)."""
     if name not in _SHARED:
-        _SHARED[name] = CachedEncoder(name)
+        with _LOAD_LOCK:
+            if name not in _SHARED:
+                _SHARED[name] = CachedEncoder(name)
     return _SHARED[name]
 
 

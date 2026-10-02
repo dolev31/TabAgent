@@ -40,6 +40,14 @@ def _is_spec(d: Any) -> bool:
     return isinstance(d, dict) and (bool(_SPEC_KEYS & d.keys()) or isinstance(d.get("name"), str))
 
 
+def is_tool_schema(d: Any) -> bool:
+    """Whether ``d`` is a tool schema with its parameters (OpenAI, a bare function, the Anthropic Messages API
+    format, MCP, CUGA API docs), as opposed to a ``{"name", "description", "args"}`` candidate record."""
+    return isinstance(d, dict) and (
+        isinstance(d.get("function"), dict) or any(k in d for k in (*_PARAM_KEYS, "properties", "api_name"))
+    )
+
+
 def tool_candidate(spec: dict[str, Any], name: str = "") -> Candidate:
     """One tool schema (OpenAI, Anthropic Messages API format, MCP, CUGA API docs) -> ``Candidate``."""
     f = spec["function"] if isinstance(spec.get("function"), dict) else spec

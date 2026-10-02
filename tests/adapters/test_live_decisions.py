@@ -5,7 +5,7 @@ import json
 import warnings
 
 import pytest
-from fake_logs import openai_run, openai_tools, task, write_openai_logs
+from fake_logs import messages_api_tools, openai_run, openai_tools, task, write_openai_logs
 from test_adapter_discovery import responder
 
 import tabagent
@@ -214,3 +214,104 @@ def test_cli_onboarded_head_records_its_adapter_and_redaction(tmp_path, monkeypa
     with warnings.catch_warnings():
         warnings.simplefilter("error", UserWarning)
         tabagent.load(out, redact="copy:deepcopy")
+
+
+# ------------------------------------------------------------------------- candidates and text at serve time
+@pytest.fixture(scope="module")
+def rich(trained):
+    """A head whose card reads the candidates' argument hints and embeds text (hashing encoder), as TabSchema
+    cards do (candidate_args, context_candidate_sim)."""
+    _, adapter, trajs, dps = trained
+    spec = DecisionSpec("ranking", GROUP, LABEL, CANDIDATE, decision=(DECISION,))
+    card = FeatureCard(
+        "live_rich",
+        spec,
+        [
+            Feature("goal", "state", "text", "extractor"),
+            Feature("first_user", "state", "text", "extractor"),
+            Feature("candidate_name", "schema", "cat"),
+            Feature("candidate_description", "schema", "text"),
+            Feature("candidate_args", "schema", "text"),
+            Feature(
+                "sim",
+                "dependency",
+                "num",
+                "fitted:embedding_cosine",
+                {"query": ["first_user"], "passage": ["candidate_description"], "encoder": "hashing"},
+            ),
+        ],
+    )
+    feats = ExtractorRunner(CODE, trust_extractor=True).run([dp.prefix for dp in dps])
+    table = rows_to_table(card, dps, feats, adapter)
+    agent = TabAgent(card, head=TabHead("ranking", iterations=30)).fit(table)
+    return TabAgentHead(agent, TOOL_SHORTLIST, CODE, adapter=adapter, trust_extractor=True), table, dps
+
+
+def _mcp_tools():
+    return [
+        {"name": t["name"], "description": t["description"], "inputSchema": t["input_schema"]}
+        for t in messages_api_tools()
+    ]
+
+
+def test_tool_schemas_as_candidates_score_as_in_training(rich):
+    """A scaffold sends its tool list as it holds it: every schema dialect gives the training-time candidate
+    rows (argument hints included), never a KeyError or silently empty argument hints."""
+    head, _, dps = rich
+    adapter = OpenAIMessagesAdapter(tools=openai_tools())  # the training rows: candidates from the catalog
+    feats = ExtractorRunner(CODE, trust_extractor=True).run([dps[0].prefix])
+    row = rows_to_table(head.card, [dps[0]], feats, adapter)
+    training = dict(zip(row.df[CANDIDATE], head.agent.score(row), strict=True))
+    assert any(row.df["candidate_args"])  # the catalog's parameter names
+    for tools in (
+        openai_tools(),
+        messages_api_tools(),
+        _mcp_tools(),
+        [t["function"] for t in openai_tools()],
+    ):
+        out = head.decide(dps[0].prefix, tools)
+        assert out["scores"] == pytest.approx(training), tools[0]
+    assert head.decide(dps[0].prefix, list(parse_catalog(openai_tools()).values()))["scores"] == out["scores"]
+    with pytest.raises(ValueError, match="candidate"):
+        head.decide(dps[0].prefix, [{"description": "a tool without a name"}])
+
+
+def test_http_service_takes_tool_schemas_and_rejects_malformed_candidates(rich):
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tabagent.serve import create_app
+
+    head, _, dps = rich
+    client = TestClient(create_app(head))
+    r = client.post("/decide", json={"prefix": dps[0].prefix, "candidates": openai_tools(), "k": 2})
+    assert r.status_code == 200 and r.json()["scores"] == pytest.approx(
+        head.decide(dps[0].prefix, openai_tools())["scores"]
+    )
+    r = client.post("/decide", json={"prefix": dps[0].prefix, "candidates": [{"description": "nameless"}]})
+    assert r.status_code == 400 and "candidate" in r.json()["detail"]
+
+
+def test_invalid_unicode_in_a_live_run_is_scored_not_a_crash(rich):
+    """A lone surrogate (UTF-16 text cut inside a pair, which JSON carries as an escape) reaches the text
+    encoder as '?', in every serving path, instead of crashing the decision."""
+    pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from tabagent.serve import create_app
+
+    head, _, dps = rich
+    prefix = json.loads(json.dumps(dps[0].prefix))
+    prefix["steps"][-1]["content"] += " ✈️ 予約 \ud83d"
+    clean = json.loads(json.dumps(prefix).replace("\\ud83d", "?"))
+    out = head.decide(prefix, openai_tools(), k=2)
+    assert out["error"] is None and out["scores"] == pytest.approx(
+        head.decide(clean, openai_tools(), k=2)["scores"]
+    )
+    body = json.dumps(
+        {"prefix": prefix, "candidates": openai_tools(), "k": 2}
+    )  # ASCII-escaped, as JSON allows
+    r = TestClient(create_app(head)).post(
+        "/decide", content=body, headers={"content-type": "application/json"}
+    )
+    assert r.status_code == 200 and r.json()["candidates"] == out["candidates"]

@@ -87,20 +87,34 @@ class DryRun:
 
 
 def _as_candidates(items) -> list[Candidate]:
+    """The decision's candidates as ``Candidate`` objects. A tool schema (OpenAI ``{"type": "function",
+    "function": {...}}``, a bare function, the Anthropic Messages API format's ``input_schema``, MCP
+    ``inputSchema``) is read as the adapters read a catalog (``parse_catalog``), so its argument hints are
+    the parameter names, as in training."""
+    from tabagent.adapters.common import is_tool_schema, tool_candidate
+
     out = []
     for c in items:
         if isinstance(c, Candidate):
             out.append(c)
         elif isinstance(c, str):
             out.append(Candidate(c, c))
-        else:
+        elif isinstance(c, dict) and is_tool_schema(c):
+            out.append(tool_candidate(c))
+        elif isinstance(c, dict) and ("id" in c or "name" in c):
+            args = c.get("arg_hints", c.get("args", ""))
             out.append(
                 Candidate(
                     str(c["id"] if "id" in c else c["name"]),
-                    c.get("name", ""),
-                    c.get("description", ""),
-                    c.get("arg_hints", c.get("args", "")),
+                    str(c.get("name") or ""),
+                    str(c.get("description") or ""),
+                    ", ".join(map(str, args)) if isinstance(args, (list, tuple)) else str(args or ""),
                 )
+            )
+        else:
+            raise ValueError(
+                "a candidate is an id, a {'id' or 'name', 'description', 'args'} dict, a tool schema or a "
+                f"Candidate, not {str(c)[:120]!r}"
             )
     return out
 

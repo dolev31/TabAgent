@@ -116,3 +116,54 @@ def test_card_text_columns():
     card = make_card()
     assert card.context_text_columns() == ["intent"]
     assert card.candidate_text_columns() == ["tool", "tool_desc"]
+
+
+def test_cached_encoder_memo_is_bounded_and_thread_safe(monkeypatch):
+    """A serving process sees a new context text at almost every decision: the memo keeps the most recently
+    used texts only, gives the encoder's own vectors, and survives concurrent requests."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tabagent.tabschema.fitted import CachedEncoder
+
+    enc = CachedEncoder("hashing")
+    monkeypatch.setattr(enc, "max_items", 5)
+    for i in range(50):  # one new context per decision, the same candidate text every time
+        enc.encode([f"context {i}", "book a flight"], "query: ")
+    assert len(enc.memo) <= 5 and ("query: ", "book a flight") in enc.memo
+    texts = [f"text {i}" for i in range(40)]
+    assert np.allclose(enc.encode(texts, "query: "), HashingEncoder().encode(texts))
+
+    def work(i):
+        return enc.encode([f"thread {i} {j}" for j in range(8)] + ["book a flight"], "query: ").shape
+
+    with ThreadPoolExecutor(8) as pool:
+        assert set(pool.map(work, range(200))) == {(9, HashingEncoder().dim)}
+    assert len(enc.memo) <= 5 + 8 * 8  # bounded, give or take the batches in flight
+
+
+def test_concurrent_first_use_loads_the_encoder_once(monkeypatch):
+    """The first decisions of a fresh HTTP service arrive together: the encoder is loaded by one thread while
+    the others wait, instead of every thread importing and loading it at once (which failed with an
+    ImportError on transformers' lazy imports, answered as HTTP 500)."""
+    import threading
+    import time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from tabagent.tabschema import fitted
+
+    loads = []
+
+    class Slow(HashingEncoder):
+        def __init__(self):
+            loads.append(threading.get_ident())
+            time.sleep(0.2)  # importing torch and reading the weights
+            super().__init__()
+
+    monkeypatch.setitem(fitted._ENCODERS, "slow", Slow)
+    monkeypatch.delitem(fitted._ENCODER_CACHE, "slow", raising=False)
+    monkeypatch.delitem(fitted._SHARED, "slow", raising=False)
+    with ThreadPoolExecutor(8) as pool:
+        encs = list(pool.map(lambda _: fitted.encoder("slow"), range(8)))
+    assert len(loads) == 1 and all(e is encs[0] for e in encs)
+    fitted._SHARED.pop("slow", None)
+    fitted._ENCODER_CACHE.pop("slow", None)
