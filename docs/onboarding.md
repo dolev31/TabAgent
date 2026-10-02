@@ -131,22 +131,109 @@ writes the arguments and the replies.
 | CUGA trajectories | any agent node, default `ShortlisterAgent` | APIs offered to the shortlister | APIs the code agent called |
 | generic JSON (`steps: [{name, ...}]`) | any step name | `candidates_fn=` | `labels_fn=` |
 
-A run counts as successful when its outcome field says so (`success`, `reward`, `score`); runs without an
-outcome are treated as successful with a warning in the report.
+A run counts as successful when its outcome field says so (`success`, `reward`, `score`, the first one
+present; `true`, a positive number or a word such as `passed` means success, anything else failure); runs
+without an outcome are treated as successful with a warning in the report. CUGA runs succeed when
+`score > 0`.
+
+A decision point's prefix holds the steps before the decision and only the top-level fields that describe
+the task: for chat logs and generic JSON `instruction`, `task`, `query`, `question`, `goal`, `intent` and
+`domain`; for CUGA `intent` and `dataset_name`. The task id is never in a prefix: it is the cross-validation
+group, not a feature. Other top-level fields (a final
+answer, run statistics) never reach the LLM or the extractor; the report names the ones left out. Pass
+`task_keys=` to the adapter to keep fields that are known before the decision (`task_keys=None` keeps every
+field but the outcome keys). Generic JSON directories are read recursively; `results.json` and
+`metadata.json` (run summaries) and files that are not valid JSON are skipped.
 
 ## Privacy and cost
 
 Trajectories are sent to your LLM provider during discovery. Pass `redact=` (a function applied to every
-trajectory before anything is sent) to scrub personal data. `--dry-run` reports the trajectories, decision
-points and an estimate of the tokens before any call. `max_cost_usd` (`--max-cost`) stops discovery when
-the LLM cost exceeds it; it needs the model's prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}`
-(`--price-in`, `--price-out`), and is refused for a model without a price. Run directories hold trajectory text and live outside the repository
+trajectory before anything is sent) to scrub personal data; the trajectories' file names are sent as they are
+(the analyzer prompt names its trajectory file), so rename files whose names are personal. `redact` changes
+the onboarding trajectories only: `head.decide(prefix, ...)` does not apply it, so apply the same function to
+live prefixes when it changes fields the extractor reads. `--dry-run` reports the trajectories, decision
+points and an estimate of the tokens before any call, plus any problem that would stop a real run (see
+below). `max_cost_usd` (`--max-cost`) stops discovery before a call whose estimated cost (its prompt plus the
+stage's mean answer, counting calls already in flight) would take the total past it; it needs the model's
+prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}` (`--price-in`, `--price-out`), and is refused for a
+model without a price. Run directories hold trajectory text and live outside the repository
 (`~/.cache/tabagent/runs` by default).
+
+## LLM providers
+
+`tabagent.onboard` builds the LLM from the model name and the environment (`tabagent.tabschema.llm.auto_llm`):
+
+1. `--model provider/name` for a LiteLLM provider (`anthropic/...`, `gemini/...`, `mistral/...`, `bedrock/...`,
+   `vertex_ai/...`, `groq/...`, `ollama/...`, ...) goes through LiteLLM (`pip install "tabagent[llm]"`),
+   even when `OPENAI_API_KEY` is also set;
+2. `AZURE_OPENAI_ENDPOINT` (with `AZURE_OPENAI_API_KEY`, and `OPENAI_API_VERSION`, default `2024-10-21`)
+   selects a classic Azure OpenAI resource; the model is the deployment name;
+3. `OPENAI_API_KEY`, or `OPENAI_BASE_URL` alone for a server that needs no key (vLLM, Ollama), selects the
+   OpenAI-compatible client; on such a server a model name may contain a slash;
+4. otherwise the provider whose key is set (`ANTHROPIC_API_KEY`, `GEMINI_API_KEY`, `MISTRAL_API_KEY`).
+
+Every stage sends its prompt as the system message followed by a one-line user turn (some providers,
+Anthropic among them, reject a request without one). The per-decision-point stages may answer up to 16,000
+tokens and the whole-run stages (the FeatureAggregator, the three judges and the MetaJudge) up to 32,000; a
+model with a lower output limit is retried at its own limit. An answer that stops at the limit raises
+`LLMTruncated` (on one decision point it only skips that point). The whole-run stages see at most 40
+(aggregator) or 25 (judges, MetaJudge) features per call, so that no answer has to restate an arbitrarily long
+list; up to those sizes every feature is handled in one call, as in the paper.
+
+## When something goes wrong
+
+Before any LLM call, onboarding checks the data and stops with a message that says what to change: no
+successful trajectories, fewer than 2 decision points, decision points of a single task, an adapter that
+gives no labels or candidates (for generic JSON, `candidates_fn=` and `labels_fn=`), no chosen candidate among
+the offered ones (the catalog and the logged choices use different names), or several labels on a
+`kind="single"` decision. A dry run lists these problems instead of stopping.
+
+During discovery:
+
+* **A decision point that fails** (an unusable or truncated answer, a provider error such as a context
+  overflow, code that never runs) is skipped, recorded in `analysis.json` with its error, and counted in the
+  report; the run goes on with the others. When every point fails, the error names the first cause.
+* **Extraction code** gets the first attempt and three retries; each retry shows every earlier error. An
+  answer without code counts as a failed attempt. Code may print freely, and fails only the trajectory on
+  which it raises, calls `exit()`, runs past `timeout_s` or returns something other than a flat dict of JSON
+  scalars. In the compile step at most `1 - compile_min_success` of the decision points may fail; those rows
+  get empty features, as they do at serving time.
+* **Very long traces** reach the FeatureAnalyzer with their longest strings clipped once their JSON passes
+  `TabSchemaConfig.max_prompt_chars` (400,000 characters); the extraction code always runs on the full prefix.
+* **The MetaJudge** decides only on features the FeatureAggregator kept; a decision on another name is reported
+  under `dropped`. Only `accept` decisions are compiled by default: add `"conditional"` to
+  `TabSchemaConfig.accept` to also keep conditionally accepted features. A run in which no feature is
+  accepted stops with an error that says so.
+* **The compiled extractor** keeps only columns that implement an accepted feature (the feature itself, a
+  sub-key of it, or it under a group prefix), that do not reuse a column name of the decision table (`task`,
+  `decision_id`, `candidate`, `chosen`, `candidate_name`, ...), and that pass the quality gates; every other
+  column is listed under `dropped` with the reason. A presence flag (`True` where present, missing elsewhere)
+  is kept. An unusable CodeValidator answer leaves the deterministic checks in charge, with a note. A column
+  that lists earlier candidates (the tools called before the decision, say) becomes the context of the card's
+  fitted co-usage statistic (`fitted:co_usage`).
+
+A run that stops (a spent budget, no accepted feature, an extractor that cannot be compiled, a provider that
+stays down) leaves a partial `report.md` and every paid answer in its run directory. Rerun with the same
+`run_dir` (`--run-dir`, the run directory itself) to resume: answers the directory holds cost nothing, while
+answers that could not be used are asked again. The report and the card count those reused answers at the
+cost they had when first paid. Two runs on one run directory at once are safe, but may pay twice for the same
+answer. The same trajectories and the same answers give a byte-identical `card.yaml` and `extract.py`; the card
+holds no local paths.
+
+The sandbox isolates accidents, not adversaries. It runs the code in a fresh interpreter without environment
+variables (no API keys), with CPU-time and file-size limits, a memory limit on Linux (`mem_mb`), at most 50
+trajectories per interpreter and `timeout_s` per trajectory; the deterministic checks refuse code that opens
+files, imports modules beyond a small standard-library list, or reaches for interpreter internals. Use
+`DockerSandbox` (no network, read-only filesystem, 1 GB) for code or traces you do not trust:
+`tabagent.onboard(..., sandbox="docker")` runs discovery, the decision table and the returned head in it.
 
 ## Review the extractor
 
 The saved head contains `extract.py`, the code TabSchema compiled. Read it before serving with
-`--trust-extractor` (in-process, sub-millisecond); without that flag it runs in the sandbox.
+`--trust-extractor` (in-process, sub-millisecond); without that flag it runs in the sandbox. Both modes give
+the same features: in-process, the code sees a JSON copy of the prefix, as in the sandbox, and cannot change
+the caller's. Build live prefixes with the adapter's `live_prefix` (chat logs, CUGA and generic JSON), which
+builds them exactly as in training.
 
 ## Estimate the whole pipeline, discovery included
 

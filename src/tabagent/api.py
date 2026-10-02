@@ -48,7 +48,7 @@ from tabagent.tabschema.orchestrator import (
 )
 from tabagent.tabschema.runstore import RunStore
 from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
-from tabagent.tabschema.trajectory import Candidate, Trajectory, get_json_schema
+from tabagent.tabschema.trajectory import Candidate, Trajectory, clip_for_prompt, union_schema
 
 logger = logging.getLogger(__name__)
 
@@ -57,7 +57,8 @@ HEAD_FORMAT = 1
 
 @dataclass
 class DryRun:
-    """What discovery would process, and an estimate of its size (4 characters per token)."""
+    """What discovery would process, an estimate of its size (4 characters per token), and the problems that
+    would stop a real run before any LLM call (``problems``)."""
 
     n_trajectories: int
     n_successful: int
@@ -68,6 +69,7 @@ class DryRun:
     est_cost_usd: float | None
     components: dict[str, int] = field(default_factory=dict)
     model: str = DEFAULT_MODEL
+    problems: list[str] = field(default_factory=list)
 
     def __str__(self) -> str:
         cost = (
@@ -75,10 +77,12 @@ class DryRun:
             if self.est_cost_usd is not None
             else f"unknown (no price for {self.model}; pass prices= or --price-in/--price-out)"
         )
+        problems = "".join(f"\nA real run would stop before any LLM call: {p}" for p in self.problems)
         return (
             f"{self.n_trajectories} trajectories ({self.n_successful} successful), "
             f"{self.n_decision_points} decision points, {self.n_analyzed} analyzed by the LLM; "
             f"~{self.est_input_tokens:,} input / ~{self.est_output_tokens:,} output tokens; est. cost {cost}"
+            f"{problems}"
         )
 
 
@@ -445,42 +449,116 @@ def _explain(error: str, prefix: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- onboarding
-# Rough sizes for the dry-run estimate (characters; 4 characters per token). Per sampled decision point the
-# analyzer sees the prefix twice (JSON and schema) and the target step; the extractor sees its prompt, the
-# prefix schema and the feature plans and is retried about every other time; the validator sees as much as
-# the extractor. The whole-run calls are the aggregator, the three judges, the MetaJudge and the compile
-# validator; compiling takes about two extractor calls. Every call answers about 1,500 tokens.
-_PLAN_CHARS = 4000  # feature plans in an extractor prompt
-_RETRY_FACTOR = 1.5  # extractor calls per sampled decision point, retries included
-_WHOLE_RUN_CALLS, _WHOLE_RUN_CHARS = 6, 8000
-_COMPILE_CALLS, _COMPILE_CHARS = 2, 12000
-_CALLS_PER_POINT, _EXTRA_CALLS, _ANSWER_TOKENS = 3, 8, 1500
+# Rough sizes for the dry-run estimate (characters; 4 characters per token). The estimate follows the stages:
+# per sampled decision point the analyzer (the clipped prefix as indented JSON, its schema, the target step),
+# the extractor (the plans of the point's proposals, retried about every other time) and the validator; then
+# the aggregator (40 proposals per call), the three judges and the MetaJudge (25 features per call) on the
+# distinct proposals, and the compile step (extractor and validator on the accepted features).
+_PROPOSALS = 12  # features an analyzer answer proposes
+_NEW_SHARE = 0.5  # share of a further decision point's proposals that no earlier point proposed
+_KEPT_SHARE, _ACCEPTED_SHARE = 0.6, 0.5  # of the distinct proposals: aggregated, then accepted
+_SPEC_CHARS, _ROW_CHARS, _CODE_CHARS = 600, 1500, 6000  # one feature plan, one MetaJudge row, extractor code
+_RETRY_FACTOR = 1.5  # extractor calls per extraction, retries included
+_TOKENS_PER_PROPOSAL = {"analyzer": 150, "validator": 60, "aggregator": 170, "judge": 150, "meta": 200}
+_CODE_TOKENS = 2000  # an extractor answer (thoughts and code)
 
 
-def _estimate(sample, prices: dict | None, model: str) -> tuple[int, int, float | None]:
+def _estimate(
+    sample, prices: dict | None, model: str, max_chars: int = 400_000
+) -> tuple[int, int, float | None]:
     """Estimated (input tokens, output tokens, USD or None without a price) of discovering on ``sample``."""
+    text = prompts.text
+    n = len(sample)
+    unique = _PROPOSALS * (1 + _NEW_SHARE * max(0, n - 1)) if n else 0
+    kept, accepted = _KEPT_SHARE * unique, _ACCEPTED_SHARE * _KEPT_SHARE * unique
+    schemas = [len(json.dumps(union_schema([dp.prefix]), default=str)) for dp in sample]
     analyzer = sum(
-        len(prompts.text("feature_analyzer"))
-        + 2 * len(json.dumps(dp.prefix, default=str))
-        + len(json.dumps(dp.target_step, default=str))
-        for dp in sample
+        len(text("feature_analyzer"))
+        + len(json.dumps(clip_for_prompt(dp.prefix, max_chars), indent=2, default=str, ensure_ascii=False))
+        + schema
+        + len(json.dumps(clip_for_prompt(dp.target_step, max_chars // 4), indent=2, default=str))
+        for dp, schema in zip(sample, schemas, strict=True)
     )
-    extractor = int(
-        _RETRY_FACTOR
-        * sum(
-            len(prompts.text("code_extractor")) + len(str(get_json_schema(dp.prefix))) + _PLAN_CHARS
-            for dp in sample
-        )
+    plans = _PROPOSALS * _SPEC_CHARS
+    extractor = _RETRY_FACTOR * sum(
+        len(text("code_extractor")) + s + plans + _CODE_CHARS / 2 for s in schemas
     )
-    whole_run = _WHOLE_RUN_CALLS * (len(prompts.text("meta_judge")) + _WHOLE_RUN_CHARS)
-    compile_ = _COMPILE_CALLS * (len(prompts.text("code_extractor")) + _COMPILE_CHARS)
-    chars_in = analyzer + 2 * extractor + whole_run + compile_
-    tokens_in = chars_in // 4
-    tokens_out = (len(sample) * _CALLS_PER_POINT + _EXTRA_CALLS) * _ANSWER_TOKENS
+    validator = sum(len(text("code_validator")) + s + plans + _CODE_CHARS for s in schemas)
+    schema = max(schemas, default=0)
+    whole_run = (
+        np.ceil(unique / 40) * len(text("feature_aggregator"))
+        + unique * _SPEC_CHARS
+        + 3 * (np.ceil(kept / 25) * len(text("judge_relevance")) + kept * _SPEC_CHARS)
+        + np.ceil(kept / 25) * len(text("meta_judge"))
+        + kept * _ROW_CHARS
+    )
+    compile_ = _RETRY_FACTOR * (len(text("code_extractor")) + schema + accepted * _SPEC_CHARS) + (
+        len(text("code_validator")) + schema + accepted * _SPEC_CHARS + _CODE_CHARS
+    )
+    tokens_in = int(analyzer + extractor + validator + whole_run + compile_) // 4
+    per = _TOKENS_PER_PROPOSAL
+    tokens_out = int(
+        n * (_PROPOSALS * (per["analyzer"] + per["validator"]) + _RETRY_FACTOR * _CODE_TOKENS)
+        + unique * per["aggregator"]
+        + kept * (3 * per["judge"] + per["meta"])
+        + _RETRY_FACTOR * _CODE_TOKENS
+        + accepted * per["validator"]
+    )
     if prices and model in prices:
         pin, pout = prices[model]
         return tokens_in, tokens_out, (tokens_in * pin + tokens_out * pout) / 1e6
     return tokens_in, tokens_out, None
+
+
+def _sandbox_from(spec: Any, timeout_s: float) -> SubprocessSandbox | None:
+    """The sandbox ``onboard``'s ``sandbox=`` names (None: TabSchema's default ``SubprocessSandbox``)."""
+    if spec is None or spec == "subprocess":
+        return None
+    if isinstance(spec, str) and (spec == "docker" or spec.startswith("docker:")):
+        image = spec.partition(":")[2]
+        return (
+            DockerSandbox(image=image, timeout_s=timeout_s) if image else DockerSandbox(timeout_s=timeout_s)
+        )
+    if hasattr(spec, "run_batch"):
+        return spec
+    raise ValueError(f"sandbox: 'subprocess', 'docker', 'docker:<image>' or a sandbox, not {spec!r}")
+
+
+def _preflight(adapter: Any, dps: list, decision: str, kind: str, probe: int = 50) -> None:
+    """Check, before any LLM call, that the data can make a decision table and a cross-validated report:
+    enough decision points and task groups, and an adapter that gives the decision's labels and candidates,
+    with chosen candidates among the offered ones (on the first ``probe`` decision points)."""
+    if len(dps) < 2:
+        raise ValueError(f"TabSchema needs at least 2 decision points of {decision!r}, found {len(dps)}")
+    groups = {str(dp.group or dp.trajectory_id) for dp in dps}
+    if len(groups) < 2:
+        raise ValueError(
+            f"the {len(dps)} {decision} decision points all come from one task group, and the grouped "
+            "cross-validation never splits a task across folds: it needs runs of at least 2 tasks"
+        )
+    some = dps[:probe]
+    labels = [set(adapter.labels(dp) or ()) for dp in some]  # an adapter without labels raises here
+    if kind == "single":
+        several = next((dp.id for dp, chosen in zip(some, labels, strict=True) if len(chosen) > 1), None)
+        if several:
+            raise ValueError(
+                f"kind='single' needs one label per decision, but {several} has several; use kind='ranking' "
+                "or 'multilabel'"
+            )
+        return
+    offered = [{c.id for c in adapter.candidates(dp)} for dp in some]
+    if not any(offered):
+        raise ValueError(
+            f"none of the first {len(some)} {decision} decision points has candidates: the adapter offers "
+            "nothing to choose from (pass a tool catalog, or candidates_fn=)"
+        )
+    if not any(chosen & cands for chosen, cands in zip(labels, offered, strict=True)):
+        seen = sorted(set().union(*labels))[:5]
+        raise ValueError(
+            f"in the first {len(some)} {decision} decision points no chosen candidate ({seen}) is among the "
+            f"offered ones ({sorted(set().union(*offered))[:5]}): the catalog and the logged choices must "
+            "use the same names"
+        )
 
 
 def onboard(
@@ -505,6 +583,7 @@ def onboard(
     config: TabSchemaConfig | None = None,
     gate_coverage: float | None = None,
     iterations: int | None = None,
+    sandbox: Any = None,
 ) -> TabAgentHead | DryRun:
     """Onboard an agent decision component from its logs (see the module docstring).
 
@@ -527,7 +606,12 @@ def onboard(
     llm_cost_per_call: the replaced LLM call's cost, to report the savings.
     trust_extractor: run the LLM-written extractor in-process. Off by default: the extractor then runs in
         the sandbox, since trajectories are untrusted text that reaches the LLM writing the code.
-    run_dir: TabSchema run directory (default under ``$TABAGENT_CACHE/runs``); a rerun resumes from it.
+    sandbox: where the LLM-written code runs, in discovery, in the decision table and in the returned head:
+        ``"subprocess"`` (the default, ``SubprocessSandbox``), ``"docker"`` or ``"docker:<image>"``
+        (``DockerSandbox``: no network, read-only filesystem), or a sandbox instance. Not with
+        ``trust_extractor``.
+    run_dir: the TabSchema run directory itself (default: a new one under ``$TABAGENT_CACHE/runs``). A rerun
+        with the same ``run_dir`` resumes from it: answers it already holds cost nothing.
     config: a full ``TabSchemaConfig``; it then also sets ``model``, ``n_analyze``, ``max_cost_usd`` and
         ``prices``, which must not be passed separately.
     gate_coverage: calibrate the confidence gate so this share of decisions stays with the head (rankings).
@@ -536,6 +620,10 @@ def onboard(
     Returns
     -------
     The fitted ``TabAgentHead``, or a ``DryRun`` with ``dry_run=True``.
+
+    Before any LLM call (and in a dry run) the data is checked: some trajectories must be successful, the
+    decision must occur at least twice in at least 2 task groups, and the adapter must give its labels and
+    candidates; otherwise ``ValueError`` (or the adapter's ``NotImplementedError``) says why.
     """
     given = {
         "model": model,
@@ -551,14 +639,30 @@ def onboard(
             raise ValueError("gate_coverage calibrates a ranking gate; it does not apply to kind='single'")
         if not 0 < gate_coverage <= 1:
             raise ValueError("gate_coverage must be in (0, 1]")
+    if trust_extractor and sandbox not in (None, "subprocess"):
+        raise ValueError(
+            "trust_extractor=True runs the extractor in-process, outside any sandbox; drop sandbox= or "
+            "trust_extractor="
+        )
     if adapter == "auto":
-        from tabagent.adapters import detect_adapter
+        from tabagent.adapters import GenericJsonAdapter, detect_adapter, detect_format
 
-        adapter = detect_adapter(logs)
+        if isinstance(logs, (str, Path)):
+            adapter = detect_adapter(logs)
+        else:  # Trajectory objects: detect the format from the first raw run
+            logs = list(logs)
+            if not logs:
+                raise ValueError("no trajectories given")
+            adapter = (detect_format(logs[0].raw) or GenericJsonAdapter)()
     trajs = adapter.load(logs) if isinstance(logs, (str, Path)) else list(logs)
     if redact is not None:  # applied before anything can reach the LLM provider
         trajs = [Trajectory(t.id, redact(t.raw), t.success, t.group, t.source) for t in trajs]
     good = [t for t in trajs if t.success]
+    if not good:
+        raise ValueError(
+            f"no successful trajectories among the {len(trajs)} loaded: TabSchema learns from successful "
+            "runs only (check the outcome field the adapter reads)"
+        )
     comps = adapter.components(good) if hasattr(adapter, "components") else {}
     if decision is None:
         if len(comps) == 1:
@@ -575,14 +679,22 @@ def onboard(
     )
     cfg = config or TabSchemaConfig(**{k: v for k, v in given.items() if v is not None})
     if dry_run:
+        try:
+            _preflight(adapter, dps, decision, kind)
+            problems = []
+        except (ValueError, NotImplementedError) as e:
+            problems = [str(e)]
         sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
-        tin, tout, cost = _estimate(sample, cfg.prices, name)
-        return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name)
+        tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars)
+        return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name, problems)
 
     llm = llm or auto_llm(cfg.model)
-    store = RunStore(run_dir) if run_dir else RunStore()
-    schema = TabSchema(llm, cfg, adapter, store=store)  # checks the budget can be enforced
+    box = _sandbox_from(sandbox, cfg.timeout_s)
+    schema = TabSchema(llm, cfg, adapter, sandbox=box)  # checks the budget can be enforced
+    _preflight(adapter, dps, decision, kind)  # and the data, still before any LLM call
+    run = Path(run_dir) if run_dir else None
+    schema.store = RunStore(run.parent, run.name) if run else RunStore()
     result = schema.discover(good, decision, kind)
     logger.info(
         "building the decision table (extractor %s)", "in-process" if trust_extractor else "sandboxed"
@@ -612,6 +724,9 @@ def onboard(
         rep,
         result.report,
         trust_extractor=trust_extractor,
+        adapter=adapter,  # head.json records it, so live prefixes are built as in training
+        sandbox=sandbox,
+        redact=redact,  # and the redaction function's import path
     )
     if gate_coverage is not None:
         head.calibrate_gate(rep.cv, gate_coverage)

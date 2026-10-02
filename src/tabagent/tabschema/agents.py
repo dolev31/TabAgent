@@ -16,10 +16,19 @@ from dataclasses import asdict, dataclass, field
 from typing import Any
 
 from tabagent.tabschema import checks, prompts
-from tabagent.tabschema.llm import LLM, CostMeter, extract_code, extract_json
+from tabagent.tabschema.llm import (
+    LLM,
+    CostMeter,
+    LLMFormatError,
+    LLMResponse,
+    LLMTruncated,
+    extract_code,
+    extract_json,
+    is_truncated,
+)
 from tabagent.tabschema.runstore import RunStore
 from tabagent.tabschema.sandbox import ExecResult, SubprocessSandbox
-from tabagent.tabschema.trajectory import DecisionPoint, get_json_schema
+from tabagent.tabschema.trajectory import DecisionPoint, clip_for_prompt, get_json_schema, union_schema
 
 SPEC_FIELDS = (
     "feature_name",
@@ -33,10 +42,6 @@ SPEC_FIELDS = (
 JSON_REPAIR = (
     "\n\nYour previous answer could not be parsed. Return only the requested JSON, with no other text."
 )
-
-
-class LLMFormatError(ValueError):
-    """The model's answer could not be parsed after the allowed repair attempts."""
 
 
 @dataclass
@@ -56,11 +61,16 @@ class FeatureSpec:
 
     @classmethod
     def from_dict(cls, d: dict[str, Any]) -> FeatureSpec:
-        known = {
-            k: (str(v) if k != "support" else int(v)) for k, v in d.items() if k in cls.__dataclass_fields__
-        }
-        known.setdefault("feature_name", str(d.get("name", "")))
-        return cls(**known)
+        """A spec from one JSON item of a model answer: text fields are coerced to strings, null fields
+        count as absent (a null name is no name), and an unreadable ``support`` counts as 1."""
+        known = {k: v for k, v in d.items() if k in cls.__dataclass_fields__ and v is not None}
+        if "feature_name" not in known:
+            known["feature_name"] = d["name"] if d.get("name") is not None else ""
+        try:
+            support = int(known.pop("support", 1))
+        except (TypeError, ValueError):
+            support = 1
+        return cls(**{k: str(v) for k, v in known.items()}, support=support)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -71,12 +81,19 @@ class FeatureSpec:
 
 
 def normalize_name(name: str) -> str:
-    """Lowercase ``name`` and collapse each run of non-alphanumerics to ``_`` (the key features match on)."""
-    return re.sub(r"[^a-z0-9]+", "_", str(name).lower()).strip("_")
+    """Lowercase ``name`` and collapse each run of characters other than letters and digits (of any script)
+    to ``_`` (the key features match on)."""
+    return re.sub(r"[\W_]+", "_", str(name).lower()).strip("_")
 
 
 def _dump(obj: Any) -> str:
-    return json.dumps(obj, indent=2, default=str)
+    return json.dumps(obj, indent=2, default=str, ensure_ascii=False)
+
+
+def json_items(value: Any) -> list[dict[str, Any]]:
+    """The objects of a JSON list from a model answer; anything else (null, a number, a string, a mapping)
+    holds none."""
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
 
 
 class Stage:
@@ -89,22 +106,63 @@ class Stage:
     ):
         self.llm, self.meter, self.store, self.json_retries = llm, meter or CostMeter(), store, json_retries
 
-    def call(self, prompt: str) -> str:
-        """One LLM call. With a run store, calls are content-addressed: a resumed or repeated run reuses
-        stored answers instead of paying for them again."""
-        if self.store is None:
-            return self._live(prompt).text
-        key = {
+    def _key(self, prompt: str) -> dict[str, str]:
+        return {
             "role": self.role,
             "model": self.llm.model,
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         }
-        return self.store.cached("llm", key, lambda: self._live(prompt).text)
 
-    def _live(self, prompt: str):
+    def call(self, prompt: str) -> str:
+        """One LLM call. With a run store, calls are content-addressed: a resumed or repeated run reuses
+        stored answers instead of paying for them again (the meter counts them as cached, at the cost they
+        had when first paid)."""
+        if self.store is None:
+            return self._live(prompt).text
+        paid: list[LLMResponse] = []
+
+        def fetch() -> dict[str, Any]:
+            r = self._live(prompt)
+            paid.append(r)
+            return {
+                "text": r.text,
+                "model": r.model,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+            }
+
+        value = self.store.cached("llm", self._key(prompt), fetch)
+        if not isinstance(value, dict):  # a cache entry written before usage was stored with the answer
+            value = {"text": value}
+        if not paid:
+            self.meter.record_cached(
+                self.role,
+                LLMResponse(
+                    value["text"],
+                    value.get("model", self.llm.model),
+                    value.get("input_tokens", 0),
+                    value.get("output_tokens", 0),
+                ),
+            )
+        return value["text"]
+
+    def forget(self, prompts: list[str]) -> None:
+        """Drop the stored answers to ``prompts``, so a rerun asks again instead of replaying an answer that
+        could not be used."""
+        if self.store is not None:
+            for p in prompts:
+                self.store.forget("llm", self._key(p))
+
+    def _live(self, prompt: str) -> LLMResponse:
         self.meter.check()  # a spent budget stops every stage before its next paid call
-        r = self.llm.complete(prompt, role=self.role)
-        self.meter.record(self.role, r)
+        est = self.meter.reserve(self.role, self.llm.model, len(prompt))  # and so does one about to be
+        try:
+            r = self.llm.complete(prompt, role=self.role)
+        finally:
+            self.meter.release(est)
+        # A paid answer is kept (and cached) even when it crosses the budget; the check before the next call
+        # stops the run, and a resumed run does not pay for this one again.
+        self.meter.record(self.role, r, check=False)
         if self.store is not None:
             self.store.log_call(
                 {
@@ -113,44 +171,57 @@ class Stage:
                     "input_tokens": r.input_tokens,
                     "output_tokens": r.output_tokens,
                     "latency_s": round(r.latency_s, 3),
+                    "finish_reason": r.finish_reason,
                 }
+            )
+        if is_truncated(r.finish_reason):
+            raise LLMTruncated(
+                f"{self.role}: the answer stopped at the model's output limit ({r.output_tokens} tokens), so "
+                "it is incomplete; raise the backend's max_tokens (whole_run_max_tokens for the aggregator, "
+                "the judges and the MetaJudge)"
             )
         return r
 
     def ask_json(self, prompt: str) -> Any:
         """Call the LLM and parse its answer as JSON, re-asking up to ``json_retries`` times."""
+        asked = [prompt]
         text = self.call(prompt)
         for attempt in range(self.json_retries + 1):
             try:
                 return extract_json(text)
             except ValueError:
                 if attempt == self.json_retries:
+                    self.forget(asked)
                     raise LLMFormatError(f"{self.role}: unparseable answer: {text[:300]!r}") from None
-                text = self.call(prompt + JSON_REPAIR)
+                asked.append(prompt + JSON_REPAIR)
+                text = self.call(asked[-1])
         raise RuntimeError("unreachable")
 
 
 # --------------------------------------------------------------------------- analyzer
 class FeatureAnalyzer(Stage):
-    """Proposes features from one decision point: its prefix, schema and the target step."""
+    """Proposes features from one decision point: its prefix, schema and the target step. Prefixes whose JSON
+    exceeds ``max_chars`` characters reach the prompt with their longest strings clipped
+    (:func:`~tabagent.tabschema.trajectory.clip_for_prompt`); the schema always describes the full prefix."""
 
     role = "analyzer"
+    max_chars = 400_000
 
     def __call__(self, dp: DecisionPoint, target: str) -> list[FeatureSpec]:
         prompt = prompts.render(
             "feature_analyzer",
-            trajectory_json=_dump(dp.prefix),
-            trajectory_schema=get_json_schema(dp.prefix),
+            trajectory_json=_dump(clip_for_prompt(dp.prefix, self.max_chars)),
+            trajectory_schema=union_schema([dp.prefix]),
             target_name=target,
-            target_json=_dump(dp.target_step),
+            target_json=_dump(clip_for_prompt(dp.target_step, self.max_chars // 4)),
             trajectory_file=dp.source or dp.trajectory_id,
         )
         out = self.ask_json(prompt)
-        items = out.get("potential_features", []) if isinstance(out, dict) else out
-        specs = [FeatureSpec.from_dict(x) for x in items if isinstance(x, dict)]
+        items = out.get("potential_features") if isinstance(out, dict) else out
+        specs = [FeatureSpec.from_dict(x) for x in json_items(items)]
         for s in specs:
             s.trajectory_file = s.trajectory_file or dp.source
-        return [s for s in specs if s.feature_name]
+        return [s for s in specs if s.key]
 
 
 # --------------------------------------------------------------------------- extraction code
@@ -188,7 +259,7 @@ class CodeExtractor(Stage):
         prompt = prompts.render(
             "code_extractor",
             potential_features=_dump(spec_dicts),
-            trajectory_schema=get_json_schema(schema_example),
+            trajectory_schema=union_schema([schema_example]),
             features_schema=get_json_schema(spec_dicts),
             target_name=target,
             retry_block=retry_block,
@@ -197,7 +268,13 @@ class CodeExtractor(Stage):
         try:
             return extract_code(text)
         except ValueError:
-            return extract_code(self.call(prompt + "\n\nReturn the code between <code> and </code> tags."))
+            pass
+        retry = prompt + "\n\nReturn the code between <code> and </code> tags."
+        try:
+            return extract_code(self.call(retry))
+        except ValueError:
+            self.forget([prompt, retry])
+            raise LLMFormatError(f"{self.role}: no code in the answer: {text[:300]!r}") from None
 
 
 @dataclass
@@ -230,22 +307,27 @@ class CodeExecutor:
 
     def run(self, code: str, prefixes: list[dict]) -> ExtractionAttempt:
         """Check ``code`` statically, then run it on every prefix; fail above ``max_failure_rate``."""
-        fatal = {"syntax", "import", "call", "uses_get", "unknown_field", "outcome_field"}
+        fatal = {"syntax", "import", "call", "dunder", "uses_get", "unknown_field", "outcome_field"}
         issues = [i for i in checks.check_code(code, self.known_paths, self.outcome_keys) if i.kind in fatal]
         if issues:
             msg = "The code violates the extraction rules:\n" + "\n".join(f"- {i}" for i in issues)
             return ExtractionAttempt(code, False, issues=[str(i) for i in issues], error=msg)
         results = self.sandbox.run_batch(code, prefixes)
+        out_issues: list[str] = []
+        for n, r in enumerate(results):  # an output that is not a flat dict of JSON scalars is a failure
+            bad = [str(i) for i in checks.check_output(r.features)] if r.ok else []
+            if bad:
+                out_issues += bad
+                results[n] = ExecResult(False, error="\n".join(bad))
         failed = [r for r in results if not r.ok]
-        out_issues = [str(i) for r in results if r.ok for i in checks.check_output(r.features)]
         rate = len(failed) / max(1, len(results))
-        if rate > self.max_failure_rate or (out_issues and len(prefixes) == 1):
-            error = failed[0].error if failed else "\n".join(sorted(set(out_issues))[:10])
-            if len(prefixes) > 1 and failed:
+        if rate > self.max_failure_rate:
+            error = str(failed[0].error)
+            if len(prefixes) > 1:
                 error = f"{len(failed)}/{len(results)} trajectories failed. First errors:\n" + "\n---\n".join(
-                    r.error for r in failed[:3]
+                    str(r.error) for r in failed[:3]
                 )
-            return ExtractionAttempt(code, False, results, out_issues, error)
+            return ExtractionAttempt(code, False, results, sorted(set(out_issues)), error)
         return ExtractionAttempt(code, True, results, sorted(set(out_issues)))
 
 
@@ -261,19 +343,42 @@ def extract_with_retries(
     """Generate, check and execute extraction code; on failure retry up to ``max_retries`` times with the
     error and the failed code in the prompt (App. D.1). Returns the final attempt and the history."""
     history: list[ExtractionAttempt] = []
+    errors: list[str] = []
     retry_block = ""
     for n in range(max_retries + 1):
-        code = extractor(specs, schema_example, target, retry_block)
-        attempt = executor.run(code, prefixes)
+        try:
+            code = extractor(specs, schema_example, target, retry_block)
+        except LLMFormatError as e:  # an answer without code is a failed attempt like any other
+            attempt = ExtractionAttempt("", False, error=str(e))
+        else:
+            attempt = executor.run(code, prefixes)
         history.append(attempt)
         if attempt.ok:
             return attempt, history
-        retry_block = generate_retry_prompt(n + 1, attempt.error, code)
+        errors.append(attempt.error)
+        retry_block = generate_retry_prompt(n + 1, previous_errors(errors), attempt.code)
     return history[-1], history
+
+
+def previous_errors(errors: list[str], limit: int = 6000) -> str:
+    """The errors of the failed attempts so far, for the retry prompt: the paper concatenates the prior traces
+    (App. D.1). One error is passed as is; several are labeled by attempt, each clipped, newest kept."""
+    if len(errors) == 1:
+        return errors[0]
+    text = "\n\n".join(f"[attempt {i}] {e[:2000]}" for i, e in enumerate(errors, 1))
+    return text[-limit:]
 
 
 # --------------------------------------------------------------------------- validator and aggregator
 VALID = "valid"
+VERDICTS = (VALID, "hallucinated_field", "plan_mismatch", "missing")
+
+
+def normalize_verdict(value: Any) -> str:
+    """Map a CodeValidator verdict onto ``valid``, ``hallucinated_field``, ``plan_mismatch`` or ``missing``,
+    tolerating case, punctuation and trailing explanations (``"Valid."``, ``"hallucinated field"``)."""
+    v = normalize_name(value)
+    return next((x for x in VERDICTS if v.startswith(x)), v)
 
 
 class CodeValidator(Stage):
@@ -290,38 +395,53 @@ class CodeValidator(Stage):
             "code_validator",
             target_name=target,
             feature_specs=_dump(spec_dicts),
-            trajectory_schema=get_json_schema(schema_example),
+            trajectory_schema=union_schema([schema_example]),
             code=code,
             sample_output=_dump(outputs[:3]),
         )
         out = self.ask_json(prompt)
-        items = out.get("features", []) if isinstance(out, dict) else out
+        items = out.get("features") if isinstance(out, dict) else out
         return {
-            normalize_name(x.get("feature_name", "")): str(x.get("verdict", "")).strip().lower()
-            for x in items
-            if isinstance(x, dict)
+            normalize_name(x.get("feature_name") or ""): normalize_verdict(x.get("verdict") or "")
+            for x in json_items(items)
         }
 
 
 class FeatureAggregator(Stage):
-    """Merges the proposals of all analyzed decision points; returns (kept, rejected) features."""
+    """Merges the proposals of all analyzed decision points; returns (kept, rejected) features, one per
+    normalized name. More than ``batch`` proposals are aggregated ``batch`` at a time (in the given order,
+    most supported first), so that no single answer has to restate every proposal."""
 
     role = "aggregator"
+    batch = 40
 
     def __call__(self, specs: list[FeatureSpec]) -> tuple[list[FeatureSpec], list[FeatureSpec]]:
+        support = {s.key: s.support for s in specs}
+        kept: dict[str, FeatureSpec] = {}
+        rejected: dict[str, FeatureSpec] = {}
+        for i in range(0, len(specs), self.batch):
+            k, r = self._aggregate(specs[i : i + self.batch])
+            for s in k:
+                kept.setdefault(s.key, s)
+            for s in r:
+                rejected.setdefault(s.key, s)
+        for s in [*kept.values(), *rejected.values()]:
+            s.support = support.get(s.key, s.support)
+        return list(kept.values()), [s for k, s in rejected.items() if k not in kept]
+
+    def _aggregate(self, specs: list[FeatureSpec]) -> tuple[list[FeatureSpec], list[FeatureSpec]]:
         dicts = [s.to_dict() for s in specs]
         out = self.ask_json(
             prompts.render(
                 "feature_aggregator", potential_features=_dump(dicts), features_schema=get_json_schema(dicts)
             )
         )
-        support = {s.key: s.support for s in specs}
+        if isinstance(out, list):  # a bare list: the features it keeps
+            out = {"filtered_features": out}
+        out = out if isinstance(out, dict) else {}
 
-        def parse(items):
-            res = [FeatureSpec.from_dict(x) for x in items or [] if isinstance(x, dict)]
-            for s in res:
-                s.support = support.get(s.key, s.support)
-            return [s for s in res if s.feature_name]
+        def parse(items: Any) -> list[FeatureSpec]:
+            return [s for s in map(FeatureSpec.from_dict, json_items(items)) if s.key]
 
         return parse(out.get("filtered_features")), parse(out.get("rejected_features"))
 

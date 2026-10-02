@@ -46,10 +46,10 @@ def describe(adapter: Any) -> dict[str, Any] | None:
             "max_chars": adapter.max_chars,
         }
     elif cls in (CugaAdapter, GenericJsonAdapter):
-        cfg = {k: getattr(adapter, k) for k in _STEP_KEYS}
+        cfg = {k: getattr(adapter, k) for k in (*_STEP_KEYS, "group_key", "task_keys")}
         out["config"] = {k: list(v) if isinstance(v, tuple) else v for k, v in cfg.items()}
-        if cls is CugaAdapter:
-            del out["config"]["steps_key"], out["config"]["step_name_key"]  # fixed by CugaAdapter
+        if cls is CugaAdapter:  # fixed by CugaAdapter
+            del out["config"]["steps_key"], out["config"]["step_name_key"], out["config"]["group_key"]
     return out
 
 

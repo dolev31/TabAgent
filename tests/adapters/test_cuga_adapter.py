@@ -40,9 +40,8 @@ def test_shortlister_prefix_labels_and_candidates(tmp_path):
     assert set(first.prefix) == {
         "intent",
         "dataset_name",
-        "task_id",
         "steps",
-    }  # no score, eval, actions_count
+    }  # no score, eval, actions_count, nor the task id (the CV group)
     names = {s["name"] for s in second.prefix["steps"]}
     assert SHORTLISTER in names and "CodeAgent" in names  # the first round is history for the second
     assert not names & {"EvaluationResult", "FinalAnswerAgent"} and "FINAL" not in json.dumps(second.prefix)

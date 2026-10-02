@@ -11,14 +11,20 @@ component needs:
 2. the code must pass the deterministic checks and run on all onboarding decision points, with at most
    ``1 - min_success`` failures; otherwise it is retried (up to three times) with the failing tracebacks;
 3. the CodeValidator reviews the final code and a sample of its outputs; features it flags as reading a
-   hallucinated field or not matching their plan are dropped;
-4. each output column must pass quality gates (non-constant, null rate, value type), and gets a frozen type.
+   hallucinated field or not matching their plan are dropped (an unusable validator answer leaves the
+   deterministic checks alone in charge, with a note);
+4. each output column must implement an accepted feature (its name, a sub-key of it, or it under a group
+   prefix), must not reuse a name of the decision table, and must pass quality gates (non-constant, null
+   rate, length); it then gets a frozen type: the plan's type for the feature itself, the data's for a
+   sub-key;
+5. a kept column that lists earlier candidates (the tools called before the decision, say) becomes the
+   context of the card's fitted co-usage statistic (``co_usage_context``).
 """
 
 from __future__ import annotations
 
-import copy
 import hashlib
+import json
 import warnings
 from dataclasses import dataclass, field
 from typing import Any
@@ -31,13 +37,18 @@ from tabagent.tabschema.agents import (
     CodeExtractor,
     CodeValidator,
     FeatureSpec,
+    LLMFormatError,
     extract_with_retries,
     normalize_name,
 )
+from tabagent.tabschema.fitted import context_items
 from tabagent.tabschema.sandbox import SubprocessSandbox
-from tabagent.tabschema.trajectory import DecisionPoint
+from tabagent.tabschema.trajectory import DecisionPoint, merge_examples
 
 TEXT_CAP = 20_000
+CAT_MAX_CHARS = 64  # a "categorical" plan whose values are longer and mostly distinct is typed as text
+#: A co-usage context: most of its items are candidate ids, on enough rows, and it lists few of them per row.
+CO_USAGE_SHARE, CO_USAGE_ROWS, CO_USAGE_MAX_ITEMS = 0.8, 0.2, 0.5
 
 
 class ExtractionError(RuntimeError):
@@ -55,24 +66,13 @@ class CompiledExtractor:
     dropped: dict[str, str] = field(default_factory=dict)  # output column or feature -> reason
     quality: dict[str, dict] = field(default_factory=dict)
     attempts: int = 1
+    notes: list[str] = field(default_factory=list)
+    co_usage_context: str | None = None  # the column listing earlier candidates, if any
 
     @property
     def sha256(self) -> str:
         """SHA-256 of the code (recorded in the card, checked when a head is loaded)."""
         return hashlib.sha256(self.code.encode()).hexdigest()
-
-
-def merge_examples(values: list[Any]) -> Any:
-    """Deep-merge JSON values so one example shows every key seen in any of them (for the schema prompt)."""
-    if not values:
-        return {}
-    if all(isinstance(v, dict) for v in values):
-        keys = list(dict.fromkeys(k for v in values for k in v))
-        return {k: merge_examples([v[k] for v in values if k in v]) for k in keys}
-    if all(isinstance(v, list) for v in values):
-        items = [x for v in values for x in v[:3]]
-        return [merge_examples(items)] if items else []
-    return copy.deepcopy(values[0])
 
 
 def _resolve_type(spec_type: str, col: pd.Series) -> str:
@@ -84,7 +84,9 @@ def _resolve_type(spec_type: str, col: pd.Series) -> str:
     if t.startswith("numeric") and numeric >= 0.95:
         return "num"
     if t.startswith("categor"):
-        return "cat"
+        text = values.astype(str)
+        free_text = len(text) and text.str.len().mean() > CAT_MAX_CHARS and text.nunique() > len(text) / 2
+        return "text" if free_text else "cat"
     if t.startswith("text"):
         return "text"
     if pd.api.types.is_bool_dtype(values) or numeric >= 0.95:
@@ -92,12 +94,27 @@ def _resolve_type(spec_type: str, col: pd.Series) -> str:
     return infer_type(values.astype(str))
 
 
-def _match_spec(column: str, specs: dict[str, FeatureSpec]) -> FeatureSpec | None:
+def _match_spec(column: str, specs: dict[str, FeatureSpec]) -> tuple[FeatureSpec | None, bool]:
+    """The planned feature an output column implements and whether it is that feature itself: its name, or
+    its name under a group prefix (``text_features_user_intent``, from ``flatten_json``); a sub-key of it
+    (``user_intent_length``) is derived from it. (None, False) when the column is not in the plan."""
     key = normalize_name(column)
     if key in specs:
-        return specs[key]
-    prefixes = [k for k in specs if key.startswith(k + "_")]  # flattened sub-keys of a planned feature
-    return specs[max(prefixes, key=len)] if prefixes else None
+        return specs[key], True
+    grouped = [k for k in specs if key.endswith("_" + k)]
+    if grouped:
+        return specs[max(grouped, key=len)], True
+    derived = [k for k in specs if key.startswith(k + "_")]
+    return (specs[max(derived, key=len)], False) if derived else (None, False)
+
+
+def _is_flag(values: pd.Series) -> bool:
+    """A presence flag: one boolean value where present and missing elsewhere (``True``/``None``)."""
+    present = values.dropna()
+    return (
+        bool(len(present) and len(present) < len(values) and present.map(lambda v: isinstance(v, bool)).all())
+        and present.nunique() == 1
+    )
 
 
 def compile_extractor(
@@ -113,8 +130,12 @@ def compile_extractor(
     max_retries: int = 3,
     min_success: float = 0.95,
     max_null_rate: float = 0.5,
+    reserved: frozenset[str] | set[str] = frozenset(),
+    candidate_ids: frozenset[str] | set[str] = frozenset(),
 ) -> CompiledExtractor:
     """Write, check and quality-gate one extractor for the ``accepted`` features (see the module docstring).
+    Output columns named like a column of the decision table (``reserved``) are dropped; ``candidate_ids``
+    (the decision's candidates) find the co-usage context.
 
     Raises ``ExtractionError`` when no code runs on enough decision points or no column passes the gates.
     """
@@ -133,28 +154,36 @@ def compile_extractor(
     frame = pd.DataFrame([o or {} for o in outputs])
     ok_rows = np.array([o is not None for o in outputs])
     by_key = {s.key: s for s in accepted}
-    verdicts = (
-        validator(accepted, attempt.code, example, [o for o in outputs if o][:3], target) if validator else {}
-    )
-
     result = CompiledExtractor(attempt.code, {}, attempts=len(history))
+    try:
+        sample = [o for o in outputs if o][:3]
+        verdicts = validator(accepted, attempt.code, example, sample, target) if validator else {}
+    except LLMFormatError as e:  # the deterministic checks and the quality gates still apply
+        verdicts = {}
+        result.notes.append(f"the CodeValidator's answer was unusable, so no feature was judged by it ({e})")
+
     produced = set()
     for col in frame.columns:
-        spec = _match_spec(col, by_key)
+        spec, itself = _match_spec(col, by_key)
         verdict = verdicts.get(spec.key) if spec else None
         values = frame.loc[ok_rows, col]
         as_text = values.astype(str)
+        flag = _is_flag(values)
         empty = values.isna() | as_text.str.strip().isin(["", "None", "nan", "[]", "{}"])
         q = {
-            "null_rate": float(empty.mean()) if len(values) else 1.0,
-            "n_unique": int(values.nunique(dropna=True)),
+            "null_rate": 0.0 if flag else float(empty.mean()) if len(values) else 1.0,
+            "n_unique": int(values.nunique(dropna=False)),
             "spec": spec.feature_name if spec else None,
             "validator": verdict,
         }
         result.quality[col] = q
         if spec is not None:
             produced.add(spec.key)
-        if verdict in ("hallucinated_field", "plan_mismatch"):
+        if col in reserved:
+            result.dropped[col] = "name reserved by the decision table"
+        elif spec is None:
+            result.dropped[col] = "not in the accepted feature plan"
+        elif verdict in ("hallucinated_field", "plan_mismatch"):
             result.dropped[col] = f"CodeValidator: {verdict}"
         elif q["n_unique"] <= 1:
             result.dropped[col] = "constant across onboarding decision points"
@@ -163,25 +192,51 @@ def compile_extractor(
         elif as_text.str.len().mean() > TEXT_CAP:
             result.dropped[col] = f"mean length above {TEXT_CAP} characters"
         else:
-            result.features[col] = _resolve_type(spec.feature_type if spec else "computed", values)
-            result.specs[col] = (
-                spec.to_dict() if spec else {"feature_name": col, "note": "not in the feature plan"}
-            )
+            result.features[col] = _resolve_type(spec.feature_type if itself else "computed", values)
+            result.specs[col] = spec.to_dict()
     for key, spec in by_key.items():
         if key not in produced:
             result.dropped.setdefault(
                 spec.feature_name, "accepted but not produced by the compiled extractor"
             )
     if not result.features:
-        raise ExtractionError("every compiled feature failed the quality gates")
+        reasons = "; ".join(f"{k}: {v}" for k, v in result.dropped.items())
+        raise ExtractionError(f"every compiled feature failed the quality gates ({reasons[:1000]})")
+    if candidate_ids:
+        result.co_usage_context = _co_usage_context(result, frame.loc[ok_rows], set(candidate_ids))
     return result
+
+
+def _co_usage_context(result: CompiledExtractor, frame: pd.DataFrame, candidates: set[str]) -> str | None:
+    """The kept text or categorical column that best lists earlier candidates: at least ``CO_USAGE_SHARE`` of
+    its items are candidate ids, on at least ``CO_USAGE_ROWS`` of the rows, with at most
+    ``CO_USAGE_MAX_ITEMS`` of the candidates per row (a list of every offered candidate tells nothing). Its
+    statistics are recorded in ``quality``."""
+    best, best_share = None, 0.0
+    for col, typ in result.features.items():
+        if typ == "num":
+            continue
+        items = [context_items(v) for v in frame[col]]
+        flat = [x for it in items for x in it]
+        if not flat:
+            continue
+        share = sum(x in candidates for x in flat) / len(flat)
+        rows = sum(bool(it) for it in items) / len(items)
+        per_row = len(flat) / max(1, sum(bool(it) for it in items)) / len(candidates)
+        result.quality[col].update(candidate_share=round(share, 3), rows_with_candidates=round(rows, 3))
+        fits = share >= CO_USAGE_SHARE and rows >= CO_USAGE_ROWS and per_row <= CO_USAGE_MAX_ITEMS
+        if fits and share > best_share:
+            best, best_share = col, share
+    return best
 
 
 class ExtractorRunner:
     """Apply a compiled extractor to decision-point prefixes.
 
     By default the code runs in the sandbox. ``trust_extractor=True`` runs it in-process, which is fast but
-    gives the code the caller's privileges; use it only for an extractor you have reviewed. A prefix on
+    gives the code the caller's privileges; use it only for an extractor you have reviewed. In-process, the
+    code sees a JSON copy of the prefix and its features are read back through JSON, exactly as in the
+    sandbox, so both modes give identical features and the caller's prefix is never changed. A prefix on
     which the code fails yields ``None`` (no features); failures are counted in ``n_failed`` and reported
     with a ``RuntimeWarning`` naming the first error.
     """
@@ -207,10 +262,16 @@ class ExtractorRunner:
         else:
             out = []
             for p in prefixes:
-                ns: dict[str, Any] = {"__name__": "__main__", "trajectory": p}
+                ns: dict[str, Any] = {
+                    "__name__": "__main__",
+                    "trajectory": json.loads(json.dumps(p, default=str)),
+                }
                 try:
                     exec(self._compiled, ns)  # noqa: S102 - trusted, reviewed extractor
-                    out.append(ns["features"])
+                    feats = ns.get("features")
+                    if not isinstance(feats, dict):
+                        raise TypeError("the code must leave a dict named `features` in its global scope")
+                    out.append(json.loads(json.dumps(feats)))
                 except Exception as e:  # the extractor is arbitrary code: any failure means no features
                     out.append(None)
                     errors.append(f"{type(e).__name__}: {e}")

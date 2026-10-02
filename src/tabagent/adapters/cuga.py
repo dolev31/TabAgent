@@ -10,8 +10,10 @@ The built-in decision is the API shortlister (the paper's CUGA tool shortlisting
 (the ``Available APIs`` block of its prompt, else a catalog given here, e.g. CUGA API docs, else the APIs
 seen for that app across the loaded runs), and the labels are the APIs the ``CodeAgent`` then called
 (``call_api(app, api)``, app-prefixed as ``<app>_<api>``) before the next shortlisting. The prefix is the
-trajectory truncated before the step, without ``score``, ``eval``, ``actions_count`` (a post-hoc count) and
-the ``EvaluationResult`` step. Other components work with ``candidates_fn`` and ``labels_fn``.
+trajectory truncated before the step, with only the ``intent`` and ``dataset_name`` fields (``task_keys``;
+never the ``task_id``, the cross-validation group, nor ``score``, ``eval`` or ``actions_count``, a post-hoc
+count) and without the ``EvaluationResult`` step. Other components work with ``candidates_fn`` and
+``labels_fn``.
 
 For ``tabagent.scan``, every step of an agent node (or with recorded prompts) is an LLM call, one per recorded
 generation: the shortlister's choices are the APIs it returned, other nodes report the categorical fields of
@@ -38,10 +40,11 @@ from tabagent.tabschema.trajectory import (
     output_fields,
     parse_json,
     read_usage,
-    redact,
 )
 
 SHORTLISTER = "ShortlisterAgent"
+#: Top-level fields of a CUGA trajectory that its prefixes keep: what describes the task, never the task id.
+TASK_KEYS = ("intent", "dataset_name")
 CUGA_STEPS = frozenset(
     {
         "TaskAnalyzerAgent",
@@ -170,6 +173,7 @@ class CugaAdapter(GenericJsonAdapter):
         outcome_steps: Iterable[str] = ("EvaluationResult",),
         candidates_fn: Callable[[DecisionPoint], list[Candidate]] | None = None,
         labels_fn: Callable[[DecisionPoint, dict], set[str]] | None = None,
+        task_keys: Iterable[str] | None = TASK_KEYS,
     ):
         super().__init__(
             success=success or _score_positive,
@@ -178,6 +182,7 @@ class CugaAdapter(GenericJsonAdapter):
             outcome_steps=outcome_steps,
             candidates_fn=candidates_fn,
             labels_fn=labels_fn,
+            task_keys=task_keys,
         )
         self.target = SHORTLISTER
         self.catalog = _clean(parse_catalog(catalog))
@@ -268,8 +273,3 @@ class CugaAdapter(GenericJsonAdapter):
                 break
             out |= {api for _, api in called_apis(s)}
         return out
-
-    def live_prefix(self, raw: dict) -> dict[str, Any]:
-        """The prefix of a live decision: the trajectory so far, redacted exactly as in training."""
-        n = len(raw.get(self.steps_key, []))
-        return redact(raw, self.steps_key, n, self.outcome_keys, self.outcome_steps, self.step_name_key)

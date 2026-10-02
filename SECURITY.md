@@ -8,6 +8,8 @@ untrusted:
 
 - serving a head: `tabagent serve my_head --sandbox docker`, or `sandbox="docker"` in `tabagent.load`,
   `TabAgentHead.load` and `ToolFilter` (`"docker:<image>"` picks the image);
+- onboarding: `tabagent.onboard(..., sandbox="docker")` runs discovery, the decision table and the returned head
+  in Docker;
 - discovery: `TabSchema(llm, sandbox=DockerSandbox())` or `tabagent.cross_validate_discovery(...,
   sandbox=DockerSandbox())`, with `DockerSandbox` from `tabagent.tabschema.sandbox`.
 

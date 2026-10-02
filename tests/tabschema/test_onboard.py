@@ -122,7 +122,7 @@ def test_budget_with_a_price_is_enforced(logs, tmp_path):
             config=TabSchemaConfig(workers=1, max_cost_usd=1e-9, prices={"scripted": (1.0, 1.0)}),
             run_dir=tmp_path / "r",
         )
-    assert len(llm.calls) == 1  # the first priced call trips the budget
+    assert llm.calls == []  # no call starts whose estimated cost would exceed the budget
 
 
 def test_conflicting_arguments_are_rejected(logs):

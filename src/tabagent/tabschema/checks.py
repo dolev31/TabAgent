@@ -2,11 +2,13 @@
 
 They complement the CodeValidator (an LLM judge, paper App. D.1) with rules that need no model:
 
-* the code parses, imports only allowed standard-library modules, and calls no dangerous builtins;
+* the code parses, imports only allowed standard-library modules, calls no dangerous builtins and reaches
+  for no interpreter internals (``__builtins__``, ``obj.__class__.__subclasses__()``, ...), the usual ways
+  around the first two rules;
 * it follows the CodeExtractor contract (``dict['key']`` access, never ``.get()``; App. D.2);
 * every constant key path it reads from the trajectory exists in the union schema of the onboarding
   prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for);
-* it never reads post-hoc outcome fields (scores, rewards, evaluator results);
+* it never reads the trajectory's top-level post-hoc outcome fields (scores, rewards, evaluator results);
 * its output is a flat dict of JSON scalars.
 """
 
@@ -48,13 +50,14 @@ FORBIDDEN_CALLS = {
     "delattr",
 }
 ROOTS = ("trajectory_data", "trajectory")
+ALLOWED_DUNDERS = {"__name__", "__init__"}  # ``if __name__ == "__main__":``, ``type(v).__name__``, classes
 
 
 @dataclass(frozen=True)
 class Issue:
     """One rule violation found in extraction code or its output."""
 
-    kind: str  # syntax | import | call | uses_get | unknown_field | outcome_field | output
+    kind: str  # syntax | import | call | dunder | uses_get | unknown_field | outcome_field | output
     detail: str
 
     def __str__(self) -> str:
@@ -75,20 +78,50 @@ def _subscript_chain(node: ast.AST) -> tuple[str | None, list[str]]:
     return name, list(reversed(keys))
 
 
-def key_paths(tree: ast.AST) -> set[tuple[str, ...]]:
-    """Constant key paths read from the trajectory, following simple aliases (``steps = t['steps']``) and
-    loop variables (``for s in t['steps']``)."""
-    aliases: dict[str, tuple[str, ...]] = {r: () for r in ROOTS}
-    paths: set[tuple[str, ...]] = set()
+def _aliases(tree: ast.AST) -> dict[str, tuple[str, ...]]:
+    """Names that hold a part of the trajectory: the roots, and every name whose bindings (``x = t['a']``,
+    ``for s in t['steps']``) all resolve to one trajectory path. A name also bound to anything else (parsed
+    JSON, a parameter, a tuple unpacking) is not followed, wherever that binding is."""
+    binds: dict[str, list[tuple[str | None, list[str]]]] = {}
+    tracked: set[int] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
-            name, keys = _subscript_chain(node.value)
-            if name in aliases:
-                aliases[node.targets[0].id] = (*aliases[name], *keys)
+            binds.setdefault(node.targets[0].id, []).append(_subscript_chain(node.value))
+            tracked.add(id(node.targets[0]))
         elif isinstance(node, (ast.For, ast.comprehension)) and isinstance(node.target, ast.Name):
             name, keys = _subscript_chain(node.iter)
-            if name in aliases:
-                aliases[node.target.id] = (*aliases[name], *keys, "[]")
+            binds.setdefault(node.target.id, []).append((name, [*keys, "[]"]))
+            tracked.add(id(node.target))
+    other = {
+        n.id
+        for n in ast.walk(tree)
+        if isinstance(n, ast.Name) and isinstance(n.ctx, ast.Store) and id(n) not in tracked
+    }
+    other |= {a.arg for a in ast.walk(tree) if isinstance(a, ast.arg)}
+    aliases: dict[str, tuple[str, ...]] = {r: () for r in ROOTS}
+    for _ in range(len(binds) + 1):  # follow chains of aliases (``steps = t['steps']; for s in steps``)
+        changed = False
+        for var, bs in binds.items():
+            if var in ROOTS:
+                continue
+            paths = {(*aliases[n], *k) if n in aliases else None for n, k in bs}
+            new = next(iter(paths)) if len(paths) == 1 and var not in other else None
+            if new != aliases.get(var):
+                if new is None:
+                    del aliases[var]
+                else:
+                    aliases[var] = new
+                changed = True
+        if not changed:
+            break
+    return aliases
+
+
+def key_paths(tree: ast.AST) -> set[tuple[str, ...]]:
+    """Constant key paths read from the trajectory, following aliases (``steps = t['steps']``) and loop
+    variables (``for s in t['steps']``); see :func:`_aliases`."""
+    aliases = _aliases(tree)
+    paths: set[tuple[str, ...]] = set()
     for node in ast.walk(tree):
         if isinstance(node, ast.Subscript) and not isinstance(getattr(node, "parent", None), ast.Subscript):
             name, keys = _subscript_chain(node)
@@ -135,8 +168,11 @@ def check_code(
                 issues.append(Issue("call", f.id))
             if isinstance(f, ast.Attribute) and f.attr == "get":
                 issues.append(Issue("uses_get", f"line {node.lineno}: use dict['key'] instead of .get()"))
+        name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else ""
+        if name.startswith("__") and name.endswith("__") and name not in ALLOWED_DUNDERS:
+            issues.append(Issue("dunder", f"line {node.lineno}: {name}"))
     for path in sorted(key_paths(tree)):
-        if any(p in outcome_keys for p in path):
+        if path and path[0] in outcome_keys:  # a top-level outcome; nested fields of earlier steps are data
             issues.append(Issue("outcome_field", ".".join(path)))
         elif known_paths is not None and not _covered(path, known_paths):
             issues.append(Issue("unknown_field", ".".join(path)))

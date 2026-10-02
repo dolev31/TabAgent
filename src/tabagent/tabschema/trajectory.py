@@ -7,8 +7,9 @@ component being replaced (for example ``ShortlisterAgent``) inside a successful 
 
 Features use only what precedes the decision (App. D.2, FeatureAnalyzer and CodeExtractor prompts), and this
 is enforced structurally: the ``prefix`` a decision point exposes is a copy of the trajectory truncated
-before the decision step, with post-hoc outcome fields (scores, evaluator results) removed. Extraction code
-never receives the decision step, later steps, or outcomes.
+before the decision step, holding only whitelisted task fields (``task_keys``; never outcome fields such as
+scores, evaluator results or final answers). Extraction code never receives the decision step, later steps,
+or outcomes.
 """
 
 from __future__ import annotations
@@ -103,18 +104,60 @@ def redact(
     outcome_keys: Iterable[str],
     outcome_steps: Iterable[str],
     step_name_key: str,
+    keep: Iterable[str] | None = None,
 ) -> dict[str, Any]:
-    """Copy of ``raw`` with steps ``[:cut]`` only, top-level outcome keys removed, outcome steps dropped."""
-    out = {k: copy.deepcopy(v) for k, v in raw.items() if k != steps_key and k not in set(outcome_keys)}
+    """Copy of ``raw`` with steps ``[:cut]`` only, top-level outcome keys removed (and, with ``keep``, every
+    top-level key not in it), outcome steps dropped. A missing or malformed steps value counts as no steps."""
+    allowed = None if keep is None else set(keep)
+    out = {
+        k: copy.deepcopy(v)
+        for k, v in raw.items()
+        if k != steps_key and k not in set(outcome_keys) and (allowed is None or k in allowed)
+    }
     drop = set(outcome_steps)
     out[steps_key] = [
-        copy.deepcopy(s) for s in raw.get(steps_key, [])[:cut] if s.get(step_name_key) not in drop
+        copy.deepcopy(s)
+        for s in steps_of(raw, steps_key)[:cut]
+        if not (isinstance(s, dict) and s.get(step_name_key) in drop)
     ]
     return out
 
 
+def steps_of(raw: dict[str, Any], steps_key: str) -> list[Any]:
+    """The steps list of a raw trajectory; a missing or non-list value counts as no steps."""
+    steps = raw.get(steps_key)
+    return steps if isinstance(steps, list) else []
+
+
+#: Top-level fields a decision-point prefix keeps by default: what describes the task before the agent acts.
+TASK_KEYS = ("instruction", "task", "query", "question", "goal", "intent", "domain")
+_TRUE = {"true", "yes", "pass", "passed", "success", "succeeded", "solved", "resolved"}
+
+
+def positive_outcome(value: Any) -> bool:
+    """Whether an outcome value means success: ``True``, a positive number (or numeric string), or a word
+    such as ``pass``/``solved``; anything else (``False``, 0, ``"n/a"``, an object) means failure."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value > 0
+    if isinstance(value, str):
+        try:
+            return float(value) > 0
+        except ValueError:
+            return value.strip().lower() in _TRUE
+    return False
+
+
 class GenericJsonAdapter:
     """Reads one JSON trajectory per file: ``{..., "steps": [{"name": <component>, ...}, ...], <outcome>}``.
+
+    A run succeeds by its first outcome field among ``success``, ``reward`` and ``score`` (see
+    :func:`positive_outcome`); runs without one count as successful and are reported in ``warnings``. Pass
+    ``success`` (a field name or a function of the run) to decide otherwise. Prefixes keep only the
+    top-level fields in ``task_keys`` (``None`` keeps every field but the outcome keys); the fields left out
+    are reported in ``warnings``. The task id (``group_key``) is never in a prefix: it is the
+    cross-validation group, not a feature.
 
     Candidates and labels are benchmark-specific; pass ``candidates_fn(dp)`` and ``labels_fn(dp)`` (for
     example, the catalog of tools and the tools the successful run actually called), or use a dedicated
@@ -128,57 +171,120 @@ class GenericJsonAdapter:
         self,
         steps_key: str = "steps",
         step_name_key: str = "name",
-        success: Callable[[dict], bool] | None = None,
+        success: str | Callable[[dict], bool] | None = None,
         group_key: str | None = "task_id",
         outcome_keys: Iterable[str] = ("score", "eval", "evaluation", "reward", "success", "outcome"),
         outcome_steps: Iterable[str] = ("EvaluationResult",),
         candidates_fn: Callable[[DecisionPoint], list[Candidate]] | None = None,
         labels_fn: Callable[[DecisionPoint, dict], set[str]] | None = None,
+        task_keys: Iterable[str] | None = TASK_KEYS,
     ):
         self.steps_key = steps_key
         self.step_name_key = step_name_key
-        self.success = success or (lambda raw: float(raw.get("score", 1.0) or 0.0) > 0)
+        extra = [success] if isinstance(success, str) else []
+        self.success = success if callable(success) else self._outcome
+        self._success_key = success if isinstance(success, str) else None
         self.group_key = group_key
-        self.outcome_keys = tuple(outcome_keys)
+        self.outcome_keys = tuple(dict.fromkeys([*outcome_keys, *extra]))
         self.outcome_steps = tuple(outcome_steps)
         self.candidates_fn = candidates_fn
         self.labels_fn = labels_fn
+        self._hidden = (*self.outcome_keys, *([group_key] if group_key else []))  # never in a prefix
+        self.task_keys = (
+            None if task_keys is None else tuple(k for k in dict.fromkeys(task_keys) if k not in self._hidden)
+        )
         self._raw: dict[str, dict] = {}  # full trajectories, for labels (post-decision information)
+        self._no_outcome = self._loaded = 0
+        self._left_out: set[str] = set()  # top-level fields kept out of prefixes by ``task_keys``
 
-    def load(self, path: str | Path) -> list[Trajectory]:
-        """Trajectories from one JSON file or every ``*.json`` of a directory. Files whose name contains
-        ``results`` or ``metadata`` (run summaries) and JSON without the steps key are skipped."""
-        p = Path(path)
-        files = sorted(p.glob("*.json")) if p.is_dir() else [p]
+    def _outcome(self, raw: dict) -> bool:
+        keys = (self._success_key,) if self._success_key else ("success", "reward", "score")
+        for k in keys:
+            if raw.get(k) is not None:
+                return positive_outcome(raw[k])
+        self._no_outcome += 1
+        return True
+
+    @property
+    def warnings(self) -> list[str]:
+        """Data notes for the onboarding report: runs without an outcome, fields kept out of prefixes."""
         out = []
-        for f in files:
-            if "results" in f.name or "metadata" in f.name:  # run summaries, not trajectories
-                continue
-            raw = json.loads(f.read_text())
-            if not isinstance(raw, dict) or self.steps_key not in raw:
-                continue
-            group = str(raw.get(self.group_key, f.stem)) if self.group_key else f.stem
-            out.append(Trajectory(f.stem, raw, bool(self.success(raw)), group, f.name))
+        if self._no_outcome:
+            keys = self._success_key or "success/reward/score"
+            out.append(
+                f"{self._no_outcome} of {self._loaded} runs have no outcome field ({keys}); they were "
+                "treated as successful"
+            )
+        if self._left_out:
+            out.append(
+                "top-level fields not copied into decision-point prefixes (not in task_keys): "
+                f"{', '.join(sorted(self._left_out))}; pass task_keys= to keep fields known before the "
+                "decision"
+            )
         return out
 
+    def load(self, path: str | Path) -> list[Trajectory]:
+        """Trajectories from one JSON file or every ``*.json`` below a directory (recursive; hidden files,
+        ``results.json`` and ``metadata.json`` run summaries skipped). Files that are not valid JSON and JSON
+        without the steps key are skipped. A trajectory's id is its path below the directory."""
+        p = Path(path)
+        if p.is_dir():
+            files = sorted(
+                f
+                for f in p.rglob("*.json")
+                if f.is_file() and not any(x.startswith(".") for x in f.relative_to(p).parts)
+            )
+        else:
+            files = [p]
+        out = []
+        self._no_outcome = self._loaded = 0
+        for f in files:
+            if f.name in ("results.json", "metadata.json"):  # run summaries, not trajectories
+                continue
+            try:
+                raw = json.loads(f.read_text())
+            except ValueError:
+                continue
+            if not isinstance(raw, dict) or self.steps_key not in raw:
+                continue
+            tid = f.relative_to(p).with_suffix("").as_posix() if p.is_dir() else f.stem
+            group = str(raw.get(self.group_key, tid)) if self.group_key else tid
+            self._loaded += 1
+            out.append(Trajectory(tid, raw, bool(self.success(raw)), group, f.name))
+        return out
+
+    def _prefix(self, raw: dict[str, Any], cut: int) -> dict[str, Any]:
+        if self.task_keys is not None:
+            self._left_out |= {
+                str(k)
+                for k in raw
+                if k not in self.task_keys and k != self.steps_key and k not in self._hidden
+            }
+        return redact(
+            raw, self.steps_key, cut, self._hidden, self.outcome_steps, self.step_name_key, self.task_keys
+        )
+
     def decision_points(self, traj: Trajectory, target: str) -> list[DecisionPoint]:
-        """Every step named ``target``, with its redacted prefix (see :func:`redact`)."""
+        """Every step named ``target``, with its redacted prefix (see :func:`redact`). Steps that are not
+        objects are kept in prefixes but are never decisions."""
         self._raw[traj.id] = traj.raw
-        steps = traj.raw.get(self.steps_key, [])
+        steps = steps_of(traj.raw, self.steps_key)
         return [
             DecisionPoint(
                 traj.id,
                 i,
-                redact(
-                    traj.raw, self.steps_key, i, self.outcome_keys, self.outcome_steps, self.step_name_key
-                ),
+                self._prefix(traj.raw, i),
                 copy.deepcopy(step),
                 traj.group,
                 traj.source,
             )
             for i, step in enumerate(steps)
-            if step.get(self.step_name_key) == target
+            if isinstance(step, dict) and step.get(self.step_name_key) == target
         ]
+
+    def live_prefix(self, raw: dict) -> dict[str, Any]:
+        """The prefix of a live decision: the trajectory so far, redacted exactly as in training."""
+        return self._prefix(raw, len(steps_of(raw, self.steps_key)))
 
     def components(self, trajs: list[Trajectory]) -> dict[str, int]:
         """Step name -> number of successful trajectories containing it (the replaceable components)."""
@@ -187,9 +293,13 @@ class GenericJsonAdapter:
         for t in trajs:
             if not t.success:
                 continue
-            names = {s.get(self.step_name_key) for s in t.raw.get(self.steps_key, [])} - drop - {None}
+            steps = steps_of(t.raw, self.steps_key)
+            names = {
+                str(s[self.step_name_key]) for s in steps if isinstance(s, dict) and s.get(self.step_name_key)
+            }
+            names -= drop
             for n in names:
-                counts[str(n)] = counts.get(str(n), 0) + 1
+                counts[n] = counts.get(n, 0) + 1
         return dict(sorted(counts.items(), key=lambda kv: -kv[1]))
 
     def candidates(self, dp: DecisionPoint) -> list[Candidate]:
@@ -214,7 +324,7 @@ class GenericJsonAdapter:
         drop = set(self.outcome_steps)
         steps = [
             s
-            for s in traj.raw.get(self.steps_key, [])
+            for s in steps_of(traj.raw, self.steps_key)
             if isinstance(s, dict) and s.get(self.step_name_key) and s.get(self.step_name_key) not in drop
         ]
         marked = [s for s in steps if any(s.get(k) not in (None, "", [], {}) for k in _LLM_KEYS)]
@@ -436,6 +546,52 @@ def get_json_schema(data: Any, path: str = "") -> Any:
     if isinstance(data, list):
         return get_json_schema(data[0], f"{path}[0]") if data else "unknown (empty array)"
     return {"type": type(data).__name__}
+
+
+def merge_examples(values: list[Any]) -> Any:
+    """Deep-merge JSON values so one example shows every key seen in any of them, in every item of every list
+    (for the schema prompts); a scalar keeps its first value."""
+    if not values:
+        return {}
+    if all(isinstance(v, dict) for v in values):
+        keys = list(dict.fromkeys(k for v in values for k in v))
+        return {k: merge_examples([v[k] for v in values if k in v]) for k in keys}
+    if all(isinstance(v, list) for v in values):
+        items = [x for v in values for x in v]
+        return [merge_examples(items)] if items else []
+    return copy.deepcopy(values[0])
+
+
+def union_schema(values: list[Any]) -> Any:
+    """``get_json_schema`` of the merged ``values``: every field that occurs in any of them, at any list
+    position (``get_json_schema`` alone describes a list by its first item)."""
+    return get_json_schema(merge_examples(values))
+
+
+def clip_strings(value: Any, max_chars: int) -> Any:
+    """A copy of a JSON value with every string longer than ``max_chars`` cut, noting how much was cut."""
+    if isinstance(value, str):
+        if len(value) <= max_chars:
+            return value
+        return f"{value[:max_chars]} ...[{len(value) - max_chars} more characters]"
+    if isinstance(value, dict):
+        return {k: clip_strings(v, max_chars) for k, v in value.items()}
+    if isinstance(value, list):
+        return [clip_strings(v, max_chars) for v in value]
+    return value
+
+
+def clip_for_prompt(value: Any, budget: int = 400_000, floor: int = 200) -> Any:
+    """``value`` itself when its JSON fits ``budget`` characters; otherwise a copy with long strings clipped,
+    the cap halved from 20,000 characters until the JSON fits or the cap reaches ``floor``."""
+    if len(json.dumps(value, default=str, ensure_ascii=False)) <= budget:
+        return value
+    cap = 20_000
+    while True:
+        out = clip_strings(value, cap)
+        if cap <= floor or len(json.dumps(out, default=str, ensure_ascii=False)) <= budget:
+            return out
+        cap //= 2
 
 
 def field_paths(data: Any, prefix: tuple = ()) -> set[tuple]:

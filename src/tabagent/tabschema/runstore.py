@@ -78,16 +78,31 @@ class RunStore:
         Stages run on worker threads. Callers of the same key wait for the first one, so a paid LLM call is
         made once; callers of different keys run concurrently.
         """
-        p = self.dir / "cache" / stage / f"{digest(key)}.json"
-        with self._lock:
-            key_lock = self._key_locks.setdefault(p, threading.Lock())
-        with key_lock:
-            if p.exists():
+        p = self._entry(stage, key)
+        with self._key_lock(p):
+            try:
                 return json.loads(p.read_text())["value"]
+            except FileNotFoundError:
+                pass
+            except (ValueError, KeyError, TypeError):  # an unreadable entry is computed again
+                pass
             value = fn()
             p.parent.mkdir(parents=True, exist_ok=True)
             atomic_write(p, json.dumps({"key": key, "value": value}, default=str))
             return value
+
+    def forget(self, stage: str, key: Any) -> None:
+        """Remove the stored result for (stage, key), if any; the next ``cached`` call computes it again."""
+        p = self._entry(stage, key)
+        with self._key_lock(p):
+            p.unlink(missing_ok=True)
+
+    def _entry(self, stage: str, key: Any) -> Path:
+        return self.dir / "cache" / stage / f"{digest(key)}.json"
+
+    def _key_lock(self, p: Path) -> threading.Lock:
+        with self._lock:
+            return self._key_locks.setdefault(p, threading.Lock())
 
     def log_call(self, record: dict[str, Any]) -> None:
         """Append one LLM call record to ``llm_calls.jsonl``."""
