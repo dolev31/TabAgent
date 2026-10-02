@@ -15,9 +15,12 @@ LLM call and reports what discovery would process and cost.
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
+import re
+import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -44,6 +47,7 @@ from tabagent.tabschema.orchestrator import (
     sample_decision_points,
 )
 from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
 from tabagent.tabschema.trajectory import Candidate, Trajectory, get_json_schema
 
 logger = logging.getLogger(__name__)
@@ -103,8 +107,9 @@ class TabAgentHead:
     agent decision.
 
     ``decide(prefix, candidates)`` runs the extractor on the trajectory prefix, builds one row per candidate
-    and returns the head's decision. Heads come from :func:`onboard` and are persisted with ``save`` and
-    :meth:`load`.
+    and returns the head's decision; ``decide(run=..., candidates=...)`` first builds the prefix from the live
+    run with the adapter the head was trained with (``live_prefix``). Heads come from :func:`onboard` and are
+    persisted with ``save`` and :meth:`load`.
 
     Attributes
     ----------
@@ -115,6 +120,13 @@ class TabAgentHead:
     discovery: the TabSchema discovery report.
     gate_threshold: decisions with a lower confidence are marked ``deferred`` (App. N.3).
     trust_extractor: run the extractor in-process (fast; for reviewed code) instead of in the sandbox.
+    adapter: the log adapter of the training trajectories (an adapter or its ``describe_adapter``
+        description); ``live_prefix`` builds live prefixes with it, and ``save`` records it in ``head.json``.
+    sandbox: where an untrusted extractor runs: ``"subprocess"`` (the default, ``SubprocessSandbox``),
+        ``"docker"`` or ``"docker:<image>"`` (``DockerSandbox``: no network, read-only filesystem), or a
+        sandbox instance.
+    redact: the function applied to each training trajectory before discovery, as a callable or a
+        ``"module:function"`` import path; ``live_prefix`` applies it to a live run too.
     """
 
     agent: TabAgent
@@ -124,49 +136,143 @@ class TabAgentHead:
     discovery: DiscoveryReport | None = None
     gate_threshold: float | None = None
     trust_extractor: bool = False
+    adapter: Any = None
+    sandbox: Any = None
+    redact: Callable[[dict], dict] | str | None = None
+
+    def __post_init__(self) -> None:
+        if self.trust_extractor and self.sandbox not in (None, "subprocess"):
+            raise ValueError(
+                "trust_extractor=True runs the extractor in-process, outside any sandbox; drop sandbox= or "
+                "trust_extractor="
+            )
 
     @property
     def card(self) -> FeatureCard:
         """The fitted feature card."""
         return self.agent.card_
 
+    def _sandbox(self) -> SubprocessSandbox | None:
+        spec = self.sandbox
+        if spec is None or spec == "subprocess":
+            return None
+        if isinstance(spec, str) and (spec == "docker" or spec.startswith("docker:")):
+            image = spec.partition(":")[2]
+            return DockerSandbox(image=image) if image else DockerSandbox()
+        if hasattr(spec, "run_batch"):
+            return spec
+        raise ValueError(f"sandbox: 'subprocess', 'docker', 'docker:<image>' or a sandbox, not {spec!r}")
+
     def _runner(self) -> ExtractorRunner | None:
         if not self.extractor_code:
             return None
-        if not hasattr(self, "_runner_cache"):
-            self._runner_cache = ExtractorRunner(self.extractor_code, trust_extractor=self.trust_extractor)
+        if getattr(self, "_runner_cache", None) is None:
+            self._runner_cache = ExtractorRunner(
+                self.extractor_code, trust_extractor=self.trust_extractor, sandbox=self._sandbox()
+            )
         return self._runner_cache
 
-    def features_for(self, prefix: dict[str, Any]) -> dict[str, Any]:
-        """The extractor's features for one trajectory prefix (empty, with a warning, if it fails)."""
+    # ------------------------------------------------------------------ live prefixes
+    def live_prefix(self, run: dict[str, Any], adapter: Any = None) -> dict[str, Any]:
+        """The prefix of a live decision, built from ``run`` (the run so far, in the format of the training
+        logs, with its run-level task fields) exactly as the training prefixes were: ``redact`` first, then
+        the head's adapter (or ``adapter``; see ``tabagent.adapters.live_prefix``)."""
+        from tabagent.adapters import adapter_from_description, live_prefix
+
+        adapter = adapter if adapter is not None else self.adapter
+        if isinstance(adapter, dict):
+            desc, adapter = adapter, adapter_from_description(adapter)
+            if adapter is None:
+                raise ValueError(
+                    f"this head was trained with {desc.get('class')!r}, which head.json cannot rebuild; "
+                    "pass adapter= (the adapter used in training)"
+                )
+        if adapter is None:
+            raise ValueError(
+                "this head records no log adapter (head.json has none); pass adapter= (the adapter used in "
+                "training), or build the prefix yourself and call decide(prefix, ...)"
+            )
+        if self.redact is not None:
+            run = self._redact_fn()(run)
+        return live_prefix(adapter, run, self.target)
+
+    def _redact_fn(self) -> Callable[[dict], dict]:
+        return import_object(self.redact) if isinstance(self.redact, str) else self.redact
+
+    # ------------------------------------------------------------------ extraction
+    def _extract(self, prefix: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
+        """The card's extractor columns for ``prefix``, filled as in training (None where the extractor gave
+        no value), and the error when the extractor failed on it."""
+        cols = [f.name for f in self.card.features if f.source == "extractor"]
         runner = self._runner()
-        return (runner.run([prefix])[0] or {}) if runner else {}
+        if runner is None:
+            error = "this head has no extractor (extract.py) for its extractor features" if cols else None
+            return dict.fromkeys(cols), error
+        error = None
+        try:
+            out = runner.run([prefix])[0]
+        except Exception as e:  # a sandbox that cannot start (no Docker, say): defer, do not crash
+            out, error = None, f"{type(e).__name__}: {e}"
+        if out is None:
+            error = _explain(error or self._diagnose(prefix), prefix)
+            logger.warning("TabSchema extractor failed on a live prefix; deferring the decision: %s", error)
+        return {c: (out or {}).get(c) for c in cols}, error
+
+    def _diagnose(self, prefix: dict[str, Any]) -> str:
+        """The extractor's error on ``prefix``, from a second run (only after a failure)."""
+        try:
+            if self.trust_extractor:
+                ns: dict[str, Any] = {"__name__": "__main__", "trajectory": copy.deepcopy(prefix)}
+                exec(compile(self.extractor_code, "<extract.py>", "exec"), ns)  # noqa: S102 - reviewed code
+                return "the extractor produced no features"
+            res = (self._sandbox() or SubprocessSandbox()).run(self.extractor_code, prefix)
+            text = (res.error or "").strip()
+            return text.splitlines()[-1] if text else "the extractor produced no features"
+        except Exception as e:  # the extractor is arbitrary code
+            return f"{type(e).__name__}: {e}"
+
+    def features_for(self, prefix: dict[str, Any]) -> dict[str, Any]:
+        """The extractor's features for one trajectory prefix: every extractor column of the card, None where
+        the extractor gave no value or failed (as in training)."""
+        return self._extract(prefix)[0]
 
     def decide(
         self,
-        prefix: dict[str, Any],
+        prefix: dict[str, Any] | None = None,
         candidates=None,
         k: int | None = None,
         defer_below: float | None = None,
+        *,
+        run: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Score one live decision.
 
         Parameters
         ----------
-        prefix: the trajectory before the decision, in the format the head was onboarded on.
+        prefix: the trajectory before the decision, normalized by the adapter the head was onboarded with
+            (what the adapter's ``decision_points`` put in ``DecisionPoint.prefix``; ``live_prefix`` builds it
+            from a live run).
         candidates: the legal candidates: ids, ``{"id"/"name", "description", "args"}`` dicts or
             ``Candidate`` objects. Not used by single-class heads, which choose among their training classes.
         k: return the top ``k`` of a ranking.
         defer_below: confidence threshold of the gate; defaults to the calibrated ``gate_threshold``.
+        run: instead of ``prefix``, the live run so far in the format of the training logs, with its run-level
+            task fields; the prefix is built with ``live_prefix``.
 
         Returns
         -------
-        ``{"candidates": [ids], "scores": {id: p}, "confidence": c, "deferred": bool}``, or for a single-class
-        head ``{"choice": label, "scores": {label: p}, "confidence": p(choice), "deferred": bool}``. Tied
-        scores are ordered by candidate id.
+        ``{"candidates": [ids], "scores": {id: p}, "confidence": c, "deferred": bool, "error": None}``, or for
+        a single-class head ``{"choice": label, "scores": {label: p}, "confidence": p(choice), "deferred":
+        bool, "error": None}``. Tied scores are ordered by candidate id. When the extractor fails on the
+        prefix, its features are empty (None, as for a training decision point it failed on), the decision is
+        ``deferred`` to the original LLM whatever its confidence, and ``error`` says why.
         """
+        if run is not None:
+            if prefix is not None:
+                raise ValueError("pass the decision's prefix or its run, not both")
+            prefix = self.live_prefix(run)
         spec = self.card.spec
-        feats = self.features_for(prefix)
+        feats, error = self._extract(prefix if prefix is not None else {})
         tau = defer_below if defer_below is not None else self.gate_threshold
         if spec.kind == "single":
             if candidates:
@@ -179,7 +285,8 @@ class TabAgentHead:
                 "choice": classes[best],
                 "scores": {str(c): float(p) for c, p in zip(classes, proba, strict=True)},
                 "confidence": float(proba[best]),
-                "deferred": bool(tau is not None and proba[best] < tau),
+                "deferred": bool(error is not None or (tau is not None and proba[best] < tau)),
+                "error": error,
             }
         if not candidates:
             raise ValueError(f"a {spec.kind} head needs the decision's candidates")
@@ -205,7 +312,8 @@ class TabAgentHead:
             "candidates": ranked["candidate"].tolist(),
             "scores": {c.id: float(s) for c, s in zip(cands, scores, strict=True)},
             "confidence": conf,
-            "deferred": bool(tau is not None and conf < tau),
+            "deferred": bool(error is not None or (tau is not None and conf < tau)),
+            "error": error,
         }
 
     def calibrate_gate(self, cv_result, target_coverage: float = 0.9) -> float:
@@ -228,7 +336,10 @@ class TabAgentHead:
     # ------------------------------------------------------------------ persistence
     def save(self, path: str | Path) -> Path:
         """Write the head to the directory ``path``: the model artifact (``model/``), ``extract.py``,
-        ``head.json`` and, when present, the evaluation and discovery reports."""
+        ``head.json`` (with the adapter and its prefix settings, and the redaction function's import path,
+        when known) and, when present, the evaluation and discovery reports."""
+        from tabagent.adapters import describe_adapter
+
         out = Path(path)
         self.agent.save(out / "model")
         if self.extractor_code:
@@ -238,6 +349,8 @@ class TabAgentHead:
             "target": self.target,
             "gate_threshold": self.gate_threshold,
             "has_extractor": bool(self.extractor_code),
+            "adapter": describe_adapter(self.adapter),
+            "redact": _object_path(self.redact),
         }
         (out / "head.json").write_text(json.dumps(meta, indent=1))
         if self.report is not None:
@@ -247,13 +360,24 @@ class TabAgentHead:
         return out
 
     @classmethod
-    def load(cls, path: str | Path, trust_extractor: bool = False, trust_code: bool = False) -> TabAgentHead:
+    def load(
+        cls,
+        path: str | Path,
+        trust_extractor: bool = False,
+        trust_code: bool = False,
+        *,
+        sandbox: Any = None,
+        redact: Callable[[dict], dict] | str | None = None,
+        adapter: Any = None,
+    ) -> TabAgentHead:
         """Load a saved head from a directory or ``hf://OWNER/REPO[@REVISION]`` (``tabagent.hub``).
         ``extract.py`` must match the hash recorded in the card.
 
         ``trust_extractor=True`` runs the extractor in-process (fast); only do this for an extractor you have
-        reviewed. Otherwise it runs in the sandbox. ``trust_code`` allows card features computed by modules
-        outside ``tabagent``.
+        reviewed. Otherwise it runs in ``sandbox`` (see the class attributes). ``trust_code`` allows card
+        features computed by modules outside ``tabagent``. ``adapter`` overrides the adapter recorded in
+        ``head.json``. ``redact`` is never imported from ``head.json``: when the head records one and none is
+        passed, a warning says so, since live runs then reach the extractor unredacted.
         """
         src = hub.resolve(path)
         meta = json.loads((src / "head.json").read_text())
@@ -263,13 +387,61 @@ class TabAgentHead:
             expected = (agent.card_.extractor or {}).get("sha256")
             if expected and hashlib.sha256(code.encode()).hexdigest() != expected:
                 raise ValueError("extract.py does not match the card's extractor hash")
+        if redact is None and meta.get("redact"):
+            warnings.warn(
+                f"this head's training trajectories were redacted with {meta['redact']}; pass redact= "
+                "(tabagent serve --redact) to scrub live runs the same way",
+                UserWarning,
+                stacklevel=2,
+            )
         return cls(
             agent,
             meta["target"],
             code,
             gate_threshold=meta.get("gate_threshold"),
             trust_extractor=trust_extractor,
+            adapter=adapter if adapter is not None else meta.get("adapter"),
+            sandbox=sandbox,
+            redact=redact,
         )
+
+
+def import_object(ref: str) -> Any:
+    """The object an import path ``"module:attribute"`` names (``"mypkg.privacy:scrub"``, for example)."""
+    module, sep, attr = ref.partition(":")
+    if not (module and sep and attr):
+        raise ValueError(f"expected an import path 'module:function', not {ref!r}")
+    import importlib
+
+    obj: Any = importlib.import_module(module)
+    for part in attr.split("."):
+        obj = getattr(obj, part)
+    return obj
+
+
+def _object_path(obj: Any) -> str | None:
+    """``obj``'s import path ``module:qualname`` when it has one, ``obj`` itself when it is a string."""
+    if obj is None or isinstance(obj, str):
+        return obj
+    module, name = getattr(obj, "__module__", None), getattr(obj, "__qualname__", "")
+    if not module or not name or "<" in name:  # a lambda or a nested function cannot be imported
+        return f"<unnamed {type(obj).__name__}>"
+    return f"{module}:{name}"
+
+
+_KEY_ERROR = re.compile(r"KeyError: ['\"]([^'\"]+)['\"]")
+
+
+def _explain(error: str, prefix: dict[str, Any]) -> str:
+    """``error``, with a hint when the extractor read a top-level field the live prefix lacks."""
+    m = _KEY_ERROR.search(error)
+    if m and m.group(1) not in prefix:
+        return (
+            f"{error}. The live prefix has no {m.group(1)!r} field: build it as in training, with the "
+            "run-level task fields, through head.live_prefix(run), decide(run=...), ToolFilter(task=...) or "
+            'POST /decide {"run": ...}'
+        )
+    return error
 
 
 # --------------------------------------------------------------------------- onboarding
@@ -450,7 +622,7 @@ def onboard(
 
 
 def load(
-    path: str | Path, trust_extractor: bool = False, trust_code: bool = False
+    path: str | Path, trust_extractor: bool = False, trust_code: bool = False, **head_options: Any
 ) -> TabAgentHead | TabAgent:
     """Load a saved head: a ``TabAgentHead`` for a directory written by ``onboard`` (it has ``head.json``),
     else the ``TabAgent`` artifact written by ``TabAgent.save``.
@@ -460,10 +632,13 @@ def load(
     exactly as a local directory.
 
     A ``TabAgentHead`` decides from a trajectory prefix (``decide(prefix, candidates, k=...)``); a bare
-    ``TabAgent`` decides from candidate rows (``decide(rows, k=...)``). ``trust_extractor`` and
-    ``trust_code`` are described in :meth:`TabAgentHead.load`.
+    ``TabAgent`` decides from candidate rows (``decide(rows, k=...)``). ``trust_extractor``, ``trust_code``
+    and the ``head_options`` (``sandbox``, ``redact``, ``adapter``) are described in
+    :meth:`TabAgentHead.load`; a ``TabAgent`` has no extractor and takes no ``head_options``.
     """
     p = hub.resolve(path)
     if (p / "head.json").exists():
-        return TabAgentHead.load(p, trust_extractor, trust_code)
+        return TabAgentHead.load(p, trust_extractor, trust_code, **head_options)
+    if head_options:
+        raise TypeError(f"{sorted(head_options)} apply to a head saved by onboard; {path} is a TabAgent")
     return TabAgent.load(p, trust_code=trust_code)

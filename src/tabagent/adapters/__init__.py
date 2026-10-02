@@ -15,11 +15,17 @@ adapters below implement it.
 * ``CugaAdapter``: CUGA agent trajectories (the API shortlister built in);
 * ``GenericJsonAdapter``: any log with named steps, with your own candidates and labels;
 * ``detect_adapter(path)``: picks one of the above from the first files.
+
+At decision time, ``live_prefix(adapter, run, target)`` builds a live run's prefix exactly as in training, and
+``describe_adapter`` / ``adapter_from_description`` record and rebuild the adapter a head was trained with.
 """
 
 from tabagent.adapters.common import parse_catalog
 from tabagent.adapters.cuga import SHORTLISTER, CugaAdapter
 from tabagent.adapters.detect import detect_adapter, detect_format
+from tabagent.adapters.live import describe as describe_adapter
+from tabagent.adapters.live import from_description as adapter_from_description
+from tabagent.adapters.live import live_prefix
 from tabagent.adapters.openai_messages import (
     NEXT_TOOL_CALL,
     TEXT_REPLY,
@@ -40,8 +46,11 @@ __all__ = [
     "LLMCall",
     "OpenAIMessagesAdapter",
     "Tau2Adapter",
+    "adapter_from_description",
+    "describe_adapter",
     "detect_adapter",
     "detect_format",
+    "live_prefix",
     "normalize_messages",
     "output_fields",
     "parse_catalog",

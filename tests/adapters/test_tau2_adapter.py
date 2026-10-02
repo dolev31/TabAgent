@@ -34,7 +34,7 @@ def test_prefix_hides_scenario_gold_actions_and_reward(tmp_path):
     trajs = {t.id: t for t in adapter.load(_logs(tmp_path))}
     (dp,) = adapter.decision_points(trajs["agentA_airline:0"], TOOL_SHORTLIST)
 
-    assert dp.prefix["task_id"] == "0" and dp.prefix["domain"] == "airline" and dp.prefix["ticket"] == ""
+    assert dp.prefix["domain"] == "airline" and dp.prefix["ticket"] == "" and "task_id" not in dp.prefix
     assert [s["name"] for s in dp.prefix["steps"]] == ["user"]  # the greeting is an assistant turn
     dumped = json.dumps(dp.prefix)
     for secret in ("SECRET SCENARIO", "gold_only_tool", "RAW PAYLOAD", "reward", "get_user_details"):

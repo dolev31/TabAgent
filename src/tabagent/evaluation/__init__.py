@@ -11,6 +11,7 @@ from tabagent.evaluation.cv import (
     save_folds,
     stable_uid,
 )
+from tabagent.evaluation.discovery import DiscoveryCVResult, cross_validate_discovery
 from tabagent.evaluation.metrics import normalized, per_decision
 from tabagent.evaluation.stats import Interval, bootstrap_ci, holm, paired_bootstrap
 
@@ -18,10 +19,12 @@ __all__ = [
     "DEFAULT_SEED",
     "PAPER_SEEDS",
     "CVResult",
+    "DiscoveryCVResult",
     "Interval",
     "assign_folds",
     "bootstrap_ci",
     "cross_validate",
+    "cross_validate_discovery",
     "holm",
     "load_folds",
     "normalized",

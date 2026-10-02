@@ -5,11 +5,11 @@ A results file is ``{"timestamp", "info", "tasks", "simulations"}``. Each simula
 ``reward_info.reward``. Simulations are mapped to the chat-message steps of ``OpenAIMessagesAdapter`` and
 reuse its decisions (``ToolShortlist`` by default, ``NextToolCall`` with ``granularity="step"``).
 
-What the agent could see is all a prefix holds: the task id, the domain and, for solo agents
-(``no-user`` modes, which receive the task as a ticket), the ticket; never the user simulator's scenario,
-the evaluation criteria (gold actions), the reward or the oracle plan given to ``*_gt`` agents. The
-domain policy (the agent's system prompt, identical for every task of a domain) is added as a system step
-with ``include_policy=True``.
+What the agent could see is all a prefix holds: the domain and, for solo agents (``no-user`` modes, which
+receive the task as a ticket), the ticket; never the user simulator's scenario, the evaluation criteria (gold
+actions), the reward or the oracle plan given to ``*_gt`` agents. The task id names the run's group, not a
+prefix field. The domain policy (the agent's system prompt, identical for every task of a domain) is added
+as a system step with ``include_policy=True``.
 
 A run succeeds when ``reward_info.reward == 1``; the group is ``<domain>:<task_id>``, so repeated trials
 and agents of one task never straddle CV folds. Candidates are the domain's tools: ``tool_defs`` when the

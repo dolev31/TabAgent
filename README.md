@@ -96,15 +96,23 @@ AppWorld rows use the CUGA agent's own trajectories, which are not released. The
 OAK and BPO enterprise benchmarks, where the small trajectory pools leave TabAgent behind or level with the best
 baseline, and sub-agent routing and skill gating, where it is on par with the best fixed default. [Reproducing the paper](docs/reproducing.md) recomputes every public row.</sub>
 
+<sub>The reproducible rows run on the feature cards bundled with each public dataset, not on a new TabSchema run,
+so reproducing them calls no LLM. A card is *frozen* when its feature list was taken from the paper's
+experiment code for that benchmark and fixed, every feature recomputed by the release's code (a few frozen cards
+are variants; each card's `provenance` note says how), and *hand-authored* when it was written for the release
+from the paper's description of the benchmark's features (`provenance.kind` in each card). The released
+TabSchema implementation has not yet been validated against a paper number.</sub>
+
 <table>
   <tr>
     <td width="50%" valign="top">
       <img src="docs/assets/card_ablation.png" width="100%"
-           alt="Ten classifier heads on skill selection: each reaches useful P@R with the TabSchema card and collapses to 0.10 to 0.21 without it">
+           alt="Ten classifier heads on skill selection: each reaches useful P@R with the skill-selection feature card and collapses to 0.10 to 0.21 without it">
       <br>
       <sub><b>The features carry the decision, not the head.</b> Every classifier head, from trees to tabular
-      foundation models, reaches useful P@R with the TabSchema card (blue) and collapses to 0.10–0.21 without it
-      (red). Skill selection, means of 3 seeds.</sub>
+      foundation models, reaches useful P@R with the skill-selection feature card (blue) and collapses to
+      0.10–0.21 without it (red). Skill selection, means of 3 seeds; figure from the paper. The release recomputes
+      it with its frozen skill-selection card (see Reproducing the paper).</sub>
     </td>
     <td width="50%" valign="top">
       <img src="docs/assets/candidate_overload.png" width="100%"
@@ -141,7 +149,8 @@ baseline, and sub-agent routing and skill gating, where it is on par with the be
 ```bash
 pip install tabagent                    # core: tables, TabSynth, TabHead, evaluation
 # until the PyPI release: pip install "tabagent @ git+https://github.com/dolev31/TabAgent"
-pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI-compatible LLM client)
+pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI and OpenAI-compatible LLMs)
+pip install "tabagent[llm]"             # + Anthropic, Gemini and other LLM providers through LiteLLM
 pip install "tabagent[embed]"           # + e5 context-candidate similarity features
 pip install "tabagent[serve]"           # + HTTP decision service
 ```
@@ -180,7 +189,7 @@ five skills TabAgent would hand the agent for a held-out task. The paper reports
 ### 1. You have agent logs and an LLM key
 
 ```bash
-export OPENAI_API_KEY=...        # or OPENAI_BASE_URL for any OpenAI-compatible server, or ANTHROPIC/GEMINI keys
+export OPENAI_API_KEY=...        # the LLM TabSchema calls (see below for other providers)
 tabagent scan ./agent_logs                                    # which LLM calls are worth replacing?
 tabagent components ./agent_logs                              # which decisions can be replaced?
 tabagent onboard ./agent_logs --decision ToolShortlist --dry-run   # what it will process and cost
@@ -194,12 +203,26 @@ import tabagent
 head = tabagent.onboard("./agent_logs", decision="ToolShortlist")  # a budget: max_cost_usd= with prices=
 print(head.report)  # grouped cross-validation vs BM25 and chance, latency, cost per decision
 head.save("my_head")
-head.decide(prefix, candidates, k=5)  # {"candidates", "scores", "confidence", "deferred"}
+head.decide(prefix, candidates, k=5)  # {"candidates", "scores", "confidence", "deferred", "error"}
+
+# the whole pipeline, with TabSchema discovery inside each training fold (one discovery per fold)
+tabagent.cross_validate_discovery("./agent_logs", "ToolShortlist").summary(["p@r", "recall@9"])
 ```
 
+TabSchema's LLM can be OpenAI, Azure OpenAI, or any OpenAI-compatible server through `OPENAI_BASE_URL`, and
+Anthropic, Gemini and others through LiteLLM (`pip install "tabagent[llm]"`). The paper ran TabSchema with
+GPT-5.4 and found open models unreliable for this loop.
+
 Supported log formats are detected automatically: OpenAI / Anthropic / LangChain tool-call message logs,
-τ²-bench results, CUGA trajectories, and generic JSON with a `steps` list. Trajectories are sent to your LLM
-provider during onboarding; pass `redact=` to scrub them first.
+τ²-bench results, CUGA trajectories, and generic JSON with a `steps` list. `prefix` is the decision's trajectory
+prefix as the log adapter built it in training; `head.live_prefix(run)` and `decide(run=...)` build it from a
+live run (the messages so far and the run-level fields the logs carry, such as the instruction), and a decision
+whose features cannot be extracted is deferred to the LLM ([Deploy](docs/deployment.md)). `head.report`
+discovers the card once, on all the logs, so its cross-validation does not cover discovery;
+`cross_validate_discovery` runs discovery inside every training fold, as the paper's protocol does.
+Trajectories are sent to your LLM provider during onboarding; pass `redact=` (CLI: `--redact module:function`)
+to scrub them first, and pass it again when serving (`tabagent serve --redact`), since a head does not import
+it by itself.
 
 ### 2. You have a table of decisions (scikit-learn API)
 
@@ -236,8 +259,11 @@ print(res.summary(["p@r", "recall@9"]))
 The release reproduces the following from public data: τ²-bench (cross-backbone transfer and per-domain
 shortlisting), SkillsBench (skill selection and gating), Mind2Web (operation and element selection),
 LLMRouterBench (model routing; MIT as declared upstream, opt-in download) and AppWorld sub-agent routing (data obtained
-through AppWorld's official CLI). See [docs/reproducing.md](docs/reproducing.md) for each paper cell, the command
-that recomputes it, and the value it produces. The AppWorld tool-shortlisting results and the in-loop hot swap
+through AppWorld's official CLI). Every reproduced number uses a bundled frozen or hand-authored feature card
+(defined under [Results at a glance](#results-at-a-glance)) with its statistics fitted inside each training
+fold; none runs TabSchema, and the released TabSchema has not yet been validated against a paper number. See
+[docs/reproducing.md](docs/reproducing.md) for each paper cell, the command that recomputes it, and the value it
+produces. The AppWorld tool-shortlisting results and the in-loop hot swap
 use the CUGA agent's own trajectories, which are not released; the CUGA trajectory adapter is included, so the
 pipeline can be rerun on your own CUGA traces. The OAK and BPO benchmarks are public; loaders for them are not
 included yet.

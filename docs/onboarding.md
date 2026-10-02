@@ -147,3 +147,33 @@ the LLM cost exceeds it; it needs the model's prices, `prices={model: (usd_per_1
 
 The saved head contains `extract.py`, the code TabSchema compiled. Read it before serving with
 `--trust-extractor` (in-process, sub-millisecond); without that flag it runs in the sandbox.
+
+## Estimate the whole pipeline, discovery included
+
+`onboard` discovers the feature card once, on all the onboarding trajectories, and then cross-validates the
+head on that card. Its folds keep the head's training rows and fitted statistics apart, but every held-out task
+was among the trajectories the card was discovered from, so the report estimates the head on a fixed card: a
+quick estimate (one discovery) that can be optimistic. The paper's protocol fits the TabSchema loop inside each
+training fold too (Sec. 4.3). `tabagent.cross_validate_discovery` does that:
+
+```python
+import tabagent
+from tabagent.tabschema import TabSchemaConfig
+
+res = tabagent.cross_validate_discovery(
+    "./logs",
+    "ToolShortlist",
+    config=TabSchemaConfig(max_cost_usd=100, prices={"gpt-5.4": (PRICE_IN, PRICE_OUT)}),  # all folds together
+    run_dir="./infold_runs",  # one cached run directory per fold: a rerun makes no new LLM calls
+)
+print(res.summary(["p@r", "recall@9"]))  # the usual CVResult metrics and intervals
+res.discoveries[0].card  # the card discovered on fold 0's training tasks
+```
+
+For every fold it runs discovery on the training fold's trajectories only, builds the training and held-out
+rows with that fold's extractor, selects the training recipe on the training rows (as `onboard` does on all of
+them) and scores the held-out decisions. With the same `n_splits`, its folds are those of `onboard`'s report,
+so the two estimates can be compared directly. It costs one discovery per fold, about five times the LLM cost
+of onboarding with the default five folds; one budget covers all folds. `redact=` works as in `onboard`, and
+`sandbox=DockerSandbox()` runs the generated code in Docker. The head you deploy is still the one `onboard` fits
+on all the trajectories; this estimates how well that procedure generalizes to new tasks.

@@ -11,14 +11,37 @@
    deterministic checks for hallucinated fields, outcome fields, forbidden calls and imports).
 4. **FeatureAggregator** merges the proposals of all decision points.
 5. **Relevance, Generality, Impact & Uniqueness judges** score each feature (1–5) concurrently; the
-   **MetaJudge** accepts, conditionally accepts or rejects it.
+   **MetaJudge** accepts, conditionally accepts or rejects it. Only accepted features go on: conditionally
+   accepted ones are excluded by default, and `TabSchemaConfig(accept=("accept", "conditional"))` includes them.
 6. **Compile**: one reusable extractor for the accepted features, run and quality-checked on every onboarding
    decision point; the result is a feature card plus `extract.py`.
 
-The seven prompts reproduce the paper's App. D.2 and D.3 verbatim and are hash-pinned in the tests. Every LLM call is
-cached in a run directory (a resumed run costs nothing), priced by a cost meter with a budget stop, and the
-extractor runs in a subprocess sandbox with an empty environment. The paper ran TabSchema with GPT-5.4; any
-OpenAI-compatible endpoint or LiteLLM provider works (the paper found open models unreliable for this loop).
+The seven prompts the paper prints (FeatureAnalyzer, CodeExtractor, FeatureAggregator, the three judges and the
+MetaJudge, App. D.2 and D.3) are reproduced verbatim and hash-pinned in the tests. The paper prints no
+CodeValidator prompt: the release wrote one from the validator's description (App. D.1). The paper describes the
+CodeExecutor's retries but not the text added to the CodeExtractor prompt after a failed attempt; the wording of
+that retry block is the release's too. Every LLM call is cached in a run directory (a resumed run costs
+nothing), priced by a cost meter with a budget stop, and the extractor runs in a subprocess sandbox with an empty
+environment (`DockerSandbox` adds no network and a read-only filesystem; see `SECURITY.md`).
+
+The paper ran TabSchema with GPT-5.4 and found open models unreliable for this loop. The release calls OpenAI,
+Azure OpenAI, and any OpenAI-compatible server through `OPENAI_BASE_URL`, and Anthropic, Gemini and others
+through LiteLLM (`pip install "tabagent[llm]"`). The reproduced paper numbers do not run TabSchema: they use the
+frozen or hand-authored cards bundled with the public datasets ([Reproducing the paper](reproducing.md)), and
+the released TabSchema has not yet been validated against a paper number.
+
+**Dependency features** are not code the LLM writes: a card references the library's fitted statistics
+(`fitted:<name>`), which are fitted on the training rows of each fold. They are the candidate prior
+(`candidate_prior`), the context-candidate embedding similarity (`embedding_cosine`), the outcome of each
+candidate on the most similar training tasks (`knn_outcome`) and co-usage (`co_usage`): for a column listing the
+candidates used before the decision (an extractor feature with the tools the agent called earlier in the run, for
+example), how often the training runs chose the candidate after them, smoothed toward its prior.
+
+**Discovery inside each fold.** `onboard` discovers the card once, on all onboarding trajectories, so the
+cross-validation in its report estimates the head on a fixed card. `tabagent.cross_validate_discovery(logs,
+target, ...)` runs `discover` on each training fold's trajectories only, applies that fold's extractor to its
+held-out decisions and reports the usual cross-validated metrics, at the LLM cost of one discovery per fold (one
+budget covers all folds; each fold's run directory is cached, so a rerun is free).
 
 ## TabSynth: label-preserving augmentation
 

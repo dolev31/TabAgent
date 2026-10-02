@@ -9,7 +9,7 @@ A card declares, for one decision:
   - ``column`` or a stateless primitive (``features.STATELESS``), or ``python:<module>:<fn>`` (modules
     outside ``tabagent`` only when the card is loaded with ``trust_code=True``);
   - ``fitted:<name>``, a dependency statistic fitted on the real training rows of a fold
-    (``fitted.FITTED``), such as candidate priors;
+    (``fitted.FITTED``), such as candidate priors and co-usage rates;
   - ``extractor``, a column produced by the TabSchema-compiled extractor (``extract.py``);
 
 * the free-text columns TabSynth may paraphrase, and provenance (who or what authored the card).

@@ -2,12 +2,14 @@
 
 A saved model is a directory with no pickle: `card.yaml`, fitted statistics (`fitted.json`, `fitted.npz`),
 `featurizer.json`, CatBoost's `model.cbm`, and a `manifest.json` with the SHA-256 of every file (a modified
-artifact is refused). A head saved by `onboard` adds the compiled extractor `extract.py`. `tabagent.load(path)`
-reads both kinds, and the kind decides what a decision takes as input:
+artifact is refused). A head saved by `onboard` adds the compiled extractor `extract.py` and `head.json` (the
+decision, the gate threshold and, when the head knows them, the log adapter with its prefix settings and the
+redaction function's import path). `tabagent.load(path)` reads both kinds, and the kind decides what a decision
+takes as input:
 
 | saved by | `tabagent.load` returns | decide from | call |
 |---|---|---|---|
-| `tabagent.onboard(..., out=...)` or `tabagent onboard --out` | an onboarded head (with `extract.py`, the compiled TabSchema extractor) | a raw trajectory prefix, in the log format it was trained on | `head.decide(prefix, candidates, k=9)` → `{"candidates", "scores", "confidence", "deferred"}` (`"choice"` instead of `"candidates"` for a single-class head) |
+| `tabagent.onboard(..., out=...)` or `tabagent onboard --out` | an onboarded head (with `extract.py`, the compiled TabSchema extractor) | the decision's trajectory prefix, as the log adapter built it in training; or the live run, from which the head builds that prefix | `head.decide(prefix, candidates, k=9)` or `head.decide(run=run, candidates=..., k=9)` → `{"candidates", "scores", "confidence", "deferred", "error"}` (`"choice"` instead of `"candidates"` for a single-class head) |
 | `TabAgent.save` (also `ranker.agent_.save(...)` from the scikit-learn estimators) | a `TabAgent` (no extractor) | rows that already carry the columns it was trained on, one per candidate, with the decision and candidate ids in the columns its spec names | `agent.decide(rows, k=9)`, with `rows` a `DecisionTable` or a DataFrame of one decision's candidate rows → a DataFrame (decision, candidate, score, rank) |
 
 The HTTP service and the tool filter below need an onboarded head, since they receive raw prefixes. Calling
@@ -34,18 +36,58 @@ agent.decide(DecisionTable(rows, spec, has_labels=False), k=5)
 [`examples/04_deploy.py`](https://github.com/dolev31/TabAgent/blob/main/examples/04_deploy.py) runs either
 kind.
 
+## Live prefixes
+
+An onboarded head scores the prefix its log adapter produced in training (`DecisionPoint.prefix`), not the raw
+log. For chat-message logs that is the run-level task fields the logs carry next to the messages (`instruction`,
+`domain`, ...; never the task id, which only names the cross-validation group) and the messages normalized to
+`{"name", "content", "tool_calls", "tool_name"}` steps; for CUGA and generic step logs, the trajectory so far
+without its outcome fields. A live decision must reach the extractor in the same shape:
+
+```python
+run = {"instruction": goal, "messages": messages_so_far}  # the logged run's fields, up to the decision
+head.live_prefix(run)  # the prefix exactly as in training (tabagent.adapters.live_prefix)
+head.decide(run=run, candidates=tools, k=9)  # the same, in one call
+```
+
+`live_prefix` uses the adapter recorded in `head.json`. `tabagent onboard` records it; for a head onboarded from
+Python, set `head.adapter = adapter` (the adapter that read the logs) before `save`, or pass `adapter=` to
+`TabAgentHead.load` or `live_prefix`.
+
+**When the extractor fails** on a prefix (a field the training prefixes had is missing, the extractor raises,
+the sandbox cannot start), the head does not crash: the extractor's features are left empty (None, exactly as
+for a training decision point it failed on), the decision is `deferred` to the original LLM whatever its
+confidence, and `error` says why. When the extractor read a top-level field the prefix lacks, `error` names it
+and points to the run-level fields to pass.
+
 **HTTP service** (`pip install "tabagent[serve]"`): `tabagent serve my_head --port 8077`, then
-`POST /decide {"prefix": {...}, "candidates": [...], "k": 9}`.
+`POST /decide {"prefix": {...}, "candidates": [...], "k": 9}`, or `{"run": {...}, ...}` to have the head build
+the prefix from the run. A failed extraction is answered with `"deferred": true` and its `"error"`; an invalid
+request (a ranking head without candidates, both a prefix and a run) with status 400.
 
 **In front of a tool-calling LLM**: `ToolFilter` sends the model only the shortlisted tools, and the full list
-when the head is unsure.
+when the head defers (unsure, or its extractor failed). Pass the run-level fields the training logs carried as
+`task`, once (`ToolFilter(..., task={"domain": "airline"})`) or per call.
 
 ```python
 from tabagent.integrations.openai_tools import ToolFilter
 
 tool_filter = ToolFilter("my_head", k=9)
-client.chat.completions.create(model=..., messages=messages, tools=tool_filter(messages, tools))
+tools_to_send = tool_filter(messages, tools, task={"instruction": goal})
+client.chat.completions.create(model=..., messages=messages, tools=tools_to_send)
 ```
+
+**Sandbox**: an onboarded head runs its extractor in a resource-limited subprocess with an empty environment
+by default. `trust_extractor=True` (`--trust-extractor`) runs it in-process, for an extractor you have
+reviewed; `sandbox="docker"` (`tabagent serve --sandbox docker`; also `docker:<image>`, or a sandbox instance)
+runs it in Docker with no network and a read-only filesystem. `TabAgentHead.load`, `tabagent.load` and
+`ToolFilter` take `sandbox=` (see `SECURITY.md`).
+
+**Redaction**: `onboard(..., redact=fn)` (`--redact module:function`) scrubs the trajectories before
+discovery. A head applies the same function to live runs only when it is passed again:
+`TabAgentHead.load(..., redact=fn)`, `ToolFilter(..., redact=fn)` or `tabagent serve --redact module:function`.
+`head.json` records the function's import path when it is known, and loading such a head without `redact=`
+warns. A head never imports it by itself, and `decide(prefix, ...)` takes the prefix as given.
 
 **Confidence gate**: `onboard(..., gate_coverage=0.9)` calibrates a threshold so that 90% of decisions stay
 with the head and the least confident 10% go back to the LLM (paper App. N.3, "Confidence-gated fallback";

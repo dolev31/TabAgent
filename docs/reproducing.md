@@ -7,6 +7,13 @@ the training folds, tied scores ordered uniformly at random with the exact expec
 writes `results/paper_cells.md` with the paper value, the released value, the difference and a 95% bootstrap
 interval. Nothing is tuned to match.
 
+Every cell runs on the feature card bundled with its dataset, so reproducing calls no LLM. A card is *frozen*
+when its feature list was taken from the paper's experiment code for that benchmark and fixed, every feature
+recomputed by the release's code (a few frozen cards are variants; each card's `provenance` note says how), and
+*hand-authored* when it was written for the release from the paper's description of the benchmark's features
+(App. B); `provenance.kind` in each card says which. No cell runs TabSchema, and the released TabSchema
+implementation has not yet been validated against a paper number (see "Differences from the paper").
+
 ```bash
 uv sync --extra embed      # the exact environment of uv.lock, with the e5 encoder's dependencies
 make data                  # every public dataset, pinned and SHA-256 verified (about 7.9 GB)
@@ -125,8 +132,10 @@ Every remaining difference between the released code and the paper, with its eff
   cross-validation chooses among no synthesis and four configurations; over the 15 outer folds (5 folds × 3
   seeds) it chose synthesis in 10 (airline), 8 (retail), 14 (telecom) and 13 (combined).
 - **Feature cards.** The paper runs the TabSchema loop inside each training fold (Sec. 4.3). The bundled
-  cards are frozen or hand-authored (`provenance.kind` in each card); only their data-dependent statistics
-  (candidate priors, co-usage counts, embedding centering) are fitted inside each training fold. The routing
+  cards are frozen or hand-authored (defined above; `provenance.kind` in each card), so no cell runs TabSchema;
+  only their data-dependent statistics (candidate priors, embedding centering, k-NN outcomes) are fitted inside
+  each training fold. On your own logs, `tabagent.cross_validate_discovery` runs discovery inside each training
+  fold as the paper describes; the released TabSchema has not been compared with a paper number yet. The routing
   cards (sub-agent and model routing) omit a `task_family_solve_rate` feature (the mean success of all arms on
   similar tasks) that the paper's cards had. The skill-gating card encodes the skill bundle as a passage and
   computes its similarity on both arms.

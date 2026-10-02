@@ -42,7 +42,7 @@ def test_task_decision_prefix_holds_only_pre_decision_information(tmp_path):
     (dp,) = adapter.decision_points(trajs["run0"], TOOL_SHORTLIST)
 
     assert dp.step_index == 4 and dp.group == "task0" and dp.id == "run0#4"
-    assert set(dp.prefix) == {"task_id", "instruction", "steps"}
+    assert set(dp.prefix) == {"instruction", "steps"}  # the task id names the group, it is not a feature
     assert [s["name"] for s in dp.prefix["steps"]] == ["system", "user", "user"]  # no assistant chatter
     assert all(set(s) == {"name", "content", "tool_calls", "tool_name"} for s in dp.prefix["steps"])
     dumped = json.dumps(dp.prefix)

@@ -1,0 +1,100 @@
+"""`tabagent.cross_validate_discovery`: TabSchema discovery inside every training fold (paper Sec. 4.3),
+with a scripted LLM (no network)."""
+
+import pytest
+from test_discover import adapter, responder, write_logs
+
+import tabagent
+from tabagent.evaluation import DiscoveryCVResult
+from tabagent.tabschema import TabSchemaConfig
+from tabagent.tabschema.llm import BudgetExceeded, ScriptedLLM
+from tabagent.tabschema.orchestrator import TabSchema
+
+
+@pytest.fixture
+def logs(tmp_path):
+    d = tmp_path / "logs"
+    d.mkdir()
+    write_logs(d)
+    return d
+
+
+def _run(logs, tmp_path, llm, **kw):
+    cfg = kw.pop("config", TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False))
+    return tabagent.cross_validate_discovery(
+        logs,
+        "ShortlisterAgent",
+        adapter=adapter(),
+        llm=llm,
+        config=cfg,
+        n_splits=3,
+        search=None,
+        iterations=40,
+        run_dir=tmp_path / "infold",
+        **kw,
+    )
+
+
+def test_discovery_runs_on_the_training_fold_only(logs, tmp_path, monkeypatch):
+    seen = []
+    discover = TabSchema.discover
+
+    def spy(self, trajectories, target, kind="ranking", name=None):
+        seen.append({str(t.group) for t in trajectories})
+        return discover(self, trajectories, target, kind, name)
+
+    monkeypatch.setattr(TabSchema, "discover", spy)
+    res = _run(logs, tmp_path, ScriptedLLM(responder), seeds=(0, 1))
+
+    assert isinstance(res, DiscoveryCVResult) and len(seen) == 3  # once per fold, reused by the second seed
+    groups = set(map(str, res.table.groups))
+    for f in range(3):
+        held_out = {g for g, ff in res.folds.items() if ff == f}
+        trained_on = groups - held_out
+        assert trained_on in [s & groups for s in seen]  # failed runs of training tasks may come along
+        assert not any(s & held_out for s in seen if s & groups == trained_on)
+    assert set(res.discoveries) == {0, 1, 2} and res.seeds == [0, 1]
+    assert {"user_intent", "plan_note"} <= set(res.discoveries[0].card.feature_names)
+    assert res.summary(["p@r"]).loc["p@r", "value"] > 0.9
+    assert res.cost_usd is None  # the scripted model has no price
+
+
+def test_held_out_rows_use_their_fold_extractor_and_reruns_resume(logs, tmp_path):
+    llm = ScriptedLLM(responder)
+    first = _run(logs, tmp_path, llm)
+    n_calls = len(llm.calls)
+    again = _run(logs, tmp_path, llm)
+    assert len(llm.calls) == n_calls  # every fold resumes from its run directory
+    assert (first.oof[0] == again.oof[0]).all()
+    assert len({d.report.run_dir for d in first.discoveries.values()}) == 3
+
+
+def test_the_budget_covers_all_folds(logs, tmp_path):
+    prices = {"scripted": (1.0, 1.0)}
+    priced = TabSchemaConfig(n_analyze=2, workers=1, pair_embeddings=False, prices=prices)
+    res = _run(logs, tmp_path / "a", ScriptedLLM(responder, model="scripted"), config=priced)
+    per_fold = [d.report.cost["total_usd"] for d in res.discoveries.values()]
+    assert res.cost_usd == pytest.approx(sum(per_fold)) and min(per_fold) > 0
+
+    capped = TabSchemaConfig(
+        n_analyze=2, workers=1, pair_embeddings=False, prices=prices, max_cost_usd=1.5 * max(per_fold)
+    )
+    llm = ScriptedLLM(responder, model="scripted")
+    with pytest.raises(BudgetExceeded):
+        _run(logs, tmp_path / "b", llm, config=capped)
+    assert len(llm.calls) > 0  # the first fold ran; the second one ran out of budget
+
+
+def test_recipe_selection_runs_on_each_training_fold(logs, tmp_path):
+    cfg = TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False)
+    res = tabagent.cross_validate_discovery(
+        logs,
+        "ShortlisterAgent",
+        adapter=adapter(),
+        llm=ScriptedLLM(responder),
+        config=cfg,
+        n_splits=3,
+        iterations=30,
+        run_dir=tmp_path / "infold",
+    )
+    assert set(res.recipes) == {0, 1, 2} and all("synth=" in r for r in res.recipes.values())

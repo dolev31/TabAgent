@@ -201,6 +201,14 @@ baseline, and sub-agent routing and skill gating, where it is on par with the be
 [Reproducing the paper](reproducing.md) recomputes every public row.
 { .ta-note }
 
+The reproducible rows run on the feature cards bundled with each public dataset, not on a new TabSchema run, so
+reproducing them calls no LLM. A card is *frozen* when its feature list was taken from the paper's experiment
+code for that benchmark and fixed, every feature recomputed by the release's code (a few frozen cards are
+variants; each card's `provenance` note says how), and *hand-authored* when it was written for the release from
+the paper's description of the benchmark's features (`provenance.kind` in each card). The released TabSchema
+implementation has not yet been validated against a paper number.
+{ .ta-note }
+
 <div class="ta-findings" markdown>
 
 <figure class="ta-figure" markdown="span">
@@ -232,7 +240,8 @@ What the paper finds, across three decision families and seven agent benchmarks:
 ```bash
 pip install tabagent                    # core: tables, TabSynth, TabHead, evaluation
 # until the PyPI release: pip install "tabagent @ git+https://github.com/dolev31/TabAgent"
-pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI-compatible LLM client)
+pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI and OpenAI-compatible LLMs)
+pip install "tabagent[llm]"             # + Anthropic, Gemini and other LLM providers through LiteLLM
 pip install "tabagent[embed]"           # + e5 context-candidate similarity features
 pip install "tabagent[serve]"           # + HTTP decision service
 ```
@@ -344,9 +353,9 @@ embeddings alone collapses, and trace-derived features make it accurate.
 
 ??? question "Does the classifier head matter?"
 
-    Little. With the TabSchema feature card held fixed, heads from classical trees to tabular foundation models such
-    as TabPFN and TabSTAR reach useful and comparable P@R on skill selection, and every head collapses to P@R 0.10 to
-    0.21 without the card. The gains come from the trace-derived representation, not the model, which is why one
+    Little. With the skill-selection feature card held fixed, heads from classical trees to tabular foundation
+    models such as TabPFN and TabSTAR reach useful and comparable P@R on skill selection, and every head collapses
+    to P@R 0.10 to 0.21 without the card. The gains come from the trace-derived representation, not the model, which is why one
     lightweight CatBoost head serves every decision family in the paper.
 
 ??? question "Does TabSynth always help?"

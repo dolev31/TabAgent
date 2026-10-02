@@ -41,16 +41,25 @@ if isinstance(head, TabAgent):
     rows = rows.assign(**{spec.group: "new-task", spec.candidate: rows["tool"]})
     print(head.decide(DecisionTable(rows, spec, has_labels=False), k=2))
 else:
-    # 1. In-process: the prefix is the trajectory so far, in the same format the head was trained on.
-    prefix = {"steps": [{"name": "user", "content": REQUEST, "tool_calls": []}]}
-    print(head.decide(prefix, TOOLS, k=2))
+    # The run-level fields your training logs carry next to the messages (an instruction, a domain, ...):
+    # the extractor may read them, so a live decision needs them too.
+    task = {}
+    messages = [{"role": "user", "content": REQUEST}]
+
+    # 1. In-process. decide(prefix, ...) takes the prefix as the log adapter built it in training;
+    #    decide(run=...) builds it from the live run with the adapter recorded in the head.
+    if head.adapter is not None:
+        print(head.decide(run={**task, "messages": messages}, candidates=TOOLS, k=2))
+    else:  # a head saved without its adapter: the prefix of OpenAIMessagesAdapter, built by hand
+        prefix = {**task, "steps": [{"name": "user", "content": REQUEST, "tool_calls": [], "tool_name": ""}]}
+        print(head.decide(prefix, TOOLS, k=2))
+    # A decision is "deferred" (back to your LLM) when the head is unsure or its extractor failed ("error").
 
     # 2. Over HTTP (pip install "tabagent[serve]"):  tabagent serve my_head --port 8077
-    #    POST /decide {"prefix": {...}, "candidates": [...], "k": 9}
+    #    POST /decide {"run": {...}, "candidates": [...], "k": 9}, or {"prefix": {...}, ...}
 
     # 3. In front of a tool-calling LLM: send the model only the tools the head shortlists.
-    tool_filter = ToolFilter(head, k=9)
-    messages = [{"role": "user", "content": REQUEST}]
+    tool_filter = ToolFilter(head, k=9, task=task)
     tools = [{"type": "function", "function": {"name": n, "description": n.replace("_", " ")}} for n in TOOLS]
     print([t["function"]["name"] for t in tool_filter(messages, tools)])
     # client.chat.completions.create(model=..., messages=messages, tools=tool_filter(messages, tools))

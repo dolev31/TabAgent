@@ -3,8 +3,9 @@
     tabagent scan LOGS [--price-in X --price-out Y] [--format text|markdown|json]
                                                   rank the LLM calls in agent logs that TabAgent can replace
     tabagent components LOGS                      list the decision components found in agent logs
-    tabagent onboard LOGS --decision NAME --out DIR [--dry-run]
-    tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor]
+    tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION]
+    tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox docker]
+                   [--redact MODULE:FUNCTION]
     tabagent datasets                             list the public benchmark datasets
     tabagent datasets NAME [--download]           describe one dataset, or build it
     tabagent datasets --all --download            fetch and build every public dataset
@@ -96,25 +97,44 @@ def _components(args) -> int:
     return 0
 
 
+def _redact(ref: str | None):
+    """The redaction function an import path ``module:function`` names, checked before any work."""
+    if ref is None:
+        return None
+    from tabagent.api import import_object
+
+    try:
+        fn = import_object(ref)
+    except (ImportError, AttributeError) as e:
+        raise ValueError(f"--redact {ref}: cannot import it ({e})") from e
+    if not callable(fn):
+        raise ValueError(f"--redact {ref}: not a function")
+    return fn
+
+
 def _onboard(args) -> int:
     import tabagent
+    from tabagent.adapters import detect_adapter
     from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
 
     price = _prices(args)
+    redact = _redact(args.redact)
+    adapter = detect_adapter(args.logs)
     llm = None if args.dry_run else auto_llm(args.model)
     model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
     prices = None if price is None else {model: price}
     result = tabagent.onboard(
         args.logs,
         args.decision,
+        adapter=adapter,
         llm=llm,
         model=args.model,
         kind=args.kind,
-        out=args.out,
         n_analyze=args.n_analyze,
         max_cost_usd=args.max_cost,
         prices=prices,
         dry_run=args.dry_run,
+        redact=redact,
         search=args.search,
         llm_cost_per_call=args.llm_cost_per_call,
         trust_extractor=args.trust_extractor,
@@ -123,6 +143,11 @@ def _onboard(args) -> int:
     )
     print(result if args.dry_run else result.report)
     if not args.dry_run and args.out:
+        # head.json records the adapter (so live prefixes are built as in training) and the redaction
+        # function's import path (so serving can be told to apply it too)
+        result.adapter = result.adapter or adapter
+        result.redact = result.redact or args.redact
+        result.save(args.out)
         print(f"saved to {args.out}")
     return 0
 
@@ -130,7 +155,8 @@ def _onboard(args) -> int:
 def _serve(args) -> int:
     from tabagent.serve import serve
 
-    serve(args.path, args.host, args.port, args.trust_extractor)
+    _redact(args.redact)
+    serve(args.path, args.host, args.port, args.trust_extractor, sandbox=args.sandbox, redact=args.redact)
     return 0
 
 
@@ -290,7 +316,8 @@ def build_parser() -> argparse.ArgumentParser:
         help="discover features, train and evaluate a head from agent logs",
         description=(
             "Discover a feature card with TabSchema, train and evaluate a head, and save it. The LLM comes "
-            "from environment keys (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...)."
+            "from environment keys: OpenAI, Azure OpenAI or any OpenAI-compatible server (OPENAI_API_KEY, "
+            "OPENAI_BASE_URL), or Anthropic, Gemini and others through LiteLLM (tabagent[llm])."
         ),
         formatter_class=_FORMATTER,
         parents=[verbose],
@@ -323,6 +350,12 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument(
         "--gate-coverage", type=float, help="calibrate the confidence gate to keep this share of decisions"
     )
+    p.add_argument(
+        "--redact",
+        metavar="MODULE:FUNCTION",
+        help="a function applied to every trajectory before any LLM call (an import path, e.g. "
+        "mypkg.privacy:scrub); recorded in head.json, and applied when serving only if passed again",
+    )
     p.add_argument("--dry-run", action="store_true", help="estimate the work and cost, call no LLM")
     p.set_defaults(fn=_onboard)
 
@@ -338,6 +371,18 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--port", type=int, default=8077, help="port to listen on")
     p.add_argument(
         "--trust-extractor", action="store_true", help="run the extractor in-process (reviewed code only)"
+    )
+    p.add_argument(
+        "--sandbox",
+        default="subprocess",
+        metavar="{subprocess,docker,docker:IMAGE}",
+        help="where the untrusted extractor runs: a resource-limited subprocess, or Docker with no network "
+        "and a read-only filesystem",
+    )
+    p.add_argument(
+        "--redact",
+        metavar="MODULE:FUNCTION",
+        help="the redaction function the head was onboarded with, applied to every run before its prefix",
     )
     p.set_defaults(fn=_serve)
 

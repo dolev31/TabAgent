@@ -134,3 +134,20 @@ def test_onboard_budget_without_price_is_a_user_error(tmp_path, monkeypatch, cap
     assert "no price is known for model 'scripted'" in err and "--price-in and --price-out" in err
     assert main(["onboard", str(tmp_path), "--dry-run", "--price-in", "1"]) == 2
     assert "go together" in capsys.readouterr().err
+
+
+def test_redact_is_an_import_path(tmp_path, capsys):
+    write_openai_logs(tmp_path, n=12)
+    assert main(["onboard", str(tmp_path), "--dry-run", "--redact", "copy:deepcopy"]) == 0
+    assert main(["onboard", str(tmp_path), "--dry-run", "--redact", "no_such_module_xyz:scrub"]) == 2
+    assert "--redact no_such_module_xyz:scrub: cannot import it" in capsys.readouterr().err
+    assert main(["onboard", str(tmp_path), "--dry-run", "--redact", "copy"]) == 2
+    assert "module:function" in capsys.readouterr().err
+    assert main(["serve", str(tmp_path), "--redact", "json:no_such_function"]) == 2
+
+
+def test_serve_offers_the_docker_sandbox(capsys):
+    with pytest.raises(SystemExit):
+        main(["serve", "--help"])
+    out = capsys.readouterr().out
+    assert "--sandbox" in out and "docker" in out and "--redact" in out

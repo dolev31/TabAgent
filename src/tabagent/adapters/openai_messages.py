@@ -7,12 +7,14 @@ of a ``.jsonl`` file. Optional fields: ``tools`` (the tool catalog), an outcome 
 ``tool_result`` blocks and a top-level ``system``; LangChain ``type``/``tool_calls`` dumps) are normalized
 to one step shape, which is what TabSchema's extraction code reads::
 
-    {"task_id": "t1", "steps": [{"name": "user", "content": "...", "tool_calls": [], "tool_name": ""}, ...]}
+    {"instruction": "...", "steps": [{"name": "user", "content": "...", "tool_calls": [], "tool_name": ""}]}
 
 Every step has the same four keys: ``name`` (system, user, assistant or tool), ``content`` (text; images and
 base64 payloads become placeholders, very long text is clipped), ``tool_calls`` (the tools a turn called)
 and ``tool_name`` (for a tool result, the tool that produced it). Only scalar task fields from a whitelist
-(``task_keys``) are copied, so post-hoc run fields (durations, costs, final answers) never reach a prefix.
+(``task_keys``) are copied, so post-hoc run fields (durations, costs, final answers) never reach a prefix. The
+task id is not copied either: it names the run's cross-validation group, and as a feature it could only
+memorize training tasks (a new task's id never occurs in training).
 
 Two decision targets:
 
@@ -382,12 +384,11 @@ class OpenAIMessagesAdapter:
             called.setdefault(name, set()).update(args)
         return steps
 
-    def _fields(self, run: dict, task_id: str) -> dict[str, Any]:
-        out: dict[str, Any] = {"task_id": task_id}
-        for k in self.task_keys:
-            if k != "task_id" and isinstance(run.get(k), (str, int, float, bool)):
-                out[k] = run[k]
-        return out
+    def _fields(self, run: dict) -> dict[str, Any]:
+        """The run-level task fields of a prefix: the scalar values of ``task_keys``, without the task id."""
+        ids = {"task_id", "id", self.task_id_key}
+        scalar = (str, int, float, bool)
+        return {k: run[k] for k in self.task_keys if k not in ids and isinstance(run.get(k), scalar)}
 
     # ------------------------------------------------------------------ the adapter protocol
     def decision_points(self, traj: Trajectory, target: str) -> list[DecisionPoint]:
@@ -397,7 +398,7 @@ class OpenAIMessagesAdapter:
         turns = [i for i, s in enumerate(steps) if s["name"] == "assistant" and s["tool_calls"]]
         if not turns:
             return []
-        fields = self._fields(traj.raw, self._task_id(traj.raw, traj.id))
+        fields = self._fields(traj.raw)
 
         def dp(i: int, prefix_steps: list[dict], calls: list[str]) -> DecisionPoint:
             prefix = {**fields, "steps": copy.deepcopy(prefix_steps)}
@@ -479,9 +480,14 @@ class OpenAIMessagesAdapter:
         return run["model"] if isinstance(run.get("model"), str) and run["model"] else None
 
     def live_prefix(self, run: dict, target: str | None = None) -> dict[str, Any]:
-        """The prefix of a live decision, built exactly as in training; ``run["messages"]`` holds the
-        conversation so far (for ``ToolShortlist``, the messages before the first tool call)."""
+        """The prefix of a live decision, built exactly as in training.
+
+        ``run`` has the shape of a logged run: ``messages`` holds the conversation so far (for
+        ``ToolShortlist``, the messages before the first tool call) and the run-level task fields
+        (``instruction``, ``domain``, ... as listed in ``task_keys``) sit next to it, as in the logs the head
+        was trained on. A field the training runs had and ``run`` lacks is missing from the prefix too.
+        """
         steps, _ = self._steps(run)
         if (target or self.target) == TOOL_SHORTLIST:
             steps = [s for s in steps if s["name"] in ("system", "user")]
-        return {**self._fields(run, self._task_id(run, "")), "steps": steps}
+        return {**self._fields(run), "steps": steps}
