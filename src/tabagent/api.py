@@ -44,9 +44,9 @@ from tabagent.tabschema.orchestrator import (
     DiscoveryReport,
     TabSchema,
     TabSchemaConfig,
-    sample_decision_points,
 )
 from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.sampling import sample_decision_points
 from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
 from tabagent.tabschema.trajectory import Candidate, Trajectory, clip_for_prompt, union_schema
 
@@ -704,7 +704,8 @@ def onboard(
             problems = []
         except (ValueError, NotImplementedError) as e:
             problems = [str(e)]
-        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed)
+        labels = getattr(adapter, "labels", None)
+        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
         tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models)
         return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name, problems)

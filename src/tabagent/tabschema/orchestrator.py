@@ -37,7 +37,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-import numpy as np
 import pandas as pd
 
 from tabagent.defaults import DEFAULT_SEED
@@ -60,6 +59,7 @@ from tabagent.tabschema.compile import CompiledExtractor, ExtractionError, Extra
 from tabagent.tabschema.judges import DECISIONS, Judge, MetaJudge, judge_table, run_judges
 from tabagent.tabschema.llm import LLM, BudgetExceeded, CostMeter, auto_llm
 from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.sampling import STRATEGIES, coverage, sample_decision_points
 from tabagent.tabschema.sandbox import SubprocessSandbox
 from tabagent.tabschema.trajectory import (
     DecisionPoint,
@@ -96,8 +96,11 @@ class TabSchemaConfig:
     Parameters
     ----------
     model: the LLM (default: the paper's GPT-5.4 on OpenAI, or the provider whose key is in the environment).
-    n_analyze: decision points the FeatureAnalyzer reads, sampled one per task first.
+    n_analyze: decision points the FeatureAnalyzer reads.
     sample_seed: seed of that sample.
+    sample_strategy: how the sample is drawn (see ``tabagent.tabschema.sampling``): ``coverage`` (one per
+        task first, covering the sources, positions in the run, prefix lengths and labels of the
+        onboarding data) or ``tasks`` (one per task, the first decision of each run).
     max_code_retries: CodeExecutor retries with the error fed back (three, App. D.1).
     json_retries: re-asks when an answer is not parseable JSON.
     accept: MetaJudge outcomes kept. The default keeps only ``accept``: conditionally accepted features are
@@ -126,6 +129,7 @@ class TabSchemaConfig:
     model: str | None = None
     n_analyze: int = 10
     sample_seed: int = DEFAULT_SEED
+    sample_strategy: str = "coverage"
     max_code_retries: int = 3
     json_retries: int = 1
     accept: tuple[str, ...] = ("accept",)  # add "conditional" to widen
@@ -236,24 +240,6 @@ class DiscoveryResult:
         return out
 
 
-def sample_decision_points(dps: list[DecisionPoint], n: int, seed: int) -> list[DecisionPoint]:
-    """Seeded sample that covers as many distinct tasks as possible before repeating one."""
-    rng = np.random.default_rng(seed)
-    by_group: dict[str, list[DecisionPoint]] = {}
-    for dp in dps:
-        by_group.setdefault(str(dp.group), []).append(dp)
-    groups = sorted(by_group)
-    rng.shuffle(groups)
-    out: list[DecisionPoint] = []
-    rnd = 0
-    while len(out) < n and any(len(v) > rnd for v in by_group.values()):
-        for g in groups:
-            if rnd < len(by_group[g]) and len(out) < n:
-                out.append(by_group[g][rnd])
-        rnd += 1
-    return out
-
-
 class TabSchema:
     """The FeatureOrchestrator: discovers a feature card for one decision component of an agent.
 
@@ -289,6 +275,9 @@ class TabSchema:
         unknown = sorted(set(self.config.stage_models) - set(STAGE_ROLES) - {"judges"})
         if unknown:
             raise ValueError(f"stage_models: unknown stages {unknown}; use {[*STAGE_ROLES, 'judges']}")
+        strategy = self.config.sample_strategy
+        if strategy not in STRATEGIES:
+            raise ValueError(f"sample_strategy must be one of {STRATEGIES}, not {strategy!r}")
         self.llms = {self.llm.model: self.llm, **(stage_llms or {})}
         for name in {*self.config.stage_models.values(), self.config.fallback_model} - {None}:
             if name not in self.llms:
@@ -400,8 +389,15 @@ class TabSchema:
         cfg = self.config
         known = union_paths(dp.prefix for dp in dps)
         outcome_keys = tuple(getattr(self.adapter, "outcome_keys", ()))
-        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed)
+        labels = getattr(self.adapter, "labels", None)
+        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
         store.write_json("sample.json", [dp.id for dp in sample])
+        covered = coverage(dps, sample, labels)
+        store.write_json("sample_coverage.json", covered)
+        report.notes.append(
+            f"analyzed sample ({cfg.sample_strategy}) covers "
+            + ", ".join(f"{a}/{b} {kind}" for kind, (a, b) in covered.items())
+        )
         logger.info(
             "TabSchema: %d decision points in %d successful trajectories; analyzing %d (run directory %s)",
             len(dps),

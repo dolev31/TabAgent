@@ -205,6 +205,18 @@ the offered ones (the catalog and the logged choices use different names), or se
 
 During discovery:
 
+* **The analyzed sample.** The FeatureAnalyzer reads `n_analyze` decision points, so they decide which
+  features can be found. Each pick goes to a task not sampled yet and, among those, to the decision point that
+  adds the most the sample has not covered: a source (log file), a position in the run (first, middle or last
+  decision), a prefix-length quartile and the decision's labels. On the public τ²-bench GPT-4.1 logs, the
+  default 10 points of the next-tool-call decision then cover all four positions and 16 of the 35 tools,
+  against two positions and 5 tools when each task gives its first decision. In four discovery runs per
+  sample there (Claude Opus 5.5, with GPT-6 Sol writing the code), the coverage sample gave heads with a mean
+  P@R of 0.820 against 0.812 (LLM features alone: 0.793 against 0.778), higher in three of the four runs, for
+  about $6.3 against $4.0 per discovery, since its proposals overlap less. That gain is within the spread
+  between runs. The run directory records the sample (`sample.json`) and its coverage
+  (`sample_coverage.json`, also a line of the report).
+  `TabSchemaConfig(sample_strategy="tasks")` restores the first-decision-per-task sample.
 * **A decision point that fails** (an unusable or truncated answer, a provider error such as a context
   overflow, code that never runs) is skipped, recorded in `analysis.json` with its error, and counted in the
   report; the run goes on with the others. When every point fails, the error names the first cause.
