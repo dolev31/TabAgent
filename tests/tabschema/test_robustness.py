@@ -254,7 +254,17 @@ class FakeLLM:
 
 
 def config(**kw) -> TabSchemaConfig:
-    return TabSchemaConfig(**{"n_analyze": 3, "workers": 2, "pair_embeddings": False, "timeout_s": 30, **kw})
+    # context_text=False: these tests pin the LLM-written features (the context text has its own tests)
+    return TabSchemaConfig(
+        **{
+            "n_analyze": 3,
+            "workers": 2,
+            "pair_embeddings": False,
+            "timeout_s": 30,
+            "context_text": False,
+            **kw,
+        }
+    )
 
 
 def schema_for(tmp_path, llm, run_id: str = "r1", ad=None, **kw) -> TabSchema:
@@ -546,6 +556,7 @@ def test_unplanned_columns_are_dropped_and_types_follow_the_data(tmp_path):
         None,
         TARGET,
         known_paths=union_paths(dp.prefix for dp in dps),
+        context_text=False,
     )
     assert compiled.dropped["whatever_extra"] == "not in the accepted feature plan"
     assert compiled.features == {
@@ -1472,3 +1483,158 @@ def test_decide_degrades_like_training_when_the_extractor_fails_or_omits_a_colum
     with pytest.warns(RuntimeWarning, match="failed on 1 of 1"):
         failed = head.decide({"no_intent": 1}, list(TOOLS), k=2)
     assert len(failed["candidates"]) == 2 and set(failed["scores"]) == set(TOOLS)
+
+
+# =========================================================================== content filters and stage models
+def filtered(p, n):
+    return ("", "content_filter")
+
+
+def test_content_filtered_answers_are_not_retried_on_the_same_model(tmp_path):
+    llm = FakeLLM(extractor=filtered)
+    with pytest.raises(Exception, match="content filter") as err:
+        discover(tmp_path, llm)
+    assert "stage_models" in str(err.value) and "extractor" in str(err.value)
+    # one call per analyzed decision point: no code-tag re-ask and no retries with the same model
+    assert llm.roles()["extractor"] == config().n_analyze
+
+
+def test_a_fallback_model_answers_when_the_content_filter_stops_one(tmp_path):
+    primary, backup = FakeLLM("primary", extractor=filtered), FakeLLM("backup")
+    schema = TabSchema(
+        primary,
+        config(fallback_model="backup"),
+        adapter(),
+        store=RunStore(tmp_path / "runs", "r1"),
+        stage_llms={"backup": backup},
+    )
+    result = schema.discover(runs(), TARGET)
+    assert set(result.extractor.features) == set(EXPRESSIONS)
+    assert backup.roles()["extractor"] == primary.roles()["extractor"]  # each filtered answer, asked once
+    calls = [json.loads(line) for line in (schema.store.dir / "llm_calls.jsonl").read_text().splitlines()]
+    assert {c.get("fallback_from") for c in calls if c["model"] == "backup"} == {"primary"}
+
+
+def test_stage_models_route_each_stage_to_its_model(tmp_path):
+    main, coder, judge = FakeLLM("main"), FakeLLM("coder"), FakeLLM("judge-model")
+    schema = TabSchema(
+        main,
+        config(stage_models={"extractor": "coder", "judges": "judge-model"}),
+        adapter(),
+        store=RunStore(tmp_path / "runs", "r1"),
+        stage_llms={"coder": coder, "judge-model": judge},
+    )
+    result = schema.discover(runs(), TARGET)
+    assert set(coder.roles()) == {"extractor"}
+    assert set(judge.roles()) == {"judge_relevance", "judge_generality", "judge_impact"}
+    assert not ({"extractor"} | set(judge.roles())) & set(main.roles())
+    assert result.card.provenance["models"]["extractor"] == "coder"
+    assert result.card.provenance["models"]["meta_judge"] == "main"
+
+
+def test_stage_models_are_checked_before_any_call(tmp_path):
+    with pytest.raises(ValueError, match="unknown stages"):
+        TabSchema(FakeLLM(), config(stage_models={"coder": "x"}), adapter())
+    with pytest.raises(ValueError, match="other"):  # a budget needs a price for every model the run may use
+        TabSchema(
+            FakeLLM("main"),
+            config(stage_models={"extractor": "other"}, max_cost_usd=5.0, prices={"main": (1.0, 1.0)}),
+            adapter(),
+            stage_llms={"other": FakeLLM("other")},
+        )
+
+
+def test_cli_parses_stage_models_prices_and_a_catalog(tmp_path):
+    from tabagent import cli
+
+    assert cli._pairs(["extractor=azure/gpt-6-sol", "judges = m"], "--stage-model") == {
+        "extractor": "azure/gpt-6-sol",
+        "judges": "m",
+    }
+    assert cli._model_prices(["azure/gpt-6-sol=2,10"]) == {"azure/gpt-6-sol": (2.0, 10.0)}
+    with pytest.raises(ValueError, match="KEY=VALUE"):
+        cli._pairs(["extractor"], "--stage-model")
+    with pytest.raises(ValueError, match="two numbers"):
+        cli._model_prices(["m=2"])
+    logs = tmp_path / "logs"
+    logs.mkdir()
+    run = {
+        "messages": [
+            {"role": "user", "content": "weather in Paris?"},
+            {"role": "assistant", "tool_calls": [{"function": {"name": "get_weather", "arguments": "{}"}}]},
+        ],
+        "reward": 1,
+    }
+    (logs / "run.json").write_text(json.dumps(run))
+    catalog = tmp_path / "tools.json"
+    catalog.write_text(
+        json.dumps({"get_weather": "Current weather for a city", "send_email": "Send an email"})
+    )
+    ad = cli._adapter_for(str(logs), str(catalog))
+    traj = ad.load(str(logs))[0]
+    dp = ad.decision_points(traj, TOOL_SHORTLIST)[0]
+    descriptions = {c.id: c.description for c in ad.candidates(dp)}
+    assert descriptions["get_weather"] == "Current weather for a city" and "send_email" in descriptions
+
+
+def test_dry_run_prices_each_stage_at_its_model(tmp_path):
+    from tabagent.api import _estimate
+
+    trajs = runs()
+    dps = [dp for t in trajs for dp in adapter().decision_points(t, TARGET)][:3]
+    one = _estimate(dps, {"a": (1.0, 1.0)}, "a")
+    split = _estimate(dps, {"a": (1.0, 1.0), "b": (10.0, 10.0)}, "a", stage_models={"extractor": "b"})
+    assert one[:2] == split[:2] and split[2] > one[2]  # same work, the code costs more on "b"
+    assert _estimate(dps, {"a": (1.0, 1.0)}, "a", stage_models={"extractor": "b"})[2] is None  # no price
+
+
+# =========================================================================== the appended context text
+def test_every_card_gets_the_context_text_and_its_similarity(tmp_path):
+    from tabagent.tabschema.compile import context_texts
+
+    trajs = runs()
+    result = discover(tmp_path, FakeLLM(), trajs, context_text=True)
+    feats = {f.name: f for f in result.card.features}
+    assert feats["context_text"].type == "text" and feats["context_text"].source == "extractor"
+    assert result.extractor.specs["context_text"]["added_by"] == "tabagent"  # marked as not LLM-written
+    assert "context_candidate_lex" in feats and "context_text" in feats["context_candidate_lex"].args["a"]
+    assert "context_text" in result.card.synth_text  # TabSynth paraphrases it
+    # the appended code is part of extract.py: the same text in the sandbox and in-process, for every prefix
+    dps = [dp for t in trajs for dp in adapter().decision_points(t, TARGET)]
+    sandboxed = ExtractorRunner(result.extractor.code).run([dp.prefix for dp in dps])
+    in_process = ExtractorRunner(result.extractor.code, trust_extractor=True).run([dp.prefix for dp in dps])
+    expected = context_texts([dp.prefix for dp in dps])
+    assert [f["context_text"] for f in sandboxed] == [f["context_text"] for f in in_process] == expected
+
+
+def test_the_context_text_skips_system_prompts_and_keeps_both_ends_of_long_histories():
+    from tabagent.tabschema.compile import context_texts
+
+    prefix = {
+        "task": "book a flight",
+        "steps": [
+            {"name": "system", "content": "POLICY " * 50},
+            {"name": "user", "content": "first request"},
+            *({"name": "assistant", "content": f"step {i} " + "x" * 200} for i in range(40)),
+            {"name": "user", "content": "latest message"},
+        ],
+    }
+    (text,) = context_texts([prefix])
+    assert "POLICY" not in text
+    assert text.startswith("book a flight") and "first request" in text and text.endswith("latest message")
+    assert len(text) <= 4000 + len("\n...\n")
+
+
+def test_the_context_text_never_shadows_an_llm_column_and_is_skipped_when_constant(tmp_path):
+    from tabagent.tabschema.compile import CompiledExtractor, _add_context_text
+
+    prefixes = [{"steps": [{"name": "user", "content": f"request {i}"}]} for i in range(4)]
+    res = CompiledExtractor("features = {}", {"context_text": "cat"})
+    _add_context_text(res, prefixes, {"context_text"})  # the LLM's extractor already has a context_text
+    assert res.features["context_text"] == "cat" and res.features["tabagent_context_text"] == "text"
+    assert "features['tabagent_context_text']" in res.code
+    flat = CompiledExtractor("features = {}", {"a": "num"})
+    _add_context_text(flat, [{"steps": [{"name": "Planner", "data": 1}]}] * 4, {"a"})  # no text anywhere
+    assert set(flat.features) == {"a"} and "no context text" in flat.notes[0]
+    off = discover(tmp_path, FakeLLM(), context_text=False)
+    assert "context_text" not in off.extractor.features

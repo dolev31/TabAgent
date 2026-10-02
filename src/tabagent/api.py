@@ -454,17 +454,23 @@ def _explain(error: str, prefix: dict[str, Any]) -> str:
 # the extractor (the plans of the point's proposals, retried about every other time) and the validator; then
 # the aggregator (40 proposals per call), the three judges and the MetaJudge (25 features per call) on the
 # distinct proposals, and the compile step (extractor and validator on the accepted features).
-_PROPOSALS = 12  # features an analyzer answer proposes
-_NEW_SHARE = 0.5  # share of a further decision point's proposals that no earlier point proposed
-_KEPT_SHARE, _ACCEPTED_SHARE = 0.6, 0.5  # of the distinct proposals: aggregated, then accepted
-_SPEC_CHARS, _ROW_CHARS, _CODE_CHARS = 600, 1500, 6000  # one feature plan, one MetaJudge row, extractor code
-_RETRY_FACTOR = 1.5  # extractor calls per extraction, retries included
-_TOKENS_PER_PROPOSAL = {"analyzer": 150, "validator": 60, "aggregator": 170, "judge": 150, "meta": 200}
-_CODE_TOKENS = 2000  # an extractor answer (thoughts and code)
+# Calibrated on two real onboardings (τ²-bench ToolShortlist, 10 decision points, Claude Opus 5.5 with the
+# extractor on GPT-6 Sol, 2026-10-02): proposals, merging and acceptance rates, and answer lengths per item.
+_PROPOSALS = 15  # features an analyzer answer proposes
+_NEW_SHARE = 0.8  # share of a further decision point's proposals that no earlier point proposed
+_KEPT_SHARE, _ACCEPTED_SHARE = 0.7, 0.35  # of the distinct proposals: aggregated, then accepted
+_SPEC_CHARS, _ROW_CHARS, _CODE_CHARS = 600, 4500, 11000  # one feature plan, one MetaJudge row, extractor code
+_RETRY_FACTOR = 1.8  # extractor calls per extraction, retries and code-tag re-asks included
+_TOKENS_PER_PROPOSAL = {"analyzer": 300, "validator": 170, "aggregator": 270, "judge": 380, "meta": 410}
+_CODE_TOKENS = 2900  # an extractor answer (thoughts and code)
 
 
 def _estimate(
-    sample, prices: dict | None, model: str, max_chars: int = 400_000
+    sample,
+    prices: dict | None,
+    model: str,
+    max_chars: int = 400_000,
+    stage_models: dict[str, str] | None = None,
 ) -> tuple[int, int, float | None]:
     """Estimated (input tokens, output tokens, USD or None without a price) of discovering on ``sample``."""
     text = prompts.text
@@ -495,19 +501,26 @@ def _estimate(
     compile_ = _RETRY_FACTOR * (len(text("code_extractor")) + schema + accepted * _SPEC_CHARS) + (
         len(text("code_validator")) + schema + accepted * _SPEC_CHARS + _CODE_CHARS
     )
-    tokens_in = int(analyzer + extractor + validator + whole_run + compile_) // 4
     per = _TOKENS_PER_PROPOSAL
-    tokens_out = int(
-        n * (_PROPOSALS * (per["analyzer"] + per["validator"]) + _RETRY_FACTOR * _CODE_TOKENS)
-        + unique * per["aggregator"]
-        + kept * (3 * per["judge"] + per["meta"])
-        + _RETRY_FACTOR * _CODE_TOKENS
-        + accepted * per["validator"]
-    )
-    if prices and model in prices:
-        pin, pout = prices[model]
-        return tokens_in, tokens_out, (tokens_in * pin + tokens_out * pout) / 1e6
-    return tokens_in, tokens_out, None
+    whole_run_out = unique * per["aggregator"] + kept * (3 * per["judge"] + per["meta"])
+    # (input chars, output tokens) by the stage whose model prices them
+    stages = {
+        "analyzer": (analyzer, n * _PROPOSALS * per["analyzer"]),
+        "extractor": (extractor + compile_, (n + 1) * _RETRY_FACTOR * _CODE_TOKENS),
+        "validator": (validator, (n * _PROPOSALS + accepted) * per["validator"]),
+        "aggregator": (whole_run, whole_run_out),
+    }
+    tokens_in = int(sum(c for c, _ in stages.values())) // 4
+    tokens_out = int(sum(o for _, o in stages.values()))
+    models = stage_models or {}
+    cost = 0.0
+    for stage, (chars, out) in stages.items():
+        name = models.get(stage) or (models.get("judges") if stage == "aggregator" else None) or model
+        if not prices or name not in prices:
+            return tokens_in, tokens_out, None
+        pin, pout = prices[name]
+        cost += (chars / 4 * pin + out * pout) / 1e6
+    return tokens_in, tokens_out, cost
 
 
 def _sandbox_from(spec: Any, timeout_s: float) -> SubprocessSandbox | None:
@@ -584,6 +597,8 @@ def onboard(
     gate_coverage: float | None = None,
     iterations: int | None = None,
     sandbox: Any = None,
+    stage_models: dict[str, str] | None = None,
+    fallback_model: str | None = None,
 ) -> TabAgentHead | DryRun:
     """Onboard an agent decision component from its logs (see the module docstring).
 
@@ -612,8 +627,11 @@ def onboard(
         ``trust_extractor``.
     run_dir: the TabSchema run directory itself (default: a new one under ``$TABAGENT_CACHE/runs``). A rerun
         with the same ``run_dir`` resumes from it: answers it already holds cost nothing.
-    config: a full ``TabSchemaConfig``; it then also sets ``model``, ``n_analyze``, ``max_cost_usd`` and
-        ``prices``, which must not be passed separately.
+    stage_models: a model per TabSchema stage, e.g. ``{"extractor": "azure/gpt-6-sol"}`` (see
+        ``TabSchemaConfig.stage_models``); each needs a price in ``prices`` with a budget.
+    fallback_model: asked once, for any stage, when the provider's content filter stops an answer.
+    config: a full ``TabSchemaConfig``; it then also sets ``model``, ``n_analyze``, ``max_cost_usd``,
+        ``prices``, ``stage_models`` and ``fallback_model``, which must not be passed separately.
     gate_coverage: calibrate the confidence gate so this share of decisions stays with the head (rankings).
     iterations: override the CatBoost iteration count (for quick runs).
 
@@ -630,6 +648,8 @@ def onboard(
         "n_analyze": n_analyze,
         "max_cost_usd": max_cost_usd,
         "prices": prices,
+        "stage_models": stage_models,
+        "fallback_model": fallback_model,
     }
     if config is not None and any(v is not None for v in given.values()):
         clash = sorted(k for k, v in given.items() if v is not None)
@@ -686,7 +706,7 @@ def onboard(
             problems = [str(e)]
         sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
-        tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars)
+        tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models)
         return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name, problems)
 
     llm = llm or auto_llm(cfg.model)

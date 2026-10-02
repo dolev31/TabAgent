@@ -127,7 +127,7 @@ writes the arguments and the replies.
 | OpenAI chat logs (`messages` with `tool_calls`, optional `tools`) | `ToolShortlist` (per task), `NextToolCall` (per turn) | the run's `tools`, or a catalog you pass | tools the run called |
 | Anthropic Messages API format (`tool_use` blocks) | same | same | same |
 | LangChain message dumps | same | same | same |
-| τ²-bench results (`simulations`) | `ToolShortlist` | the domain's tools | tools the run called |
+| τ²-bench results (`simulations`) | `ToolShortlist`, `NextToolCall` | the domain's tools (`tool_defs`), or a catalog you pass | tools the run called |
 | CUGA trajectories | any agent node, default `ShortlisterAgent` | APIs offered to the shortlister | APIs the code agent called |
 | generic JSON (`steps: [{name, ...}]`) | any step name | `candidates_fn=` | `labels_fn=` |
 
@@ -145,6 +145,12 @@ answer, run statistics) never reach the LLM or the extractor; the report names t
 field but the outcome keys). Generic JSON directories are read recursively; `results.json` and
 `metadata.json` (run summaries) and files that are not valid JSON are skipped.
 
+Candidate text (each tool's name, description and argument hints) is what the head matches the context
+against. When your logs record only the tool names (τ²-bench's public results, say), pass the catalog:
+`--catalog tools.json` (or `tools=` to the adapter; `catalog=` for CUGA) with OpenAI or Anthropic tool
+schemas, MCP tools or a `{name: description}` mapping. One catalog applies to every run; for a catalog per
+domain, keep the tool definitions in each log file.
+
 ## Privacy and cost
 
 Trajectories are sent to your LLM provider during discovery. Pass `redact=` (a function applied to every
@@ -155,8 +161,9 @@ live prefixes when it changes fields the extractor reads. `--dry-run` reports th
 points and an estimate of the tokens before any call, plus any problem that would stop a real run (see
 below). `max_cost_usd` (`--max-cost`) stops discovery before a call whose estimated cost (its prompt plus the
 stage's mean answer, counting calls already in flight) would take the total past it; it needs the model's
-prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}` (`--price-in`, `--price-out`), and is refused for a
-model without a price. Run directories hold trajectory text and live outside the repository
+prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}` (`--price-in`, `--price-out`; `--price
+MODEL=IN,OUT` for the other models of a run), and is refused for a model without a price. The report gives
+each model's cost and calls. Run directories hold trajectory text and live outside the repository
 (`~/.cache/tabagent/runs` by default).
 
 ## LLM providers
@@ -179,6 +186,14 @@ model with a lower output limit is retried at its own limit. An answer that stop
 `LLMTruncated` (on one decision point it only skips that point). The whole-run stages see at most 40
 (aggregator) or 25 (judges, MetaJudge) features per call, so that no answer has to restate an arbitrarily long
 list; up to those sizes every feature is handled in one call, as in the paper.
+
+**A model per stage.** `TabSchemaConfig(stage_models={"extractor": "azure/gpt-6-sol"})` (CLI `--stage-model
+extractor=azure/gpt-6-sol`, repeatable; `judges` covers the three judges) runs one stage on another model,
+for example a strong code model for the CodeExtractor. A provider's content filter can refuse one model's
+answers to one stage outright (the finish reason `content_filter`): such an answer is never retried on the
+same model, cached or re-asked; it raises `LLMContentFiltered`, whose message names the stage. Route that
+stage to another model, or set `fallback_model` (`--fallback-model`), which is asked once whenever a filter
+stops an answer (`llm_calls.jsonl` records the call with `fallback_from`).
 
 ## When something goes wrong
 
@@ -211,6 +226,12 @@ During discovery:
   is kept. An unusable CodeValidator answer leaves the deterministic checks in charge, with a note. A column
   that lists earlier candidates (the tools called before the decision, say) becomes the context of the card's
   fitted co-usage statistic (`fitted:co_usage`).
+* **The context text.** Every compiled extractor ends with a fixed function, appended by TabAgent and not
+  written by the LLM, that adds `context_text`: the prefix's task-level text fields and the texts of its steps
+  (system prompts skipped), keeping the start and the latest part of a long history. It gives every card a
+  context text for the context-candidate similarity features, TabSynth's paraphrases and the BM25 baseline,
+  even when the LLM's features are all flags and counts. Being part of `extract.py`, it runs identically at
+  training and at serving. `TabSchemaConfig(context_text=False)` leaves it out.
 
 A run that stops (a spent budget, no accepted feature, an extractor that cannot be compiled, a provider that
 stays down) leaves a partial `report.md` and every paid answer in its run directory. Rerun with the same

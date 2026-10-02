@@ -12,6 +12,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
@@ -19,11 +20,13 @@ from tabagent.tabschema import checks, prompts
 from tabagent.tabschema.llm import (
     LLM,
     CostMeter,
+    LLMContentFiltered,
     LLMFormatError,
     LLMResponse,
     LLMTruncated,
     extract_code,
     extract_json,
+    is_content_filtered,
     is_truncated,
 )
 from tabagent.tabschema.runstore import RunStore
@@ -96,15 +99,31 @@ def json_items(value: Any) -> list[dict[str, Any]]:
     return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
 
 
+def in_parallel(fn, items: list, workers: int = 1) -> list:
+    """``[fn(x) for x in items]``, run on up to ``workers`` threads; results keep the order of ``items``."""
+    if workers <= 1 or len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
+        return list(pool.map(fn, items))
+
+
 class Stage:
-    """Base of the LLM-backed stages: one prompt in, one answer out, metered and optionally cached."""
+    """Base of the LLM-backed stages: one prompt in, one answer out, metered and optionally cached.
+    ``workers`` bounds the concurrent calls of a stage that splits its work into batches."""
 
     role = "stage"
+    workers = 1
 
     def __init__(
-        self, llm: LLM, meter: CostMeter | None = None, store: RunStore | None = None, json_retries: int = 1
+        self,
+        llm: LLM,
+        meter: CostMeter | None = None,
+        store: RunStore | None = None,
+        json_retries: int = 1,
+        fallback: LLM | None = None,
     ):
         self.llm, self.meter, self.store, self.json_retries = llm, meter or CostMeter(), store, json_retries
+        self.fallback = fallback  # asked once when the provider's content filter stops ``llm``'s answer
 
     def _key(self, prompt: str) -> dict[str, str]:
         return {
@@ -154,10 +173,27 @@ class Stage:
                 self.store.forget("llm", self._key(p))
 
     def _live(self, prompt: str) -> LLMResponse:
+        r = self._ask(self.llm, prompt)
+        if is_content_filtered(r.finish_reason):
+            if self.fallback is not None and self.fallback.model != self.llm.model:
+                r = self._ask(self.fallback, prompt, fallback_from=self.llm.model)
+            if is_content_filtered(r.finish_reason):
+                stage = "judges" if self.role.startswith("judge_") else self.role
+                raise LLMContentFiltered(
+                    f"{self.role}: the provider's content filter stopped {r.model}'s answer "
+                    f"(finish_reason={r.finish_reason!r}, {r.output_tokens} tokens). The same prompt to the "
+                    "same model would be stopped again: give this stage another model with "
+                    f"TabSchemaConfig(stage_models={{{stage!r}: ...}}) (CLI --stage-model {stage}=MODEL) "
+                    "or a fallback_model (--fallback-model MODEL)"
+                )
+        return r
+
+    def _ask(self, llm: LLM, prompt: str, fallback_from: str = "") -> LLMResponse:
+        """One paid call to ``llm``: budgeted, metered, logged, and checked for truncation."""
         self.meter.check()  # a spent budget stops every stage before its next paid call
-        est = self.meter.reserve(self.role, self.llm.model, len(prompt))  # and so does one about to be
+        est = self.meter.reserve(self.role, llm.model, len(prompt))  # and so does one about to be
         try:
-            r = self.llm.complete(prompt, role=self.role)
+            r = llm.complete(prompt, role=self.role)
         finally:
             self.meter.release(est)
         # A paid answer is kept (and cached) even when it crosses the budget; the check before the next call
@@ -172,6 +208,7 @@ class Stage:
                     "output_tokens": r.output_tokens,
                     "latency_s": round(r.latency_s, 3),
                     "finish_reason": r.finish_reason,
+                    **({"fallback_from": fallback_from} if fallback_from else {}),
                 }
             )
         if is_truncated(r.finish_reason):
@@ -348,6 +385,8 @@ def extract_with_retries(
     for n in range(max_retries + 1):
         try:
             code = extractor(specs, schema_example, target, retry_block)
+        except LLMContentFiltered:  # the same prompt to the same model would be stopped again
+            raise
         except LLMFormatError as e:  # an answer without code is a failed attempt like any other
             attempt = ExtractionAttempt("", False, error=str(e))
         else:
@@ -419,8 +458,8 @@ class FeatureAggregator(Stage):
         support = {s.key: s.support for s in specs}
         kept: dict[str, FeatureSpec] = {}
         rejected: dict[str, FeatureSpec] = {}
-        for i in range(0, len(specs), self.batch):
-            k, r = self._aggregate(specs[i : i + self.batch])
+        batches = [specs[i : i + self.batch] for i in range(0, len(specs), self.batch)]
+        for k, r in in_parallel(self._aggregate, batches, self.workers):  # merged in batch order
             for s in k:
                 kept.setdefault(s.key, s)
             for s in r:

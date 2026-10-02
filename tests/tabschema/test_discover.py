@@ -170,7 +170,7 @@ def test_discovery_end_to_end(tmp_path):
     logs.mkdir()
     write_logs(logs)
     llm = ScriptedLLM(responder, model="scripted")
-    cfg = TabSchemaConfig(n_analyze=3, workers=2, pair_embeddings=False)
+    cfg = TabSchemaConfig(n_analyze=3, workers=2, pair_embeddings=False, context_text=False)
     schema = TabSchema(llm, cfg, adapter(), store=RunStore(tmp_path / "runs", "r1"))
     result = schema.discover(logs, "ShortlisterAgent")
 

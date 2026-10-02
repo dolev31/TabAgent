@@ -112,17 +112,52 @@ def _redact(ref: str | None):
     return fn
 
 
+def _pairs(items: list[str] | None, flag: str) -> dict[str, str]:
+    """``["KEY=VALUE", ...]`` from a repeatable flag -> ``{KEY: VALUE}``."""
+    out = {}
+    for item in items or []:
+        key, sep, value = item.partition("=")
+        if not sep or not key or not value:
+            raise ValueError(f"{flag} takes KEY=VALUE, not {item!r}")
+        out[key.strip()] = value.strip()
+    return out
+
+
+def _model_prices(items: list[str] | None) -> dict[str, tuple[float, float]]:
+    """``--price MODEL=IN,OUT`` (USD per 1M input and output tokens), repeatable."""
+    out = {}
+    for model, value in _pairs(items, "--price").items():
+        try:
+            pin, pout = (float(x) for x in value.split(","))
+        except ValueError:
+            raise ValueError(f"--price {model}=IN,OUT takes two numbers, not {value!r}") from None
+        out[model] = (pin, pout)
+    return out
+
+
+def _adapter_for(logs: str, catalog: str | None):
+    """The adapter for ``logs``, given the tool catalog file when there is one (``tools=`` for chat-message
+    and τ²-bench logs, ``catalog=`` for CUGA)."""
+    from tabagent.adapters import detect_adapter
+
+    if not catalog:
+        return detect_adapter(logs)
+    try:
+        return detect_adapter(logs, tools=catalog)
+    except TypeError:
+        return detect_adapter(logs, catalog=catalog)
+
+
 def _onboard(args) -> int:
     import tabagent
-    from tabagent.adapters import detect_adapter
     from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
 
     price = _prices(args)
     redact = _redact(args.redact)
-    adapter = detect_adapter(args.logs)
+    adapter = _adapter_for(args.logs, args.catalog)
     llm = None if args.dry_run else auto_llm(args.model)
     model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
-    prices = None if price is None else {model: price}
+    prices = {**({} if price is None else {model: price}), **_model_prices(args.price)} or None
     result = tabagent.onboard(
         args.logs,
         args.decision,
@@ -140,6 +175,8 @@ def _onboard(args) -> int:
         trust_extractor=args.trust_extractor,
         run_dir=args.run_dir,
         gate_coverage=args.gate_coverage,
+        stage_models=_pairs(args.stage_model, "--stage-model") or None,
+        fallback_model=args.fallback_model,
     )
     print(result if args.dry_run else result.report)
     if not args.dry_run and args.out:
@@ -337,6 +374,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--price-in", type=float, help="the model's price, USD per 1M input tokens")
     p.add_argument("--price-out", type=float, help="the model's price, USD per 1M output tokens")
+    p.add_argument(
+        "--stage-model",
+        action="append",
+        metavar="STAGE=MODEL",
+        help="a model for one TabSchema stage (analyzer, extractor, validator, aggregator, judges, "
+        "meta_judge); repeatable",
+    )
+    p.add_argument(
+        "--fallback-model",
+        help="asked once, for any stage, when the provider's content filter stops an answer",
+    )
+    p.add_argument(
+        "--price",
+        action="append",
+        metavar="MODEL=IN,OUT",
+        help="a model's price, USD per 1M input and output tokens (for --stage-model and --fallback-model "
+        "models); repeatable",
+    )
+    p.add_argument(
+        "--catalog",
+        help="a tool catalog file (OpenAI or Anthropic tool schemas, MCP tools, or {name: description}): the "
+        "candidates' names, descriptions and argument hints, when the logs do not carry them",
+    )
     p.add_argument("--search", default="fast", choices=["fast", "full"], help="training recipe search grid")
     p.add_argument(
         "--llm-cost-per-call", type=float, help="cost of the replaced LLM call (USD), for the report"

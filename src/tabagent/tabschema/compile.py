@@ -55,6 +55,54 @@ class ExtractionError(RuntimeError):
     """The extractor could not be made to run on the onboarding trajectories."""
 
 
+#: Appended to every compiled extractor (``context_text=True``): the decision's context as plain text, not
+#: written by the LLM. It reads the prefix's task-level text fields and the texts of its steps (system
+#: prompts, identical across decisions, are skipped) and keeps the start and the latest part of a long
+#: history. Being part of ``extract.py``, it runs identically at training and at inference. It gives the card
+#: a context text for the context-candidate similarity features, TabSynth's paraphrases and BM25.
+CONTEXT_TEXT_CODE = """
+
+# --- appended by TabAgent (not LLM-written): the decision's context as text ---
+def _tabagent_context_text(trajectory_data, limit=4000):
+    parts = []
+    for key, value in trajectory_data.items():
+        if key != "steps" and isinstance(value, str) and value.strip():
+            parts.append(value.strip())
+    for step in trajectory_data.get("steps") or []:
+        if not isinstance(step, dict) or step.get("name") == "system":
+            continue
+        for key in ("content", "text", "thoughts", "intent", "data"):
+            value = step.get(key)
+            if isinstance(value, str) and value.strip():
+                parts.append(value.strip())
+    text = "\\n".join(parts)
+    if len(text) <= limit:
+        return text
+    return text[: limit // 4] + "\\n...\\n" + text[-(limit - limit // 4) :]
+
+
+if isinstance(features, dict):
+    features[__TABAGENT_CONTEXT_COLUMN__] = _tabagent_context_text(trajectory)
+"""
+CONTEXT_TEXT_COLUMN = "context_text"
+
+
+def context_text_code(column: str) -> str:
+    """The appended context-text code, writing ``column``."""
+    return CONTEXT_TEXT_CODE.replace("__TABAGENT_CONTEXT_COLUMN__", repr(column))
+
+
+def context_texts(prefixes: list[dict], column: str = CONTEXT_TEXT_COLUMN) -> list[str]:
+    """The context texts the appended code computes for ``prefixes`` (run here, on JSON copies)."""
+    code = compile(context_text_code(column), "<context_text>", "exec")
+    out = []
+    for p in prefixes:
+        ns: dict[str, Any] = {"features": {}, "trajectory": json.loads(json.dumps(p, default=str))}
+        exec(code, ns)  # noqa: S102 - the library's own fixed code
+        out.append(ns["features"][column])
+    return out
+
+
 @dataclass
 class CompiledExtractor:
     """The compiled extractor: its code, the output columns with their frozen types, the feature plan each
@@ -132,6 +180,7 @@ def compile_extractor(
     max_null_rate: float = 0.5,
     reserved: frozenset[str] | set[str] = frozenset(),
     candidate_ids: frozenset[str] | set[str] = frozenset(),
+    context_text: bool = True,
 ) -> CompiledExtractor:
     """Write, check and quality-gate one extractor for the ``accepted`` features (see the module docstring).
     Output columns named like a column of the decision table (``reserved``) are dropped; ``candidate_ids``
@@ -204,7 +253,31 @@ def compile_extractor(
         raise ExtractionError(f"every compiled feature failed the quality gates ({reasons[:1000]})")
     if candidate_ids:
         result.co_usage_context = _co_usage_context(result, frame.loc[ok_rows], set(candidate_ids))
+    if context_text:  # after the co-usage search: the context text is free text, never a candidate list
+        _add_context_text(result, prefixes, set(reserved) | set(frame.columns))
     return result
+
+
+def _add_context_text(result: CompiledExtractor, prefixes: list[dict], taken: set[str]) -> None:
+    """Append the context-text code to the extractor when its text varies across decision points."""
+    column = CONTEXT_TEXT_COLUMN if CONTEXT_TEXT_COLUMN not in taken else f"tabagent_{CONTEXT_TEXT_COLUMN}"
+    values = pd.Series(context_texts(prefixes, column))
+    if values.nunique() <= 1:
+        result.notes.append("no context text added: the prefixes hold no text that varies across decisions")
+        return
+    result.code += context_text_code(column)
+    result.features[column] = "text"
+    result.specs[column] = {
+        "feature_name": column,
+        "feature_type": "text",
+        "description": "the decision's context as text: the prefix's task-level text fields and step texts "
+        "(added by TabAgent, not LLM-written)",
+        "added_by": "tabagent",
+    }
+    result.quality[column] = {
+        "null_rate": float((values.str.strip() == "").mean()),
+        "n_unique": int(values.nunique()),
+    }
 
 
 def _co_usage_context(result: CompiledExtractor, frame: pd.DataFrame, candidates: set[str]) -> str | None:

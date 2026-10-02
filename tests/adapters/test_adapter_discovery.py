@@ -53,7 +53,9 @@ def test_discovery_on_chat_message_logs(tmp_path):
     schema = TabSchema(ScriptedLLM(responder), cfg, adapter, store=RunStore(tmp_path / "runs", "r1"))
     result = schema.discover(logs, TOOL_SHORTLIST)
 
-    assert set(result.extractor.features) == {"user_request", "request_words"}
+    # the LLM's features, plus the context text TabAgent appends to every extractor
+    assert set(result.extractor.features) == {"user_request", "request_words", "context_text"}
+    assert {f.name: f.type for f in result.card.features}["context_text"] == "text"
     assert "constant" in result.report.dropped["n_user_turns"]  # every fabricated run has two user turns
     assert result.report.n_successful == 21 and result.report.n_decision_points == 21
     table = schema.build_table(result, adapter.load(logs), TOOL_SHORTLIST)

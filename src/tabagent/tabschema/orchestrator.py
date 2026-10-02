@@ -113,6 +113,14 @@ class TabSchemaConfig:
     prices: ``{model: (USD per 1M input tokens, USD per 1M output tokens)}``.
     max_prompt_chars: a decision-point prefix longer than this (as JSON) reaches the FeatureAnalyzer with its
         longest strings clipped.
+    stage_models: a model per stage, overriding ``model``: keys are stage roles (``analyzer``, ``extractor``,
+        ``validator``, ``aggregator``, ``meta_judge``, ``judge_relevance``, ...) or ``judges`` for all three
+        judges. For example ``{"extractor": "azure/gpt-6-sol"}`` when a provider's content filter stops one
+        model's code answers. Every model needs a price in ``prices`` when ``max_cost_usd`` is set.
+    fallback_model: asked once, for any stage, when the provider's content filter stops an answer.
+    context_text: append to the extractor a fixed, non-LLM function that returns the decision's context as
+        text (``context_text``), so every card has a context text for the context-candidate similarity
+        features, TabSynth and the BM25 baseline, even when the LLM's features are all flags and counts.
     """
 
     model: str | None = None
@@ -135,6 +143,21 @@ class TabSchemaConfig:
     max_cost_usd: float | None = None
     prices: dict[str, tuple[float, float]] = field(default_factory=dict)
     max_prompt_chars: int = 400_000
+    stage_models: dict[str, str] = field(default_factory=dict)
+    fallback_model: str | None = None
+    context_text: bool = True
+
+
+STAGE_ROLES = (
+    "analyzer",
+    "extractor",
+    "validator",
+    "aggregator",
+    "judge_relevance",
+    "judge_generality",
+    "judge_impact",
+    "meta_judge",
+)
 
 
 @dataclass
@@ -241,6 +264,8 @@ class TabSchema:
     adapter: reads the agent's logs into trajectories and decision points (default ``GenericJsonAdapter``).
     store: the run directory (default: a new one under ``$TABAGENT_CACHE/runs``).
     sandbox: runs LLM-written extraction code (default ``SubprocessSandbox``).
+    stage_llms: LLM backends by model name, for the models ``config.stage_models`` and
+        ``config.fallback_model`` name (default: built from the environment with ``auto_llm``).
 
     With ``config.max_cost_usd`` set, the model needs a price in ``config.prices``; otherwise the budget
     could not be enforced and the constructor raises ``ValueError``.
@@ -253,6 +278,7 @@ class TabSchema:
         adapter=None,
         store: RunStore | None = None,
         sandbox: SubprocessSandbox | None = None,
+        stage_llms: dict[str, LLM] | None = None,
     ):
         self.config = config or TabSchemaConfig()
         self.llm = llm or auto_llm(self.config.model)
@@ -260,10 +286,36 @@ class TabSchema:
         self.store = store
         self.sandbox = sandbox or SubprocessSandbox(timeout_s=self.config.timeout_s)
         self.meter = CostMeter(prices=dict(self.config.prices), max_cost_usd=self.config.max_cost_usd)
-        self.meter.require_price(self.llm.model)
+        unknown = sorted(set(self.config.stage_models) - set(STAGE_ROLES) - {"judges"})
+        if unknown:
+            raise ValueError(f"stage_models: unknown stages {unknown}; use {[*STAGE_ROLES, 'judges']}")
+        self.llms = {self.llm.model: self.llm, **(stage_llms or {})}
+        for name in {*self.config.stage_models.values(), self.config.fallback_model} - {None}:
+            if name not in self.llms:
+                self.llms[name] = auto_llm(name)
+        for name in self.llms:
+            self.meter.require_price(name)
+
+    def llm_for(self, role: str) -> LLM:
+        """The LLM of a stage: its ``stage_models`` entry (``judges`` for all three judges), else ``llm``."""
+        models = self.config.stage_models
+        name = models.get(role) or (models.get("judges") if role.startswith("judge_") else None)
+        return self.llms[name] if name else self.llm
+
+    def models(self) -> dict[str, str]:
+        """The model of every stage, and the fallback (``"fallback"``) when one is set."""
+        out = {role: self.llm_for(role).model for role in STAGE_ROLES}
+        if self.config.fallback_model:
+            out["fallback"] = self.config.fallback_model
+        return out
 
     def _stage(self, cls, *args):
-        return cls(*args, self.llm, self.meter, self.store, self.config.json_retries)
+        st = cls(*args, self.llm, self.meter, self.store, self.config.json_retries)
+        st.llm = self.llm_for(st.role)
+        st.workers = self.config.workers
+        fb = self.config.fallback_model
+        st.fallback = self.llms[fb] if fb else None
+        return st
 
     # ------------------------------------------------------------------ discovery
     def discover(
@@ -308,6 +360,7 @@ class TabSchema:
                 "target": target,
                 "kind": kind,
                 "model": self.llm.model,
+                "stage_models_resolved": self.models(),
                 "prompts_sha256": {p: prompts.sha256(p) for p in prompts.PROMPTS},
             },
         )
@@ -431,7 +484,7 @@ class TabSchema:
                 f"the FeatureAggregator kept none of the {len(proposals)} proposals; see aggregator.json"
             )
 
-        verdicts = run_judges(filtered, lambda d: self._stage(Judge, d))
+        verdicts = run_judges(filtered, lambda d: self._stage(Judge, d), workers=max(3, cfg.workers))
         table = judge_table(verdicts, proposals)
         decisions = self._stage(MetaJudge)(verdicts, table)
         store.write_json("judges.json", {"verdicts": verdicts, "table": table, "meta": decisions})
@@ -483,6 +536,7 @@ class TabSchema:
             max_null_rate=cfg.max_null_rate,
             reserved=RESERVED,
             candidate_ids=candidates,
+            context_text=cfg.context_text,
         )
         store.write_text("extract.py", compiled.code)
         report.compiled = dict(compiled.features)
@@ -563,6 +617,7 @@ class TabSchema:
             provenance={
                 "kind": "tabschema-llm",
                 "model": self.llm.model,
+                **({"models": self.models()} if len(set(self.models().values())) > 1 else {}),
                 "decision_points": n_dps,
                 "prompts_sha256": {p: prompts.sha256(p) for p in prompts.PROMPTS},
                 # what the card cost, including answers reused from the run directory at their first cost

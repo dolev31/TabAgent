@@ -98,6 +98,11 @@ class LLMTruncated(LLMFormatError):
     """The model stopped at its output-token limit, so its answer is incomplete."""
 
 
+class LLMContentFiltered(LLMFormatError):
+    """The provider's content filter stopped the model's answer (``finish_reason`` ``content_filter``): the
+    same prompt to the same model would be stopped again, so it is not retried on that model."""
+
+
 def chat_messages(system: str) -> list[dict[str, str]]:
     """The messages of one stage call: the prompt as the system message, then ``USER_TURN``."""
     return [{"role": "system", "content": system}, {"role": "user", "content": USER_TURN}]
@@ -106,6 +111,11 @@ def chat_messages(system: str) -> list[dict[str, str]]:
 def is_truncated(finish_reason: Any) -> bool:
     """Whether a provider's finish reason means the output-token limit was hit."""
     return str(finish_reason or "").lower() in ("length", "max_tokens")
+
+
+def is_content_filtered(finish_reason: Any) -> bool:
+    """Whether a provider's finish reason means its content filter (or a refusal) stopped the answer."""
+    return str(finish_reason or "").lower() in ("content_filter", "content_filtered", "refusal", "safety")
 
 
 _OUTPUT_LIMIT = re.compile(r"(?:at most|maximum(?: value)?(?: is| of)?|up to|>)\s*(\d+)")
@@ -406,6 +416,7 @@ class CostMeter:
     prices: dict[str, tuple[float, float]] = field(default_factory=lambda: dict(DEFAULT_PRICES))
     max_cost_usd: float | None = None
     by_stage: dict[str, dict[str, float]] = field(default_factory=_totals)
+    by_model: dict[str, dict[str, float]] = field(default_factory=_totals)
     unpriced: set[str] = field(default_factory=set)
     cached: dict[str, dict[str, float]] = field(default_factory=_totals)
     reserved_usd: float = 0.0
@@ -462,10 +473,11 @@ class CostMeter:
         """Add one response to ``stage``'s totals; raise ``BudgetExceeded`` past ``max_cost_usd`` (with
         ``check=False`` that is left to the checks before the next call)."""
         with self._lock:
-            s = self.by_stage[stage]
-            s["calls"] += 1
-            s["input_tokens"] += r.input_tokens
-            s["output_tokens"] += r.output_tokens
+            s, m = self.by_stage[stage], self.by_model[r.model]
+            for t in (s, m):
+                t["calls"] += 1
+                t["input_tokens"] += r.input_tokens
+                t["output_tokens"] += r.output_tokens
             usd = self.cost(r)
             if usd is None:
                 self.unpriced.add(r.model)
@@ -473,6 +485,7 @@ class CostMeter:
                     raise BudgetExceeded(f"cannot enforce max_cost_usd: no price for model {r.model!r}")
                 return
             s["usd"] += usd
+            m["usd"] += usd
         if check:
             self.check()
 
@@ -522,7 +535,13 @@ class CostMeter:
         if not self.priced or (calls and model and model not in self.prices):
             missing = ", ".join(sorted(self.unpriced or {model}))
             return f"cost unknown (no price for {missing}; {tokens}){reused}"
-        label = f"{model}; " if model else ""
+        if len(self.by_model) > 1:  # each model's share, so a multi-model run is not credited to one
+            label = "".join(
+                f"{name} ${t['usd']:.2f} in {int(t['calls'])} calls; "
+                for name, t in sorted(self.by_model.items())
+            )
+        else:
+            label = f"{model or next(iter(self.by_model), '')}; " if model or self.by_model else ""
         return f"${self.total_usd:.2f} ({label}{tokens}){reused}"
 
     def summary(self) -> dict[str, Any]:
@@ -540,6 +559,7 @@ class CostMeter:
             "input_tokens": tin,
             "output_tokens": tout,
             "stages": {k: dict(v) for k, v in self.by_stage.items()},
+            "models": {k: dict(v) for k, v in self.by_model.items()},
             "cached": {**cached, "first_paid_usd": self.cached_usd},
         }
 

@@ -18,7 +18,7 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from tabagent.tabschema import prompts
-from tabagent.tabschema.agents import FeatureSpec, Stage, json_items, normalize_name
+from tabagent.tabschema.agents import FeatureSpec, Stage, in_parallel, json_items, normalize_name
 from tabagent.tabschema.trajectory import get_json_schema
 
 JUDGES = {"relevance": "judge_relevance", "generality": "judge_generality", "impact": "judge_impact"}
@@ -110,14 +110,17 @@ class MetaJudge(Stage):
     batch = BATCH
 
     def __call__(self, verdicts: dict[str, list[dict]], table: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        decisions: dict[str, dict[str, Any]] = {}
-        for i in range(0, len(table), self.batch):
-            rows = table[i : i + self.batch]
+        def decide(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
             keys = {normalize_name(r["feature_name"]) for r in rows}
             part = {
                 d: [x for x in v if normalize_name(x["feature_name"]) in keys] for d, v in verdicts.items()
             }
-            for d in self._decide(part, rows):
+            return self._decide(part, rows)
+
+        batches = [table[i : i + self.batch] for i in range(0, len(table), self.batch)]
+        decisions: dict[str, dict[str, Any]] = {}
+        for out in in_parallel(decide, batches, self.workers):  # merged in batch order
+            for d in out:
                 decisions.setdefault(normalize_name(d["feature_name"]), d)
         return list(decisions.values())
 

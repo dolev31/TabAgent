@@ -14,7 +14,9 @@
    **MetaJudge** accepts, conditionally accepts or rejects it. Only accepted features go on: conditionally
    accepted ones are excluded by default, and `TabSchemaConfig(accept=("accept", "conditional"))` includes them.
 6. **Compile**: one reusable extractor for the accepted features, run and quality-checked on every onboarding
-   decision point; the result is a feature card plus `extract.py`.
+   decision point; the result is a feature card plus `extract.py`. The library appends a fixed, non-LLM
+   function that adds the decision's context as text (`context_text`), so every card can match the context
+   against the candidates' text.
 
 The seven prompts the paper prints (FeatureAnalyzer, CodeExtractor, FeatureAggregator, the three judges and the
 MetaJudge, App. D.2 and D.3) are reproduced verbatim and hash-pinned in the tests. The paper prints no
