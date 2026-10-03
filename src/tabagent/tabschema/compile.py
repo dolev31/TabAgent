@@ -50,7 +50,7 @@ from tabagent.tabschema.agents import (
     normalize_name,
 )
 from tabagent.tabschema.fitted import context_items
-from tabagent.tabschema.sandbox import SubprocessSandbox
+from tabagent.tabschema.sandbox import ExecResult, SubprocessSandbox
 from tabagent.tabschema.trajectory import DecisionPoint, merge_examples
 
 TEXT_CAP = 20_000
@@ -460,13 +460,16 @@ class ExtractorRunner:
         self.n_runs = 0
         self.n_failed = 0
 
-    def run(self, prefixes: list[dict]) -> list[dict | None]:
-        """The features of each prefix, or None where the extractor failed."""
+    def run(self, prefixes: list[dict], results_out: list[ExecResult] | None = None) -> list[dict | None]:
+        """The features of each prefix, or None where the extractor failed. ``results_out``, when given, is
+        extended with each prefix's ``ExecResult`` (the error and its kind where the extractor failed)."""
         errors: list[str] = []
+        per_prefix: list[ExecResult] = []
         if not self.trust_extractor:
             out = []
             for r in self.sandbox.run_batch(self.code, prefixes):
                 out.append(r.features if r.ok else None)
+                per_prefix.append(r)
                 if not r.ok:
                     errors.append(str(r.error))
         else:
@@ -482,9 +485,13 @@ class ExtractorRunner:
                     if not isinstance(feats, dict):
                         raise TypeError("the code must leave a dict named `features` in its global scope")
                     out.append(json.loads(json.dumps(feats)))
+                    per_prefix.append(ExecResult(True, out[-1]))
                 except Exception as e:  # the extractor is arbitrary code: any failure means no features
                     out.append(None)
                     errors.append(f"{type(e).__name__}: {e}")
+                    per_prefix.append(ExecResult(False, error=errors[-1], kind="error"))
+        if results_out is not None:
+            results_out.extend(per_prefix)
         self.n_runs += len(prefixes)
         self.n_failed += len(errors)
         if errors:

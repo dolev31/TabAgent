@@ -163,8 +163,10 @@ def test_a_served_head_gives_the_same_lists_and_defers_when_unreachable():
         def decide(self, prefix=None, candidates=None, k=None, defer_below=None, *, run=None):
             from tabagent.adapters import OpenAIMessagesAdapter, parse_catalog
 
-            if not candidates:
-                raise ValueError("a ranking head needs the decision's candidates")
+            if not candidates:  # as TabAgentHead: a request it cannot answer, which the service rejects
+                from tabagent.api import RequestError
+
+                raise RequestError("a ranking head needs the decision's candidates")
             prefix = OpenAIMessagesAdapter().live_prefix(run)
             return super().decide(prefix, list(parse_catalog(candidates).values()), k=k)
 

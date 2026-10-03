@@ -3,8 +3,9 @@
 They complement the CodeValidator (an LLM judge, paper App. D.1) with rules that need no model:
 
 * the code parses, imports only allowed standard-library modules, calls no dangerous builtins and reaches
-  for no interpreter internals (``__builtins__``, ``obj.__class__.__subclasses__()``, ...), the usual ways
-  around the first two rules;
+  for no interpreter internals (``__builtins__``, ``obj.__class__.__subclasses__()``, a generator's or a
+  traceback's frame: ``gi_frame``, ``f_back``, ``f_locals``, ``tb_frame``, ...), the usual ways around the
+  first two rules;
 * it follows the CodeExtractor contract (``dict['key']`` access, never ``.get()``; App. D.2);
 * every constant key path it reads from the trajectory exists in the union schema of the onboarding
   prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for);
@@ -61,13 +62,26 @@ CLOCK_CLASSES = {"datetime", "date"}
 PROCESS_CALLS = {"hash", "id"}
 ROOTS = ("trajectory_data", "trajectory")
 ALLOWED_DUNDERS = {"__name__", "__init__"}  # ``if __name__ == "__main__":``, ``type(v).__name__``, classes
+#: Attributes of frames, generators, coroutines, tracebacks and code objects: no dunder, but they lead to
+#: other code's frames and variables (the interpreter's own included). Refused as attributes, and as string
+#: literals (``operator.attrgetter("gi_frame.f_back")``).
+FORBIDDEN_ATTRS = {
+    *(f"gi_{a}" for a in ("frame", "code", "yieldfrom", "running", "suspended")),
+    *(f"cr_{a}" for a in ("frame", "code", "await", "origin", "running", "suspended")),
+    *(f"ag_{a}" for a in ("frame", "code", "await", "running")),
+    *(f"f_{a}" for a in ("back", "locals", "globals", "builtins", "code", "trace", "lasti", "lineno")),
+    *(f"tb_{a}" for a in ("frame", "next", "lasti", "lineno")),
+    *(f"co_{a}" for a in ("code", "consts", "names", "varnames", "freevars", "cellvars")),
+}
+_STRING_DUNDERS_OK = ALLOWED_DUNDERS | {"__main__"}
 
 
 @dataclass(frozen=True)
 class Issue:
     """One rule violation found in extraction code or its output."""
 
-    kind: str  # syntax | import | call | dunder | uses_get | unknown_field | outcome_field | clock | output
+    # syntax | import | call | dunder | internals | uses_get | unknown_field | outcome_field | clock | output
+    kind: str
     detail: str
 
     def __str__(self) -> str:
@@ -220,6 +234,18 @@ def check_code(
         name = node.attr if isinstance(node, ast.Attribute) else node.id if isinstance(node, ast.Name) else ""
         if name.startswith("__") and name.endswith("__") and name not in ALLOWED_DUNDERS:
             issues.append(Issue("dunder", f"line {node.lineno}: {name}"))
+        if isinstance(node, ast.Attribute) and node.attr in FORBIDDEN_ATTRS:
+            issues.append(Issue("internals", f"line {node.lineno}: .{node.attr}"))
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and len(node.value) < 200:
+            parts = node.value.split(".")
+            reached = [
+                p
+                for p in parts
+                if p in FORBIDDEN_ATTRS
+                or (p.startswith("__") and p.endswith("__") and len(p) > 4 and p not in _STRING_DUNDERS_OK)
+            ]
+            if reached:
+                issues.append(Issue("internals", f"line {node.lineno}: the string {node.value!r}"))
     for path in sorted(key_paths(tree)):
         if path and path[0] in outcome_keys:  # a top-level outcome; nested fields of earlier steps are data
             issues.append(Issue("outcome_field", ".".join(path)))

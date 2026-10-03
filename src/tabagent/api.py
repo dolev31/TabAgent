@@ -15,11 +15,13 @@ LLM call and reports what discovery would process and cost.
 
 from __future__ import annotations
 
-import copy
 import hashlib
 import json
 import logging
+import os
 import re
+import threading
+import time
 import warnings
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -49,10 +51,14 @@ from tabagent.tabschema.runstore import RunStore
 from tabagent.tabschema.sampling import sample_decision_points
 from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
 from tabagent.tabschema.trajectory import Candidate, Trajectory, clip_for_prompt, union_schema
+from tabagent.tabschema.warm import POSIX, RefusingSandbox, WarmSandbox, static_refusal
 
 logger = logging.getLogger(__name__)
 
 HEAD_FORMAT = 1
+_RUNNER_LOCK = threading.Lock()  # one extractor runner (and worker pool) per head under concurrent decisions
+if hasattr(os, "register_at_fork"):  # a forked child must not inherit a lock held by a thread of its parent
+    os.register_at_fork(after_in_child=lambda: globals().__setitem__("_RUNNER_LOCK", threading.Lock()))
 
 
 @dataclass
@@ -84,6 +90,12 @@ class DryRun:
             f"~{self.est_input_tokens:,} input / ~{self.est_output_tokens:,} output tokens; est. cost {cost}"
             f"{problems}"
         )
+
+
+class RequestError(ValueError):
+    """A decision request the head cannot answer as given (the HTTP service answers it with status 400):
+    both a prefix and a run, a run the head cannot turn into a prefix, a ranking head without candidates, a
+    malformed candidate. A failure of the head itself is not one."""
 
 
 def _as_candidates(items) -> list[Candidate]:
@@ -140,13 +152,22 @@ class TabAgentHead:
     trust_extractor: run the extractor in-process (fast; for reviewed code) instead of in the sandbox.
     adapter: the log adapter of the training trajectories (an adapter or its ``describe_adapter``
         description); ``live_prefix`` builds live prefixes with it, and ``save`` records it in ``head.json``.
-    sandbox: where an untrusted extractor runs: ``"subprocess"`` (the default, ``SubprocessSandbox``),
-        ``"docker"`` or ``"docker:<image>"`` (``DockerSandbox``: no network, read-only filesystem), or a
-        sandbox instance.
+    sandbox: where an untrusted extractor runs: ``"warm"`` (the default, also ``None``, or ``"warm:<N>"``
+        for N workers: ``WarmSandbox``, persistent isolated interpreters that start once and serve every
+        decision), ``"subprocess"`` (``SubprocessSandbox``, a fresh interpreter per decision), ``"docker"``
+        or ``"docker:<image>"`` (``DockerSandbox``: no network, read-only filesystem), or a sandbox instance.
+        Workers of a warm pool start at the first decision (``warm()`` starts them all now) and stop with
+        ``close()``, when the head is garbage-collected or when the interpreter exits. A sandbox built from a
+        name re-applies the security-relevant static checks of the compile step to the extractor and never
+        runs one that fails them (its decisions are deferred), unless ``allow_unchecked_extractor``; a sandbox
+        instance runs what it is given.
     redact: the function applied to each training trajectory before discovery, as a callable or a
         ``"module:function"`` import path; ``live_prefix`` applies it to a live run too.
     extractor_tests: the extractor's golden tests (``extractor_tests.json``: snapshots of onboarding
         prefixes, after ``redact``, with the features they give), which ``tabagent.verify_head`` re-runs.
+    allow_unchecked_extractor: run, still in the sandbox, an extractor that fails those static checks (a
+        head saved before they were re-applied at serve time, whose ``extract.py`` imports ``time``, say),
+        with a warning. Review the extractor first: the sandbox is not a security boundary.
     """
 
     agent: TabAgent
@@ -160,9 +181,10 @@ class TabAgentHead:
     sandbox: Any = None
     redact: Callable[[dict], dict] | str | None = None
     extractor_tests: dict | None = None
+    allow_unchecked_extractor: bool = False
 
     def __post_init__(self) -> None:
-        if self.trust_extractor and self.sandbox not in (None, "subprocess"):
+        if self.trust_extractor and self.sandbox not in (None, "subprocess", "warm"):
             raise ValueError(
                 "trust_extractor=True runs the extractor in-process, outside any sandbox; drop sandbox= or "
                 "trust_extractor="
@@ -173,25 +195,91 @@ class TabAgentHead:
         """The fitted feature card."""
         return self.agent.card_
 
-    def _sandbox(self) -> SubprocessSandbox | None:
+    def _sandbox(self) -> Any:
+        """The sandbox ``sandbox`` names. One built from a name re-applies the security-relevant static checks
+        of the compile step to ``extract.py`` (defense in depth): code that fails them is never run, and every
+        decision is deferred (a sandbox instance runs what it is given)."""
         spec = self.sandbox
-        if spec is None or spec == "subprocess":
-            return None
-        if isinstance(spec, str) and (spec == "docker" or spec.startswith("docker:")):
+        if spec is None:
+            spec = "warm" if POSIX else "subprocess"  # warm workers need POSIX
+        if spec == "warm" or (isinstance(spec, str) and spec.startswith("warm:")):
+            size = spec.partition(":")[2]
+            if size and (not size.isdigit() or int(size) < 1):
+                raise ValueError(f"sandbox 'warm:<N>' needs a positive number of workers, not {spec!r}")
+            if self.allow_unchecked_extractor:
+                self._warn_unchecked()
+            checked = not self.allow_unchecked_extractor
+            return WarmSandbox(size=int(size) if size else None, check_code=checked)
+        if spec == "subprocess":
+            box = SubprocessSandbox()
+        elif isinstance(spec, str) and (spec == "docker" or spec.startswith("docker:")):
             image = spec.partition(":")[2]
-            return DockerSandbox(image=image) if image else DockerSandbox()
-        if hasattr(spec, "run_batch"):
+            box = DockerSandbox(image=image) if image else DockerSandbox()
+        elif hasattr(spec, "run_batch"):
             return spec
-        raise ValueError(f"sandbox: 'subprocess', 'docker', 'docker:<image>' or a sandbox, not {spec!r}")
+        else:
+            raise ValueError(
+                "sandbox: 'warm', 'warm:<N>', 'subprocess', 'docker', 'docker:<image>' or a sandbox, "
+                f"not {spec!r}"
+            )
+        if self.allow_unchecked_extractor:
+            self._warn_unchecked()
+            return box
+        refusal = static_refusal(self.extractor_code) if self.extractor_code else None
+        return RefusingSandbox(refusal) if refusal else box
+
+    def _warn_unchecked(self) -> None:
+        """Warn, loudly, when ``allow_unchecked_extractor`` lets an extractor that fails the checks run."""
+        refusal = static_refusal(self.extractor_code) if self.extractor_code else None
+        if refusal is None:
+            return
+        message = (
+            "allow_unchecked_extractor=True: running an extract.py that breaks the extraction rules "
+            f"({refusal.split(': ', 1)[-1]}). It runs in the sandbox, which is not a security boundary; "
+            "review the code, or onboard the head again"
+        )
+        warnings.warn(message, UserWarning, stacklevel=4)
+        logger.warning(message, extra={"fields": {"event": "unchecked_extractor"}})
 
     def _runner(self) -> ExtractorRunner | None:
         if not self.extractor_code:
             return None
         if getattr(self, "_runner_cache", None) is None:
-            self._runner_cache = ExtractorRunner(
-                self.extractor_code, trust_extractor=self.trust_extractor, sandbox=self._sandbox()
-            )
+            with _RUNNER_LOCK:
+                if getattr(self, "_runner_cache", None) is None:
+                    box = None if self.trust_extractor else self._sandbox()
+                    self._runner_cache = ExtractorRunner(
+                        self.extractor_code, trust_extractor=self.trust_extractor, sandbox=box
+                    )
         return self._runner_cache
+
+    @property
+    def extractor_sandbox(self) -> Any:
+        """The sandbox that runs the extractor, or None (in-process, or no extractor)."""
+        runner = None if self.trust_extractor else self._runner()
+        return runner.sandbox if runner is not None else None
+
+    @property
+    def extractor_pool(self) -> WarmSandbox | None:
+        """The warm worker pool that runs the extractor, or None (in-process, another sandbox, or no
+        extractor)."""
+        box = self.extractor_sandbox
+        return box if isinstance(box, WarmSandbox) else None
+
+    def warm(self) -> int:
+        """Start the extractor's warm workers now rather than at the first decision (a serving process calls
+        this at start-up). Returns the number of running workers (0 without a warm pool). Raises
+        ``ExtractorBrokenError`` when the extractor cannot run at all (it does not compile, or breaks the
+        extraction rules)."""
+        box = self.extractor_sandbox
+        return box.warm(self.extractor_code) if hasattr(box, "warm") else 0
+
+    def close(self) -> None:
+        """Stop the extractor's warm workers, if any. A later decision starts a new pool."""
+        pool = self.extractor_pool
+        if pool is not None:
+            pool.close()
+            self._runner_cache = None
 
     # ------------------------------------------------------------------ live prefixes
     def live_prefix(self, run: dict[str, Any], adapter: Any = None) -> dict[str, Any]:
@@ -224,33 +312,29 @@ class TabAgentHead:
     def _extract(self, prefix: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
         """The card's extractor columns for ``prefix``, filled as in training (None where the extractor gave
         no value), and the error when the extractor failed on it."""
+        return self._extract_full(prefix)[:2]
+
+    def _extract_full(self, prefix: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
+        """``_extract``, and the kind of the failure (``ExecResult.kind``, or ``no_extractor``)."""
         cols = [f.name for f in self.card.features if f.source == "extractor"]
         runner = self._runner()
         if runner is None:
-            error = "this head has no extractor (extract.py) for its extractor features" if cols else None
-            return dict.fromkeys(cols), error
-        error = None
+            if not cols:
+                return {}, None, None
+            error = "this head has no extractor (extract.py) for its extractor features"
+            return dict.fromkeys(cols), error, "no_extractor"
+        error = kind = None
+        results: list = []
         try:
-            out = runner.run([prefix])[0]
+            out = runner.run([prefix], results_out=results)[0]
         except Exception as e:  # a sandbox that cannot start (no Docker, say): defer, do not crash
-            out, error = None, f"{type(e).__name__}: {e}"
+            out, error, kind = None, f"{type(e).__name__}: {e}", "unavailable"
         if out is None:
-            error = _explain(error or self._diagnose(prefix), prefix)
+            failed = results[0] if results else None
+            error = _explain(error or _error_line(failed.error if failed else None), prefix)
+            kind = kind or (failed.kind if failed else None) or "error"
             logger.warning("TabSchema extractor failed on a live prefix; deferring the decision: %s", error)
-        return {c: (out or {}).get(c) for c in cols}, error
-
-    def _diagnose(self, prefix: dict[str, Any]) -> str:
-        """The extractor's error on ``prefix``, from a second run (only after a failure)."""
-        try:
-            if self.trust_extractor:
-                ns: dict[str, Any] = {"__name__": "__main__", "trajectory": copy.deepcopy(prefix)}
-                exec(compile(self.extractor_code, "<extract.py>", "exec"), ns)  # noqa: S102 - reviewed code
-                return "the extractor produced no features"
-            res = (self._sandbox() or SubprocessSandbox()).run(self.extractor_code, prefix)
-            text = (res.error or "").strip()
-            return text.splitlines()[-1] if text else "the extractor produced no features"
-        except Exception as e:  # the extractor is arbitrary code
-            return f"{type(e).__name__}: {e}"
+        return {c: (out or {}).get(c) for c in cols}, error, kind
 
     def features_for(self, prefix: dict[str, Any]) -> dict[str, Any]:
         """The extractor's features for one trajectory prefix: every extractor column of the card, None where
@@ -265,6 +349,7 @@ class TabAgentHead:
         defer_below: float | None = None,
         *,
         run: dict[str, Any] | None = None,
+        trace: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Score one live decision.
 
@@ -279,6 +364,10 @@ class TabAgentHead:
         defer_below: confidence threshold of the gate; defaults to the calibrated ``gate_threshold``.
         run: instead of ``prefix``, the live run so far in the format of the training logs, with its run-level
             task fields; the prefix is built with ``live_prefix``.
+        trace: a dict that receives the decision's timings in seconds (``prefix_s``, ``extraction_s``,
+            ``scoring_s``), the kind of the extractor's failure (``error_kind``: ``ExecResult.kind``, or
+            ``no_extractor``; None when it succeeded) and its feature frame (``frame``, the head's input), for
+            monitoring.
 
         Returns
         -------
@@ -288,30 +377,51 @@ class TabAgentHead:
         prefix, its features are empty (None, as for a training decision point it failed on), the decision is
         ``deferred`` to the original LLM whatever its confidence, and ``error`` says why.
         """
+        t0 = time.perf_counter()
         if run is not None:
             if prefix is not None:
-                raise ValueError("pass the decision's prefix or its run, not both")
-            prefix = self.live_prefix(run)
+                raise RequestError("pass the decision's prefix or its run, not both")
+            try:
+                prefix = self.live_prefix(run)
+            except (ValueError, KeyError, TypeError, AttributeError) as e:  # the run is not in the log format
+                raise RequestError(f"cannot build the prefix from this run: {type(e).__name__}: {e}") from e
         spec = self.card.spec
-        feats, error = self._extract(prefix if prefix is not None else {})
+        if spec.kind == "single" and candidates:
+            raise RequestError("a single-class head chooses among its training classes; pass no candidates")
+        if spec.kind != "single" and not candidates:
+            raise RequestError(f"a {spec.kind} head needs the decision's candidates")
+        if k is not None and (isinstance(k, bool) or not isinstance(k, int) or k < 1):
+            raise RequestError(f"k is the number of candidates to keep: a positive integer, not {k!r}")
+        if spec.kind != "single":
+            try:
+                cands = _as_candidates(candidates)
+            except (ValueError, KeyError, TypeError) as e:
+                raise RequestError(str(e)) from e
+        t1 = time.perf_counter()
+        feats, error, error_kind = self._extract_full(prefix if prefix is not None else {})
+        t2 = time.perf_counter()
         tau = defer_below if defer_below is not None else self.gate_threshold
+
+        def traced(answer: dict[str, Any], frame: pd.DataFrame) -> dict[str, Any]:
+            if trace is not None:
+                trace.update(prefix_s=t1 - t0, extraction_s=t2 - t1, scoring_s=time.perf_counter() - t2)
+                trace.update(error_kind=error_kind, frame=frame)
+            return answer
+
         if spec.kind == "single":
-            if candidates:
-                raise ValueError("a single-class head chooses among its training classes; pass no candidates")
             table = DecisionTable(pd.DataFrame([{GROUP: "live", DECISION: "live#0", **feats}]), spec, False)
-            proba = self.agent.head_.predict_proba(self.agent.features(table))[0]
+            X = self.agent.features(table)
+            proba = self.agent.head_.predict_proba(X)[0]
             classes = list(self.agent.head_.classes_)
             best = int(np.argmax(proba))
-            return {
+            answer = {
                 "choice": classes[best],
                 "scores": {str(c): float(p) for c, p in zip(classes, proba, strict=True)},
                 "confidence": float(proba[best]),
                 "deferred": bool(error is not None or (tau is not None and proba[best] < tau)),
                 "error": error,
             }
-        if not candidates:
-            raise ValueError(f"a {spec.kind} head needs the decision's candidates")
-        cands = _as_candidates(candidates)
+            return traced(answer, X)
         rows = [
             {
                 GROUP: "live",
@@ -325,17 +435,19 @@ class TabAgentHead:
             for c in cands
         ]
         table = DecisionTable(pd.DataFrame(rows), spec, has_labels=False)
-        scores = self.agent.score(table)
+        X = self.agent.features(table)
+        scores = self.agent.head_.score(X)  # = self.agent.score(table), keeping the frame for the trace
         ids, cand_ids = ["live#0"] * len(rows), [c.id for c in cands]
         ranked = decode(spec.kind, scores, ids, cand_ids, k=k, threshold=self.agent.head_.threshold)
         conf = float(confidence(scores, ids, cand_ids).iloc[0])
-        return {
+        answer = {
             "candidates": ranked["candidate"].tolist(),
             "scores": {c.id: float(s) for c, s in zip(cands, scores, strict=True)},
             "confidence": conf,
             "deferred": bool(error is not None or (tau is not None and conf < tau)),
             "error": error,
         }
+        return traced(answer, X)
 
     def calibrate_gate(self, cv_result, target_coverage: float = 0.9) -> float:
         """Set ``gate_threshold`` so that ``target_coverage`` of the cross-validated decisions stay with the
@@ -400,6 +512,7 @@ class TabAgentHead:
         redact: Callable[[dict], dict] | str | None = None,
         adapter: Any = None,
         allow_unpinned: bool = False,
+        allow_unchecked_extractor: bool = False,
     ) -> TabAgentHead:
         """Load a saved head from a directory or ``hf://OWNER/REPO[@REVISION]`` (``tabagent.hub``).
         ``extract.py`` must match the hash recorded in the card. A card that records no hash (a head saved
@@ -411,6 +524,7 @@ class TabAgentHead:
         features computed by modules outside ``tabagent``. ``adapter`` overrides the adapter recorded in
         ``head.json``. ``redact`` is never imported from ``head.json``: when the head records one and none is
         passed, a warning says so, since live runs then reach the extractor unredacted.
+        ``allow_unchecked_extractor`` is described in the class attributes.
         """
         from tabagent.tabschema.verify import TESTS_FILE, check_tests_file
 
@@ -459,6 +573,7 @@ class TabAgentHead:
             sandbox=sandbox,
             redact=redact,
             extractor_tests=tests,
+            allow_unchecked_extractor=allow_unchecked_extractor,
         )
 
 
@@ -486,6 +601,15 @@ def _object_path(obj: Any) -> str | None:
 
 
 _KEY_ERROR = re.compile(r"KeyError: ['\"]([^'\"]+)['\"]")
+
+
+def _error_line(text: str | None) -> str:
+    """The line of an extractor error that says what went wrong: a traceback's last line, else the first
+    line ("timed out ...", "the sandboxed interpreter exited early ...")."""
+    lines = [line for line in (text or "").strip().splitlines() if line.strip()]
+    if not lines:
+        return "the extractor produced no features"
+    return (lines[-1] if lines[0].startswith("Traceback") else lines[0]).strip().rstrip(":")
 
 
 def _explain(error: str, prefix: dict[str, Any]) -> str:

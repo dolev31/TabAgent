@@ -4,8 +4,8 @@
                                                   rank the LLM calls in agent logs that TabAgent can replace
     tabagent components LOGS                      list the decision components found in agent logs
     tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION]
-    tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox docker]
-                   [--redact MODULE:FUNCTION]
+    tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox warm|subprocess|docker]
+                   [--workers N] [--request-timeout S] [--redact MODULE:FUNCTION] [--log-content]
     tabagent verify-head DIR|hf://OWNER/REPO [--sandbox docker] [--require-goldens]
                                                   re-run a saved head's extractor tests (exit 1 on failure)
     tabagent datasets                             list the public benchmark datasets
@@ -206,6 +206,8 @@ def _serve(args) -> int:
     from tabagent.serve import serve
 
     _redact(args.redact)
+    if args.trust_extractor and args.sandbox == "warm":
+        args.sandbox = None  # the default sandbox; the extractor runs in-process
     serve(
         args.path,
         args.host,
@@ -214,6 +216,15 @@ def _serve(args) -> int:
         sandbox=args.sandbox,
         redact=args.redact,
         allow_unpinned=args.allow_unpinned,
+        allow_unchecked_extractor=args.allow_unchecked_extractor,
+        workers=args.workers,
+        request_timeout=args.request_timeout or None,
+        log_format=args.log_format,
+        log_content=args.log_content,
+        drift=not args.no_drift,
+        drift_window=args.drift_window,
+        threads=args.threads,
+        graceful_timeout=args.graceful_timeout,
     )
     return 0
 
@@ -487,10 +498,38 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument(
         "--sandbox",
-        default="subprocess",
-        metavar="{subprocess,docker,docker:IMAGE}",
-        help="where the untrusted extractor runs: a resource-limited subprocess, or Docker with no network "
-        "and a read-only filesystem",
+        default="warm",
+        metavar="{warm,subprocess,docker,docker:IMAGE}",
+        help="where the untrusted extractor runs: persistent resource-limited worker processes (warm), a "
+        "fresh resource-limited subprocess per decision, or Docker with no network and a read-only "
+        "filesystem",
+    )
+    p.add_argument(
+        "--workers", type=int, help="warm extractor workers, i.e. extractions at once (default min(4, CPUs))"
+    )
+    p.add_argument(
+        "--request-timeout",
+        type=float,
+        default=10.0,
+        metavar="SECONDS",
+        help="seconds the extractor gets per decision; a later answer is deferred to the LLM (0: no limit)",
+    )
+    p.add_argument("--threads", type=int, default=8, help="decisions computed at once")
+    p.add_argument("--log-format", default="json", choices=["json", "text"], help="log record format")
+    p.add_argument(
+        "--log-content",
+        action="store_true",
+        help="also log each request's prefix, run, candidates, answer and error message (off: the agent's "
+        "data stays out of the logs)",
+    )
+    p.add_argument("--no-drift", action="store_true", help="do not monitor feature drift")
+    p.add_argument("--drift-window", type=int, default=500, help="recent decisions compared for drift")
+    p.add_argument(
+        "--graceful-timeout",
+        type=float,
+        default=30.0,
+        metavar="SECONDS",
+        help="on SIGTERM or Ctrl+C, how long in-flight decisions may finish before the workers stop",
     )
     p.add_argument(
         "--redact",
@@ -502,6 +541,12 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="serve a head whose card pins no hash for extract.py (saved by an earlier version); review "
         "extract.py first, and save the head again to pin it",
+    )
+    p.add_argument(
+        "--allow-unchecked-extractor",
+        action="store_true",
+        help="run, still in the sandbox, an extract.py that fails the extraction rules (a head saved by an "
+        "earlier version that imports time, say); review it first: the sandbox is not a security boundary",
     )
     p.set_defaults(fn=_serve)
 

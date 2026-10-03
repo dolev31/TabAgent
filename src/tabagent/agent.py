@@ -64,7 +64,9 @@ class TabAgent:
     synth: a ``TabSynth`` (or anything with its ``augment`` method) applied to the training rows, or None.
     seed: the head's seed (``cross_validate`` replaces it per seed through ``clone``).
 
-    After ``fit``: ``card_`` (the fitted card), ``head_`` (the fitted head) and ``n_synthetic_``.
+    After ``fit``: ``card_`` (the fitted card), ``head_`` (the fitted head), ``n_synthetic_`` and
+    ``feature_stats_`` (the training distribution of the head's inputs, for drift monitoring; see
+    ``tabagent.drift``).
     """
 
     def __init__(self, card: CardLike, head: TabHead | None = None, synth: Any = None, seed: int = 0):
@@ -75,6 +77,7 @@ class TabAgent:
         self.card_: FeatureCard | None = None
         self.head_: TabHead | None = None
         self.n_synthetic_: int = 0
+        self.feature_stats_: dict | None = None
 
     # ------------------------------------------------------------------ estimator protocol
     def clone(self, seed: int | None = None) -> TabAgent:
@@ -91,6 +94,10 @@ class TabAgent:
         X = card.transform(table)
         y = table.labels
         _label_copy_check(X, y)
+        from tabagent.drift import feature_stats
+
+        groups = table.df[card.spec.group].to_numpy() if card.spec.group in table.df else None
+        self.feature_stats_ = feature_stats(X, card.types, table.decision_ids.to_numpy(), groups)  # real rows
         self.n_synthetic_ = 0
         if self.synth is not None:
             X_syn, y_syn = self.synth.augment(X, y, table, card)

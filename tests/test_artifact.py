@@ -20,6 +20,7 @@ def test_roundtrip_is_exact_and_pickle_free(tmp_path):
         "fitted.npz",
         "featurizer.json",
         "model.cbm",
+        "feature_stats.json",
         "manifest.json",
     }
     assert not any(p.suffix in (".pkl", ".pickle") for p in out.iterdir())

@@ -5,12 +5,14 @@ no pickle, so loading an artifact from someone else runs none of their code: car
 module outside ``tabagent`` need ``trust_code=True``, and a TabSchema ``extract.py`` runs in the sandbox
 unless explicitly trusted.
 
-    card.yaml        the feature card (features, decision roles, provenance)
-    fitted.json      fitted dependency statistics (priors, ...) and their training-group footprint
-    fitted.npz       array state of fitted statistics (embedding centers, k-NN tables)
-    featurizer.json  TF-IDF vocabularies and idf weights, numeric medians, categorical codes
-    model.cbm        the CatBoost head in CatBoost's native format
-    manifest.json    library version, head settings, sizes, metrics, and a SHA-256 of every file
+    card.yaml           the feature card (features, decision roles, provenance)
+    fitted.json         fitted dependency statistics (priors, ...) and their training-group footprint
+    fitted.npz          array state of fitted statistics (embedding centers, k-NN tables)
+    featurizer.json     TF-IDF vocabularies and idf weights, numeric medians, categorical codes
+    model.cbm           the CatBoost head in CatBoost's native format
+    feature_stats.json  the training distribution of the head's inputs, for drift monitoring
+                        (``tabagent.drift``; absent from artifacts written before it existed)
+    manifest.json       library version, head settings, sizes, metrics, and a SHA-256 of every file
 
 ``extract.py`` is copied alongside when the card was compiled by TabSchema.
 """
@@ -28,6 +30,7 @@ import numpy as np
 
 FORMAT_VERSION = 1
 FILES = ("card.yaml", "fitted.json", "fitted.npz", "featurizer.json", "model.cbm")
+STATS_FILE = "feature_stats.json"  # optional: artifacts written before drift monitoring have none
 
 
 def _sha256(path: Path) -> str:
@@ -106,6 +109,11 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
 
     (out / "featurizer.json").write_text(json.dumps(featurizer_state(head.featurizer_)))
     head.model_.save_model(str(out / "model.cbm"), format="cbm")
+    files = FILES
+    stats = getattr(agent, "feature_stats_", None)
+    if stats:
+        (out / STATS_FILE).write_text(json.dumps(stats, separators=(",", ":"), default=str))
+        files = (*FILES, STATS_FILE)
 
     if card.extractor and card.extractor.get("path"):
         src = (
@@ -135,7 +143,7 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
         },
         "training": {"n_synthetic": agent.n_synthetic_},
         "metrics": metrics or {},
-        "sha256": {f: _sha256(out / f) for f in FILES},
+        "sha256": {f: _sha256(out / f) for f in files},
     }
     (out / "manifest.json").write_text(json.dumps(manifest, indent=1))
     return out
@@ -198,5 +206,7 @@ def load(path: str | Path, verify: bool = True, trust_code: bool = False):
     agent = TabAgent(card.clone(), head=head.clone())
     agent.card_, agent.head_ = card, head
     agent.n_synthetic_ = manifest["training"]["n_synthetic"]
+    stats = src / STATS_FILE
+    agent.feature_stats_ = json.loads(stats.read_text()) if STATS_FILE in manifest["sha256"] else None
     agent.manifest_ = manifest
     return agent

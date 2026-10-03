@@ -344,7 +344,8 @@ class CodeExecutor:
 
     def run(self, code: str, prefixes: list[dict]) -> ExtractionAttempt:
         """Check ``code`` statically, then run it on every prefix; fail above ``max_failure_rate``."""
-        fatal = {"syntax", "import", "call", "dunder", "uses_get", "unknown_field", "outcome_field", "clock"}
+        fatal = {"syntax", "import", "call", "dunder", "internals", "uses_get", "unknown_field"}
+        fatal |= {"outcome_field", "clock"}
         issues = [i for i in checks.check_code(code, self.known_paths, self.outcome_keys) if i.kind in fatal]
         if issues:
             msg = "The code violates the extraction rules:\n" + "\n".join(f"- {i}" for i in issues)

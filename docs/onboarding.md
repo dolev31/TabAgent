@@ -271,7 +271,8 @@ holds no local paths.
 The sandbox isolates accidents, not adversaries. It runs the code in a fresh interpreter without environment
 variables (no API keys), with CPU-time and file-size limits, a memory limit on Linux (`mem_mb`), at most 50
 trajectories per interpreter and `timeout_s` per trajectory; the deterministic checks refuse code that opens
-files, imports modules beyond a small standard-library list, or reaches for interpreter internals. Use
+files, imports modules beyond a small standard-library list, or reaches for interpreter internals (dunder
+attributes, and the frames of generators, coroutines and tracebacks: `gi_frame`, `f_back`, `f_locals`, ...). Use
 `DockerSandbox` (no network, read-only filesystem, 1 GB) for code or traces you do not trust:
 `tabagent.onboard(..., sandbox="docker")` runs discovery, the decision table and the returned head in it.
 
@@ -410,9 +411,11 @@ flight-change flag fired on "exchange" (it contains "change") on 1 of 12.
 
 The saved head contains `extract.py`, the code TabSchema compiled, and its golden tests
 (`extractor_tests.json`; `tabagent verify-head` re-runs them). Read the code before serving with
-`--trust-extractor` (in-process, sub-millisecond); without that flag it runs in the sandbox. Both modes give
-the same features: in-process, the code sees a JSON copy of the prefix, as in the sandbox, and cannot change
-the caller's. Build live prefixes with the adapter's `live_prefix` (chat logs, CUGA and generic JSON), which
+`--trust-extractor` (in-process); without that flag it runs in the sandbox, by default in warm worker
+processes that start once and then add well under a millisecond per decision (see
+[Deployment](deployment.md#the-warm-extractor-pool)). All modes give the same features: in-process, the code
+sees a JSON copy of the prefix, as in the sandbox, and cannot change the caller's. Build live prefixes with the
+adapter's `live_prefix` (chat logs, CUGA and generic JSON), which
 builds them exactly as in training.
 
 ## Estimate the whole pipeline, discovery included

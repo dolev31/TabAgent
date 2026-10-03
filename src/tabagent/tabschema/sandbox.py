@@ -34,9 +34,11 @@ sys.stdout = sys.stderr
 payload = json.loads(sys.stdin.read())
 code = compile(payload["code"], "<extractor>", "exec")
 limit = payload.get("item_timeout") if hasattr(signal, "setitimer") else None
+fired = []
 
 
 def expire(signum, frame):
+    fired.append(1)
     raise TimeoutError(f"timed out after {limit}s on this trajectory")
 
 
@@ -44,6 +46,7 @@ if limit:
     signal.signal(signal.SIGALRM, expire)
 for item in payload["items"]:
     ns = {"__name__": "__main__", "trajectory": item}
+    fired.clear()
     try:
         if limit:
             signal.setitimer(signal.ITIMER_REAL, limit)
@@ -58,7 +61,7 @@ for item in payload["items"]:
         json.dumps(feats)
         out = {"ok": True, "features": feats}
     except BaseException:
-        out = {"ok": False, "error": traceback.format_exc(limit=8)}
+        out = {"ok": False, "error": traceback.format_exc(limit=8), "kind": "timeout" if fired else "error"}
     results.write(json.dumps(out, default=str) + "\n")
     results.flush()
 """
@@ -66,11 +69,16 @@ for item in payload["items"]:
 
 @dataclass
 class ExecResult:
-    """The outcome of running extraction code on one trajectory: the features, or the traceback."""
+    """The outcome of running extraction code on one trajectory: the features, or the traceback.
+
+    ``kind`` says why a run failed (None when it succeeded): ``error`` (the code raised), ``timeout`` (it ran
+    past its timeout), ``crash`` (the interpreter died), ``unavailable`` (no interpreter could run it) or
+    ``broken`` (the code cannot run at all: it does not compile, or breaks the extraction rules)."""
 
     ok: bool
     features: dict[str, Any] | None = None
     error: str | None = None
+    kind: str | None = None
 
 
 def _limits(cpu_s: int, file_mb: int, mem_mb: int | None):
@@ -93,9 +101,9 @@ def _limits(cpu_s: int, file_mb: int, mem_mb: int | None):
     return apply
 
 
-def _results(stdout: str | bytes | None, n: int, error: str) -> list[ExecResult]:
+def _results(stdout: str | bytes | None, n: int, error: str, kind: str = "crash") -> list[ExecResult]:
     """One ``ExecResult`` per item from the runner's result lines; items without one failed with ``error``
-    (the interpreter died or timed out before reaching them)."""
+    and ``kind`` (the interpreter died or timed out before reaching them)."""
     if isinstance(stdout, bytes):
         stdout = stdout.decode("utf-8", "replace")
     out: list[ExecResult] = []
@@ -105,9 +113,10 @@ def _results(stdout: str | bytes | None, n: int, error: str) -> list[ExecResult]
         except ValueError:
             continue
         if isinstance(rec, dict) and isinstance(rec.get("ok"), bool):
-            out.append(ExecResult(rec["ok"], rec.get("features"), rec.get("error")))
+            kind_ = None if rec["ok"] else rec.get("kind", "error")
+            out.append(ExecResult(rec["ok"], rec.get("features"), rec.get("error"), kind_))
     out = out[:n]
-    return out + [ExecResult(False, error=error) for _ in range(n - len(out))]
+    return out + [ExecResult(False, error=error, kind=kind) for _ in range(n - len(out))]
 
 
 class SubprocessSandbox:
@@ -162,7 +171,7 @@ class SubprocessSandbox:
                 preexec_fn=limits,
             )
         except subprocess.TimeoutExpired as e:  # keep the results of the items that finished in time
-            return _results(e.stdout, len(items), f"timed out after {self._wall(len(items)):g}s")
+            return _results(e.stdout, len(items), f"timed out after {self._wall(len(items)):g}s", "timeout")
         finally:
             shutil.rmtree(workdir, ignore_errors=True)
         tail = (proc.stderr or "").strip()[-2000:]
@@ -213,7 +222,8 @@ class DockerSandbox(SubprocessSandbox):
                 timeout=self._wall(len(items)) + 30,
             )
         except subprocess.TimeoutExpired as e:
-            return _results(e.stdout, len(items), f"timed out after {self._wall(len(items)) + 30:g}s")
+            wall = self._wall(len(items)) + 30
+            return _results(e.stdout, len(items), f"timed out after {wall:g}s", "timeout")
         tail = (proc.stderr or "").strip()[-2000:]
         error = f"the container exited early (exit status {proc.returncode})" + (f":\n{tail}" if tail else "")
         return _results(proc.stdout, len(items), error)

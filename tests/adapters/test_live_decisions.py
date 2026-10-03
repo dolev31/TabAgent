@@ -20,6 +20,7 @@ from tabagent.tabschema import llm as llm_module
 from tabagent.tabschema.compile import ExtractorRunner
 from tabagent.tabschema.orchestrator import CANDIDATE, DECISION, GROUP, LABEL, rows_to_table
 from tabagent.tabschema.sandbox import DockerSandbox, ExecResult, SubprocessSandbox
+from tabagent.tabschema.warm import WarmSandbox
 
 # An extractor that reads a run-level task field, as TabSchema's often do.
 CODE = """
@@ -164,7 +165,12 @@ def test_head_json_records_the_adapter_and_redaction(trained, tmp_path):
 @pytest.mark.filterwarnings("ignore:the TabSchema extractor failed:RuntimeWarning")
 def test_sandbox_selection(trained):
     head = _head(trained, trust_extractor=False)
-    assert head._sandbox() is None  # ExtractorRunner's SubprocessSandbox
+    assert isinstance(head._sandbox(), WarmSandbox)  # persistent workers by default
+    cold = _head(trained, trust_extractor=False, sandbox="subprocess")._sandbox()
+    assert type(cold) is SubprocessSandbox  # a fresh interpreter per decision, on request
+    assert _head(trained, trust_extractor=False, sandbox="warm:2")._sandbox().size == 2
+    with pytest.raises(ValueError, match="positive number"):
+        _head(trained, trust_extractor=False, sandbox="warm:0")._sandbox()
     assert isinstance(_head(trained, trust_extractor=False, sandbox="docker")._sandbox(), DockerSandbox)
     img = _head(trained, trust_extractor=False, sandbox="docker:python:3.11-slim")._sandbox()
     assert isinstance(img, DockerSandbox) and img.image == "python:3.11-slim"
@@ -315,3 +321,74 @@ def test_invalid_unicode_in_a_live_run_is_scored_not_a_crash(rich):
         "/decide", content=body, headers={"content-type": "application/json"}
     )
     assert r.status_code == 200 and r.json()["candidates"] == out["candidates"]
+
+
+@pytest.mark.filterwarnings("ignore:the TabSchema extractor failed:RuntimeWarning")
+def test_warm_workers_cold_sandbox_and_in_process_give_identical_decisions(trained):
+    """The warm pool (the serving default) answers exactly as the cold sandbox and the trusted in-process
+    mode, for decisions that succeed and for one whose extractor fails."""
+    _, _, _, dps = trained
+    names = [t["function"]["name"] for t in openai_tools()]
+    prefixes = [dp.prefix for dp in dps[:6]] + [{"steps": []}]  # the last lacks 'instruction'
+    heads = [
+        _head(trained, trust_extractor=True),
+        _head(trained, trust_extractor=False),
+        _head(trained, trust_extractor=False, sandbox="subprocess"),
+    ]
+    answers = [[h.decide(p, names, k=2) for p in prefixes] for h in heads]
+    assert answers[0] == answers[1] == answers[2]
+    assert answers[1][-1]["deferred"] and "'instruction'" in answers[1][-1]["error"]
+    pool = heads[1].extractor_pool
+    assert isinstance(pool, WarmSandbox) and pool.stats()["started"] == 1  # one worker served all 7
+    assert heads[0].extractor_pool is None and heads[2].extractor_pool is None
+    heads[1].close()
+    assert pool.stats()["live"] == 0
+
+
+def test_a_head_warms_its_pool_and_traces_its_decisions(trained):
+    _, _, _, dps = trained
+    head = _head(trained, trust_extractor=False, sandbox="warm:2")
+    assert head.warm() == 2 and head.extractor_pool.ready
+    trace = {}
+    out = head.decide(dps[0].prefix, ["search_flights", "book_flight", "get_weather"], k=1, trace=trace)
+    assert out["error"] is None and trace["error_kind"] is None
+    assert set(trace) == {"prefix_s", "extraction_s", "scoring_s", "error_kind", "frame"}
+    assert list(trace["frame"].columns) == head.card.feature_names and len(trace["frame"]) == 3
+    head.close()
+    assert _head(trained).warm() == 0  # in-process: nothing to start
+
+
+@pytest.mark.filterwarnings("ignore:the TabSchema extractor failed:RuntimeWarning")
+@pytest.mark.parametrize("spec", [None, "warm:1", "subprocess"])
+def test_an_extractor_that_breaks_the_extraction_rules_is_never_run(trained, spec):
+    """A sandbox built from a name re-applies the compile step's security checks to extract.py: code that
+    imports os is refused, every decision is deferred, and warm() says why."""
+    from tabagent.tabschema.warm import ExtractorBrokenError
+
+    agent, adapter, _, dps = trained
+    evil = "import os\nfeatures = {'goal': os.getcwd(), 'first_user': ''}\n"
+    head = TabAgentHead(agent, TOOL_SHORTLIST, evil, adapter=adapter, sandbox=spec)
+    trace = {}
+    out = head.decide(dps[0].prefix, ["search_flights", "book_flight"], k=1, trace=trace)
+    assert out["deferred"] and "violates the extraction rules" in out["error"]
+    assert "import: os" in out["error"]
+    assert trace["error_kind"] == "broken"
+    with pytest.raises(ExtractorBrokenError, match="import: os"):
+        head.warm()
+    head.close()
+
+
+def test_malformed_requests_raise_request_errors(trained):
+    from tabagent.api import RequestError
+
+    head = _head(trained)
+    _, _, _, dps = trained
+    for kwargs in (
+        {"candidates": None},
+        {"candidates": [{"description": "a tool without a name"}]},
+        {"candidates": ["a"], "run": {"messages": []}},
+    ):
+        with pytest.raises(RequestError):
+            head.decide(dps[0].prefix, **kwargs)
+    with pytest.raises(RequestError, match="cannot build the prefix"):
+        head.decide(run="not a run", candidates=["a"])

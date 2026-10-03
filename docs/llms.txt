@@ -74,7 +74,7 @@ Preprint on arXiv (2602.16429, first posted 2026-02-18). Its first version carri
 - [Components](https://dolev31.github.io/TabAgent/components/): TabSchema, TabSynth and TabHead in detail
 - [Onboard an agent](https://dolev31.github.io/TabAgent/onboarding/): log formats, privacy and cost controls, reviewing the generated extractor
 - [Bring your own table](https://dolev31.github.io/TabAgent/bring_your_own_data/): the scikit-learn estimators and automatic recipe selection
-- [Deploy](https://dolev31.github.io/TabAgent/deployment/): saved heads, the HTTP service, the tool filter, the confidence gate
+- [Deploy](https://dolev31.github.io/TabAgent/deployment/): saved heads, the HTTP service and its production runbook (warm sandbox workers, timeouts that defer to the LLM, readiness, Prometheus metrics, structured logs, feature drift), the tool filter, the confidence gate
 - [Datasets](https://dolev31.github.io/TabAgent/datasets/): every public dataset, its pinned source, license and the paper result it backs
 - [Reproducing the paper](https://dolev31.github.io/TabAgent/reproducing/): each paper cell, the command that recomputes it, paper vs released values
 

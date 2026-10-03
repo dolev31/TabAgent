@@ -223,7 +223,9 @@ discovers the card once, on all the logs, so its cross-validation does not cover
 `cross_validate_discovery` runs discovery inside every training fold, as the paper's protocol does.
 Trajectories are sent to your LLM provider during onboarding; pass `redact=` (CLI: `--redact module:function`)
 to scrub them first, and pass it again when serving (`tabagent serve --redact`), since a head does not import
-it by itself.
+it by itself. `tabagent serve` keeps the sandboxed extractor in warm worker processes, defers a decision whose
+extraction runs past `--request-timeout` instead of failing it, and exposes readiness, Prometheus metrics,
+structured JSON logs and feature-drift monitoring ([production runbook](docs/deployment.md#production-runbook)).
 
 ### 2. You have a table of decisions (scikit-learn API)
 
