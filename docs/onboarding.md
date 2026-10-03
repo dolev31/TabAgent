@@ -340,12 +340,19 @@ usable answer, or the budget is spent, the audit is skipped with a note and ever
 
 **3. Usefulness** (`usefulness=True`, `prune_harmful=False`, `usefulness_max_decisions=400`,
 `usefulness_max_rows=3000`). In the spirit of CAAFE (Hollmann et al., 2023), each extractor feature is scored
-by drop-column importance. A cheap head (CatBoost with 50 iterations) is cross-validated on the onboarding rows
-with 3 task-grouped folds, once with every feature and once without each feature, on the same folds. The report
-gives the change in the decision's primary metric (P@R for rankings, F1 for multi-label, accuracy for
-single-class decisions) with a 95% bootstrap interval over tasks and a bootstrap p-value, Holm-adjusted over
-the features. A feature is *useful* (or *harmful*) when that p-value is below 0.05 and the change positive (or
-negative), and *neutral* otherwise. The estimate is a report by default. `prune_harmful=True` repeats it with a
+by drop-feature importance: the columns that implement one planned feature (one per tool in a multi-hot, say)
+are dropped together, since the others would make up for any one of them. A cheap head (CatBoost with 50
+iterations) is cross-validated on the onboarding rows with 3 task-grouped folds, once with every feature and once
+without each feature, on the same folds; one more row drops every LLM-written feature at once, which answers
+whether discovery helped at all. The report gives the change in the decision's primary metric (P@R for
+rankings, F1 for multi-label, accuracy for single-class decisions) with a 95% bootstrap interval over tasks and
+a paired t-test p-value over tasks, Holm-adjusted over the features (the all-features row is a question of its
+own, not adjusted). A feature is *useful* (or *harmful*) when that p-value is below 0.05 and the change positive
+(or negative), and *neutral* otherwise. Expect most single features of a large card to be neutral: dozens of
+overlapping features make up for any one of them, and the correction for testing all of them is strict, so a
+feature can be neutral although its uncorrected interval excludes zero. On the τ²-bench next-tool-call card
+(64 features, 208 columns), every LLM-written feature together added P@R +0.043 [+0.013, +0.078] in this
+estimate. The estimate is a report by default. `prune_harmful=True` repeats it with a
 second seed and drops the LLM-written features that are harmful under both, but never all of them; since the
 same rows then chose the features, the report notes that the onboarding cross-validation is optimistic
 (`cross_validate_discovery`, which prunes inside each training fold, is not). The estimate uses only the

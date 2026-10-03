@@ -82,9 +82,11 @@ from tabagent.tabschema.trajectory import (
     union_paths,
 )
 from tabagent.tabschema.usefulness import (
+    ALL_LLM,
     DEFAULT_MAX_DECISIONS,
     DEFAULT_MAX_ROWS,
     MIN_DECISIONS,
+    feature_groups,
     feature_usefulness,
 )
 
@@ -397,7 +399,8 @@ def _usefulness_md(u: dict[str, Any]) -> list[str]:
         return [*out, f"* skipped: {u['skipped']}"]
     m = u["metric"]
     out.append(
-        f"* drop-column importance on the onboarding rows: {u['decisions']} decision points "
+        f"* drop-feature importance (a feature's columns dropped together) on the onboarding rows: "
+        f"{u['decisions']} decision points "
         f"({u.get('rows', '?')} rows) of {u['tasks']} tasks, {u['folds']} task-grouped folds, CatBoost with "
         f"{u['iterations']} iterations, {u.get('seeds', 1)} seed(s); {m} {u.get('base', float('nan')):.3f} "
         "with every feature"
@@ -405,7 +408,7 @@ def _usefulness_md(u: dict[str, Any]) -> list[str]:
     pruning = u.get("pruned") is not None
     out.append(
         f"* delta: the head's {m} with the feature minus without it (95% bootstrap interval over tasks); "
-        "useful or harmful when the Holm-adjusted bootstrap p-value is below 0.05"
+        "useful or harmful when the Holm-adjusted p-value (paired t-test over tasks) is below 0.05"
         + (
             " under every seed; harmful features are pruned"
             if pruning
@@ -414,10 +417,10 @@ def _usefulness_md(u: dict[str, Any]) -> list[str]:
     )
     out += ["", f"| feature | delta {m} | 95% interval | Holm p | verdict |", "|---|---|---|---|---|"]
     for col, r in sorted(u.get("features", {}).items(), key=lambda kv: -kv[1]["delta"]):
-        out.append(
-            f"| {col} | {r['delta']:+.4f} | [{r['ci'][0]:+.4f}, {r['ci'][1]:+.4f}] | {r.get('p_holm', '')} | "
-            f"{r['verdict']} |"
-        )
+        n = len(r.get("columns") or [col])
+        name = f"{col} ({n} columns)" if n > 1 else col
+        ci = f"[{r['ci'][0]:+.4f}, {r['ci'][1]:+.4f}]"
+        out.append(f"| {name} | {r['delta']:+.4f} | {ci} | {r.get('p_holm', '')} | {r['verdict']} |")
     return out
 
 
@@ -920,7 +923,7 @@ class TabSchema:
             rec = feature_usefulness(
                 table,
                 card_for,
-                list(compiled.features),
+                feature_groups(compiled),
                 seed=cfg.sample_seed,
                 seeds=2 if cfg.prune_harmful else 1,
             )
@@ -928,16 +931,26 @@ class TabSchema:
             logger.warning("TabSchema: the usefulness estimate was skipped: %s: %s", type(e).__name__, e)
             rec = {"skipped": f"{type(e).__name__}: {e}"[:300]}
         if cfg.prune_harmful and not rec.get("skipped"):
-            harmful = [
-                c for c in compiled.llm_columns if rec["features"].get(c, {}).get("verdict") == "harmful"
-            ]
+            harmful_columns = {
+                c
+                for name, r in rec["features"].items()
+                if r.get("verdict") == "harmful" and name != ALL_LLM
+                for c in r.get("columns", [name])
+            }
+            harmful = [c for c in compiled.llm_columns if c in harmful_columns]
+            by_column = {
+                c: r
+                for name, r in rec["features"].items()
+                if name != ALL_LLM
+                for c in r.get("columns", [name])
+            }
             if harmful and len(harmful) >= len(compiled.llm_columns):
                 compiled.notes.append(
                     "prune_harmful: every LLM-written feature looked harmful; none was pruned"
                 )
                 harmful = []
             for col in harmful:
-                r = rec["features"][col]
+                r = by_column[col]
                 compiled.drop(
                     col,
                     f"harmful (prune_harmful): removing it raised {rec['metric']} by {-r['delta']:.4f} "

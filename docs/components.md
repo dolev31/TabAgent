@@ -32,9 +32,10 @@ each can be turned off in `TabSchemaConfig` ([details](onboarding.md#how-the-gen
   coverage-sampled decision points as correct, incorrect or cannot tell; a feature is dropped only when its
   incorrect rate is confidently above the threshold (a Wilson lower bound). Its prompt, `output_auditor.txt`,
   is the release's.
-* **Usefulness** (`tabagent.tabschema.usefulness`): drop-column importance by task-grouped cross-validation on
-  the onboarding rows, CAAFE-style (Hollmann et al., 2023), with Holm-adjusted p-values. It is a report, or
-  prunes features harmful under two seeds with `prune_harmful=True`.
+* **Usefulness** (`tabagent.tabschema.usefulness`): drop-feature importance (a feature's columns dropped
+  together, plus every LLM-written feature at once) by task-grouped cross-validation on the onboarding rows,
+  CAAFE-style (Hollmann et al., 2023), with Holm-adjusted paired t-test p-values. It is a report, or prunes
+  features harmful under two seeds with `prune_harmful=True`.
 * **Golden tests** (`extractor_tests.json`, saved with the head): `tabagent verify-head` re-runs them before
   deployment.
 
