@@ -91,22 +91,67 @@ class Featurizer:
 
     def transform(self, X: pd.DataFrame) -> np.ndarray:
         """The numeric matrix of ``X`` under the training statistics, one block of columns per part."""
-        blocks = []
-        for col, kind, state in self.parts:
+        blocks: list[np.ndarray | None] = [None] * len(self.parts)
+        # A live decision has few rows and many columns, so per-column pandas calls would dominate its
+        # latency: numeric and category columns are converted in blocks here. Every value comes out as the
+        # per-column code below would make it; columns this cannot handle exactly (numbers written as text)
+        # go through that code.
+        dtypes = X.dtypes
+        num = [i for i, (col, kind, _) in enumerate(self.parts) if kind == "num"]
+        typed = [i for i in num if dtypes[self.parts[i][0]].kind in "biuf"]
+        if typed:
+            block = X[[self.parts[i][0] for i in typed]].to_numpy(dtype=float, na_value=np.nan)
+            medians = np.array([self.parts[i][2] for i in typed], dtype=float)
+            block = np.where(np.isnan(block), medians, block)
+            for j, i in enumerate(typed):
+                blocks[i] = block[:, j : j + 1]
+        untyped = [i for i in num if blocks[i] is None]
+        if untyped:
+            values = X[[self.parts[i][0] for i in untyped]].to_numpy(dtype=object)
+            for j, i in enumerate(untyped):
+                column = _plain_numbers(values[:, j])
+                if column is not None:
+                    blocks[i] = np.where(np.isnan(column), self.parts[i][2], column).reshape(-1, 1)
+        cat = [i for i, (_, kind, _) in enumerate(self.parts) if kind == "cat"]
+        if cat:
+            labels = X[[self.parts[i][0] for i in cat]].astype(str).to_numpy()
+            for j, i in enumerate(cat):
+                codes = self.parts[i][2]
+                blocks[i] = np.array([codes.get(v, -1) for v in labels[:, j]], dtype=float).reshape(-1, 1)
+        for i, (col, kind, state) in enumerate(self.parts):
+            if blocks[i] is not None:
+                continue
             s = X[col]
             if kind == "text":
                 # Vectorize each distinct text once: a decision's context text repeats on every candidate row.
                 text = s.fillna("").astype(str)
                 codes, uniques = pd.factorize(text)
-                blocks.append(state.transform(uniques).toarray()[codes])
-            elif kind == "num":
-                blocks.append(
+                blocks[i] = state.transform(uniques).toarray()[codes]
+            else:  # a numeric column holding text: pandas' own coercion
+                blocks[i] = (
                     pd.to_numeric(s, errors="coerce").fillna(state).to_numpy(dtype=float).reshape(-1, 1)
                 )
-            else:
-                codes = s.astype(str).map(lambda v, m=state: m.get(v, -1))
-                blocks.append(codes.to_numpy(dtype=float).reshape(-1, 1))
         return np.hstack(blocks)
+
+
+_NUMBERS = (bool, int, float, np.bool_, np.integer, np.floating)
+
+
+def _plain_numbers(column: np.ndarray) -> np.ndarray | None:
+    """``column`` (objects) as floats with NaN for missing values, when every value is a number, a bool or
+    missing, which ``pd.to_numeric`` would convert to exactly these floats; None otherwise."""
+    out = np.empty(len(column), dtype=float)
+    for k, v in enumerate(column):
+        if v is None or v is pd.NA:
+            out[k] = np.nan
+        elif isinstance(v, _NUMBERS):
+            try:
+                out[k] = float(v)
+            except OverflowError:  # an integer beyond float range: pandas decides
+                return None
+        else:
+            return None
+    return out
 
 
 def catboost_estimator(preset: str, kind: str, seed: int, **overrides) -> Any:
