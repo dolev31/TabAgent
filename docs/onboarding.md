@@ -251,8 +251,11 @@ During discovery:
 * **Very long traces** reach the FeatureAnalyzer with their longest strings clipped once their JSON passes
   `TabSchemaConfig.max_prompt_chars` (400,000 characters); the extraction code always runs on the full prefix.
 * **The MetaJudge** decides only on features the FeatureAggregator kept; a decision on another name is reported
-  under `dropped`. Only `accept` decisions are compiled by default: add `"conditional"` to
-  `TabSchemaConfig.accept` to also keep conditionally accepted features. A run in which no feature is
+  under `dropped`. Accepted and conditionally accepted features are compiled by default:
+  `TabSchemaConfig(accept=("accept",))` keeps only accepted ones. On the next-tool-call decision of the
+  τ²-bench GPT-4.1 logs, the MetaJudge marked 41% of features conditional, and compiling them raised head P@R
+  from 0.761 to 0.827 (10 analyzed decision points) and from 0.840 to 0.869 (20 points), LLM features only,
+  with the same folds; compiling the rejected features as well added under 0.004. A run in which no feature is
   accepted stops with an error that says so.
 * **The compiled extractor** keeps only columns that implement an accepted feature (the feature itself, a
   sub-key of it, or it under a group prefix), that do not reuse a column name of the decision table (`task`,

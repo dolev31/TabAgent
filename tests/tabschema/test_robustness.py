@@ -824,10 +824,14 @@ def test_conditional_decisions_follow_the_accept_policy(tmp_path):
     def meta(p, n):
         return json.dumps([{"feature_name": x, "final_decision": decisions[x]} for x in names_in(p)])
 
-    strict = discover(tmp_path, FakeLLM(meta_judge=meta), run_id="strict")
-    wide = discover(tmp_path, FakeLLM(meta_judge=meta), run_id="wide", accept=("accept", "conditional"))
+    strict = discover(tmp_path, FakeLLM(meta_judge=meta), run_id="strict", accept=("accept",))
+    default = discover(tmp_path, FakeLLM(meta_judge=meta), run_id="default")
+    everything = discover(
+        tmp_path, FakeLLM(meta_judge=meta), run_id="all", accept=("accept", "conditional", "reject")
+    )
     assert set(strict.extractor.features) == {"user_intent"}
-    assert set(wide.extractor.features) == {"user_intent", "plan_note"}
+    assert set(default.extractor.features) == {"user_intent", "plan_note"}  # conditional ones are kept
+    assert set(everything.extractor.features) == {"user_intent", "plan_note", "intent_words"}
     assert {j["feature_name"]: j["final_decision"] for j in strict.report.judged} == {
         "plan_note": "conditional",
         "intent_words": "reject",

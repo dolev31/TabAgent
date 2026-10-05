@@ -176,11 +176,13 @@ def test_discovery_end_to_end(tmp_path):
     logs.mkdir()
     write_logs(logs)
     llm = ScriptedLLM(responder, model="scripted")
-    cfg = TabSchemaConfig(n_analyze=3, workers=2, pair_embeddings=False, context_text=False)
+    cfg = TabSchemaConfig(
+        n_analyze=3, workers=2, pair_embeddings=False, context_text=False, accept=("accept",)
+    )
     schema = TabSchema(llm, cfg, adapter(), store=RunStore(tmp_path / "runs", "r1"))
     result = schema.discover(logs, "ShortlisterAgent")
 
-    # the hallucinated feature never survives; the conditional one is excluded by the default policy
+    # the hallucinated feature never survives; the conditional one is excluded by an accept-only policy
     assert set(result.extractor.features) == {"user_intent", "plan_note"}
     assert result.report.n_successful == 44 and result.report.n_decision_points == 44
     assert all(a["attempts"] == 2 for a in result.report.analyzed)  # first code read a missing field

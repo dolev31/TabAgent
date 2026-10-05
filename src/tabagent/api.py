@@ -634,7 +634,9 @@ def _explain(error: str, prefix: dict[str, Any]) -> str:
 # extractor on GPT-6 Sol, 2026-10-02): proposals, merging and acceptance rates, and answer lengths per item.
 _PROPOSALS = 15  # features an analyzer answer proposes
 _NEW_SHARE = 0.8  # share of a further decision point's proposals that no earlier point proposed
-_KEPT_SHARE, _ACCEPTED_SHARE = 0.7, 0.35  # of the distinct proposals: aggregated, then accepted
+_KEPT_SHARE = 0.7  # of the distinct proposals, the share the FeatureAggregator keeps
+# Of the aggregated features, the share of each MetaJudge outcome (1,825 judged features in 19 real runs).
+_DECISION_SHARE = {"accept": 0.36, "conditional": 0.41, "reject": 0.23}
 _SPEC_CHARS, _ROW_CHARS, _CODE_CHARS = 600, 4500, 11000  # one feature plan, one MetaJudge row, extractor code
 _RETRY_FACTOR = 1.8  # extractor calls per extraction, retries and code-tag re-asks included
 _TOKENS_PER_PROPOSAL = {"analyzer": 300, "validator": 170, "aggregator": 270, "judge": 380, "meta": 410}
@@ -647,12 +649,15 @@ def _estimate(
     model: str,
     max_chars: int = 400_000,
     stage_models: dict[str, str] | None = None,
+    accept: tuple[str, ...] = ("accept", "conditional"),
 ) -> tuple[int, int, float | None]:
-    """Estimated (input tokens, output tokens, USD or None without a price) of discovering on ``sample``."""
+    """Estimated (input tokens, output tokens, USD or None without a price) of discovering on ``sample``;
+    ``accept`` is the MetaJudge outcomes compiled (``TabSchemaConfig.accept``)."""
     text = prompts.text
     n = len(sample)
     unique = _PROPOSALS * (1 + _NEW_SHARE * max(0, n - 1)) if n else 0
-    kept, accepted = _KEPT_SHARE * unique, _ACCEPTED_SHARE * _KEPT_SHARE * unique
+    share = sum(_DECISION_SHARE.get(d, 0.0) for d in set(accept))
+    kept, accepted = _KEPT_SHARE * unique, share * _KEPT_SHARE * unique
     schemas = [len(json.dumps(union_schema([dp.prefix]), default=str)) for dp in sample]
     analyzer = sum(
         len(text("feature_analyzer"))
@@ -904,7 +909,9 @@ def onboard(
                 problems.append(str(e))
         sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
-        tin, tout, cost = _estimate(sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models)
+        tin, tout, cost = _estimate(
+            sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models, cfg.accept
+        )
         if cfg.audit:  # the release's OutputAuditor, one call per audited decision point
             from tabagent.tabschema.audit import estimate as audit_estimate
 

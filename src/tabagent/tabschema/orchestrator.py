@@ -125,8 +125,10 @@ class TabSchemaConfig:
         onboarding data) or ``tasks`` (one per task, the first decision of each run).
     max_code_retries: CodeExecutor retries with the error fed back (three, App. D.1).
     json_retries: re-asks when an answer is not parseable JSON.
-    accept: MetaJudge outcomes kept. The default keeps only ``accept``: conditionally accepted features are
-        left out unless ``"conditional"`` is added.
+    accept: MetaJudge outcomes compiled into the card: accepted and conditionally accepted features by
+        default. ``("accept",)`` keeps only accepted ones. On the next-tool-call decision of public τ²-bench
+        logs, compiling the conditional features too raised head P@R by 0.066 and 0.029 in two discovery runs
+        (10 and 20 analyzed decision points); adding the rejected ones changed it by under 0.004 more.
     compile_min_success: share of onboarding decision points the compiled extractor must run on.
     max_null_rate: extractor columns emptier than this are dropped.
     max_columns_per_feature, max_extractor_columns: caps on the columns one planned feature expands into
@@ -179,7 +181,7 @@ class TabSchemaConfig:
     sample_strategy: str = "coverage"
     max_code_retries: int = 3
     json_retries: int = 1
-    accept: tuple[str, ...] = ("accept",)  # add "conditional" to widen
+    accept: tuple[str, ...] = ("accept", "conditional")
     compile_min_success: float = 0.95
     max_null_rate: float = 0.5
     max_columns_per_feature: int = 64
@@ -763,7 +765,8 @@ class TabSchema:
             }
             raise ExtractionError(
                 f"the MetaJudge accepted none of the {len(filtered)} aggregated features ({counts}); see "
-                f"judges.json. TabSchemaConfig(accept=('accept', 'conditional')) also keeps conditional ones"
+                f"judges.json. TabSchemaConfig.accept (now {cfg.accept}) sets which of accept, conditional "
+                "and reject are compiled"
             )
 
         if future is None and trajectories:  # a caller that skipped discover's check

@@ -14,8 +14,10 @@
    deterministic checks for hallucinated fields, outcome fields, forbidden calls and imports).
 4. **FeatureAggregator** merges the proposals of all decision points.
 5. **Relevance, Generality, Impact & Uniqueness judges** score each feature (1–5) concurrently; the
-   **MetaJudge** accepts, conditionally accepts or rejects it. Only accepted features go on: conditionally
-   accepted ones are excluded by default, and `TabSchemaConfig(accept=("accept", "conditional"))` includes them.
+   **MetaJudge** accepts, conditionally accepts or rejects it. Accepted and conditionally accepted features go
+   on (the paper does not say which outcomes enter the card; the release keeps both because the conditional
+   ones clearly helped the head in its experiments), and `TabSchemaConfig(accept=("accept",))` keeps only
+   accepted ones.
 6. **Compile**: one reusable extractor for the accepted features, run and quality-checked on every onboarding
    decision point; the result is a feature card plus `extract.py`. The library appends a fixed, non-LLM
    function that adds the decision's context as text (`context_text`), so every card can match the context
