@@ -45,8 +45,10 @@ from tabagent.tabschema.agents import (
     CodeExtractor,
     CodeValidator,
     FeatureSpec,
+    LLMContentFiltered,
     LLMFormatError,
     extract_with_retries,
+    generate_retry_prompt,
     normalize_name,
 )
 from tabagent.tabschema.fitted import context_items
@@ -55,12 +57,44 @@ from tabagent.tabschema.trajectory import DecisionPoint, merge_examples
 
 TEXT_CAP = 20_000
 CAT_MAX_CHARS = 64  # a "categorical" plan whose values are longer and mostly distinct is typed as text
+#: Columns one planned feature may expand into, and columns the whole extractor may keep. Code that returns a
+#: dict per row (word counts, one entry per entity) is flattened into one column per key; past these caps the
+#: columns that vary most across decision points are kept.
+MAX_COLUMNS_PER_FEATURE, MAX_EXTRACTOR_COLUMNS = 64, 512
 #: A co-usage context: most of its items are candidate ids, on enough rows, and it lists few of them per row.
 CO_USAGE_SHARE, CO_USAGE_ROWS, CO_USAGE_MAX_ITEMS = 0.8, 0.2, 0.5
 
 
 class ExtractionError(RuntimeError):
     """The extractor could not be made to run on the onboarding trajectories."""
+
+
+#: Appended to every extractor the sandbox runs and to every compiled ``extract.py``, after the LLM's code:
+#: the CodeExtractor prompt's own ``flatten_json`` applied to the output ("use flatten_json to flatten every
+#: dict that goes into the final csv file", App. D.2), so a nested dict becomes ``parent_child`` columns
+#: instead of a failed attempt. Being part of ``extract.py``, it runs identically at training and inference.
+FLATTEN_MARK = "# --- appended by TabAgent (not LLM-written): flatten nested dicts"
+FLATTEN_CODE = f"""
+
+{FLATTEN_MARK}, as the CodeExtractor prompt asks ---
+def _tabagent_flatten(obj, prefix=""):
+    flat = {{}}
+    for key, value in obj.items():
+        if isinstance(value, dict):
+            flat.update(_tabagent_flatten(value, f"{{prefix}}{{key}}_"))
+        else:
+            flat[f"{{prefix}}{{key}}"] = value
+    return flat
+
+
+if isinstance(features, dict):
+    features = _tabagent_flatten(features)
+"""
+
+
+def with_flatten(code: str) -> str:
+    """``code`` with ``FLATTEN_CODE`` appended once."""
+    return code if FLATTEN_MARK in code else code + FLATTEN_CODE
 
 
 #: Appended to every compiled extractor (``context_text=True``): the decision's context as plain text, not
@@ -133,6 +167,7 @@ class CompiledExtractor:
     dropped: dict[str, str] = field(default_factory=dict)  # output column or feature -> reason
     quality: dict[str, dict] = field(default_factory=dict)
     attempts: int = 1
+    attempt_errors: list[str] = field(default_factory=list)  # why each failed attempt failed, in order
     notes: list[str] = field(default_factory=list)
     co_usage_context: str | None = None  # the column listing earlier candidates, if any
     verification: dict[str, Any] = field(default_factory=dict)
@@ -201,6 +236,109 @@ def _match_spec(column: str, specs: dict[str, FeatureSpec]) -> tuple[FeatureSpec
     return (specs[max(derived, key=len)], False) if derived else (None, False)
 
 
+def _flagged(verdicts: dict[str, str], by_key: dict[str, FeatureSpec]) -> dict[str, str]:
+    return {k: v for k, v in verdicts.items() if k in by_key and v in ("hallucinated_field", "plan_mismatch")}
+
+
+def _repair(
+    extractor,
+    executor,
+    validator,
+    judged,
+    accepted,
+    prefixes,
+    example,
+    target,
+    attempt,
+    verdicts,
+    evidence,
+    by_key,
+    history,
+):
+    """Ask the CodeExtractor once more with the CodeValidator's objections as the error of the retry prompt;
+    keep the new code only if it runs and fewer accepted features are flagged. Returns (attempt, verdicts,
+    note)."""
+    flagged = _flagged(verdicts, by_key)
+    objections = "\n".join(
+        f"- {by_key[k].feature_name}: {v}. {evidence.get(k, '')}".strip() for k, v in sorted(flagged.items())
+    )
+    error = (
+        "The code runs, but the CodeValidator found that these features do not follow their plan or read "
+        f"fields the trajectories do not have:\n{objections}\nFix these features; keep the others unchanged."
+    )
+    try:
+        code = extractor(accepted, example, target, generate_retry_prompt(1, error, attempt.code))
+        new = executor.run(code, prefixes)
+    except (LLMFormatError, LLMContentFiltered) as e:
+        return (
+            attempt,
+            verdicts,
+            f"the repair round for {len(flagged)} flagged feature(s) failed ({type(e).__name__})",
+        )
+    history.append(new)
+    if not new.ok:
+        return (
+            attempt,
+            verdicts,
+            f"the repair round's code did not run ({new.error[:200]}); kept the first code",
+        )
+    new_verdicts, _ = judged(new)
+    still = _flagged(new_verdicts, by_key)
+    if len(still) < len(flagged):
+        fixed = sorted(by_key[k].feature_name for k in flagged if k not in still)
+        return (
+            new,
+            new_verdicts,
+            f"the repair round fixed {len(fixed)} of {len(flagged)} flagged feature(s): {', '.join(fixed)}",
+        )
+    return (
+        attempt,
+        verdicts,
+        f"the repair round did not reduce the {len(flagged)} flagged feature(s); kept the first code",
+    )
+
+
+def _variation(values: pd.Series) -> float:
+    """Share of rows whose value differs from the column's most common one (missing counts as a value)."""
+    if not len(values):
+        return 0.0
+    counts = values.astype(str).where(values.notna(), "<missing>").value_counts()
+    return float(1 - counts.iloc[0] / len(values))
+
+
+def _cap_columns(result: CompiledExtractor, frame: pd.DataFrame, per_feature: int, total: int) -> None:
+    """Keep at most ``per_feature`` columns of one planned feature and ``total`` columns in all, those that
+    vary most across decision points; the rest are dropped with the reason."""
+    variation = {c: _variation(frame[c]) for c in result.features}
+    groups: dict[str, list[str]] = {}
+    for col in result.features:
+        groups.setdefault(str(result.specs[col].get("feature_name") or col), []).append(col)
+    drop: dict[str, str] = {}
+    for name, cols in groups.items():
+        if len(cols) > per_feature:
+            ranked = sorted(cols, key=lambda c: (-variation[c], c))
+            for c in ranked[per_feature:]:
+                drop[c] = (
+                    f"one of {len(cols)} columns of {name}: only the {per_feature} that vary most are kept "
+                    "(max_columns_per_feature)"
+                )
+            result.notes.append(
+                f"{name} expanded into {len(cols)} columns (a dict per row, such as word counts); kept the "
+                f"{per_feature} that vary most"
+            )
+    kept = [c for c in result.features if c not in drop]
+    if len(kept) > total:
+        for c in sorted(kept, key=lambda c: (-variation[c], c))[total:]:
+            drop[c] = (
+                f"the extractor's columns are capped at {total} (max_extractor_columns); this one varies less"
+            )
+        result.notes.append(f"the extractor produced {len(kept)} columns; kept the {total} that vary most")
+    for c, why in drop.items():
+        result.features.pop(c, None)
+        result.specs.pop(c, None)
+        result.dropped[c] = why
+
+
 def _is_flag(values: pd.Series) -> bool:
     """A presence flag: one true value where present (``True`` or ``1``) and missing elsewhere. A column
     whose only present value is false (``0``, ``False``) says that nothing happened anywhere: not a flag."""
@@ -224,6 +362,9 @@ def compile_extractor(
     max_retries: int = 3,
     min_success: float = 0.95,
     max_null_rate: float = 0.5,
+    max_columns_per_feature: int = MAX_COLUMNS_PER_FEATURE,
+    max_columns: int = MAX_EXTRACTOR_COLUMNS,
+    repair: bool = True,
     reserved: frozenset[str] | set[str] = frozenset(),
     candidate_ids: frozenset[str] | set[str] = frozenset(),
     context_text: bool = True,
@@ -260,17 +401,51 @@ def compile_extractor(
     if not attempt.ok:
         raise ExtractionError(f"extractor failed after {len(history)} attempts: {attempt.error[:500]}")
 
+    by_key = {s.key: s for s in accepted}
+    notes: list[str] = []
+
+    def judged(att) -> tuple[dict[str, str], dict[str, str]]:
+        sample = [r.features for r in att.results if r.ok][:3]
+        return validator.judge(accepted, att.code, example, sample, target)
+
+    verdicts: dict[str, str] = {}
+    try:
+        if validator:
+            verdicts, evidence = judged(attempt)
+            flagged = _flagged(verdicts, by_key)
+            if (
+                flagged and repair
+            ):  # one repair round with the validator's objections (App. D.1's retry prompt)
+                attempt, verdicts, note = _repair(
+                    extractor,
+                    executor,
+                    validator,
+                    judged,
+                    accepted,
+                    prefixes,
+                    example,
+                    target,
+                    attempt,
+                    verdicts,
+                    evidence,
+                    by_key,
+                    history,
+                )
+                notes.append(note)
+    except LLMFormatError as e:  # the deterministic checks and the quality gates still apply
+        verdicts = {}
+        notes.append(f"the CodeValidator's answer was unusable, so no feature was judged by it ({e})")
+
     outputs = [r.features if r.ok else None for r in attempt.results]
     frame = pd.DataFrame([o or {} for o in outputs])
     ok_rows = np.array([o is not None for o in outputs])
-    by_key = {s.key: s for s in accepted}
-    result = CompiledExtractor(attempt.code, {}, attempts=len(history))
-    try:
-        sample = [o for o in outputs if o][:3]
-        verdicts = validator(accepted, attempt.code, example, sample, target) if validator else {}
-    except LLMFormatError as e:  # the deterministic checks and the quality gates still apply
-        verdicts = {}
-        result.notes.append(f"the CodeValidator's answer was unusable, so no feature was judged by it ({e})")
+    result = CompiledExtractor(
+        with_flatten(attempt.code),
+        {},
+        attempts=len(history),
+        attempt_errors=[h.error[:4000] for h in history if not h.ok],
+        notes=notes,
+    )
 
     produced = set()
     for col in frame.columns:
@@ -310,6 +485,7 @@ def compile_extractor(
             result.dropped.setdefault(
                 spec.feature_name, "accepted but not produced by the compiled extractor"
             )
+    _cap_columns(result, frame.loc[ok_rows], max_columns_per_feature, max_columns)
     if not result.features:
         reasons = "; ".join(f"{k}: {v}" for k, v in result.dropped.items())
         raise ExtractionError(f"every compiled feature failed the quality gates ({reasons[:1000]})")

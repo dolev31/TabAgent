@@ -644,11 +644,10 @@ def test_code_failing_on_many_decision_points_is_a_clear_error(tmp_path):
     "value",
     [
         "trajectory_data['intent'].split()",
-        "{'nested': 1}",
         "set(trajectory_data['intent'])",
         "object()",
     ],
-    ids=["list", "dict", "set", "object"],
+    ids=["list", "set", "object"],
 )
 def test_non_scalar_outputs_are_retried(tmp_path, value):
     def extractor(p, n):
@@ -1671,3 +1670,67 @@ def test_a_column_that_is_false_or_missing_is_constant_but_a_presence_flag_is_ke
     assert not _is_flag(pd.Series([False, None, None, False]))
     assert not _is_flag(pd.Series([True, False, None]))  # two values: an ordinary column
     assert not _is_flag(pd.Series([True, True]))  # never missing: constant
+
+
+def test_nested_dict_outputs_are_flattened_not_retried(tmp_path):
+    """The CodeExtractor prompt asks for flatten_json on every dict; TabAgent applies it to the output, so a
+    nested dict is parent_child columns, the same at training and serving, and costs no retry."""
+    calls = []
+
+    def extractor(p, n):
+        calls.append(p)
+        return tagged(
+            code_for(names_in(p)).replace("return {", "return {'user_intent_parts': {'n_words': 2}, ")
+        )
+
+    result = discover(tmp_path, FakeLLM(extractor=extractor))
+    assert not any("PREVIOUS ATTEMPT FAILED" in p for p in calls)
+    assert "user_intent_parts_n_words" in result.extractor.features or "user_intent_parts_n_words" in str(
+        result.extractor.dropped
+    )
+    assert "_tabagent_flatten" in result.extractor.code
+
+
+def test_compile_repairs_features_the_validator_flags(tmp_path):
+    """At compile, the CodeValidator's objections go back to the CodeExtractor once (the retry prompt); the
+    repaired code is kept because it runs and fewer accepted features are flagged."""
+    state = {"compiling": False}
+
+    def meta(p, n):  # the MetaJudge runs right before compile
+        state["compiling"] = True
+        return json.dumps([{"feature_name": x, "final_decision": "accept"} for x in names_in(p)])
+
+    def extractor(p, n):
+        code = code_for(names_in(p))
+        return tagged(code + "\n# repaired" if "CodeValidator found" in p else code)
+
+    def validator(p, n):
+        flag = state["compiling"] and "# repaired" not in p
+        return json.dumps(
+            {
+                "features": [
+                    {
+                        "feature_name": x,
+                        "verdict": "plan_mismatch" if flag and x == "plan_note" else "valid",
+                        "evidence": "it reads the first plan, the plan says the last",
+                    }
+                    for x in names_in(p)
+                ]
+            }
+        )
+
+    llm = FakeLLM(meta_judge=meta, extractor=extractor, validator=validator)
+    result = discover(tmp_path, llm)
+    assert "plan_note" in result.extractor.features and "# repaired" in result.extractor.code
+    assert any("repair round fixed 1 of 1" in n for n in result.extractor.notes)
+    repair_prompt = next(p for p in llm.prompts("extractor") if "CodeValidator found" in p)
+    assert "plan_note: plan_mismatch. it reads the first plan" in repair_prompt
+
+    state["compiling"] = False
+    off = discover(
+        tmp_path,
+        FakeLLM(meta_judge=meta, extractor=extractor, validator=validator),
+        run_id="off",
+        compile_repair=False,
+    )
+    assert "plan_note" not in off.extractor.features

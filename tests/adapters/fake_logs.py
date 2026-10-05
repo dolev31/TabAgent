@@ -343,12 +343,47 @@ def _round(app, intent, offered, calls, merged_prompts, with_block):
     ]
 
 
+APPS = {
+    "phone": "Contacts, text messages and calls.",
+    "venmo": "Peer-to-peer payments.",
+    "gmail": "Read and send emails.",
+    "spotify": "Music playlists and playback.",
+}
+
+
+def _analyzer_step(intent, chosen):
+    """A TaskAnalyzerAgent step as CUGA records it: the available apps as a Python literal in the prompt,
+    the chosen apps (objects with a name and description) in its output."""
+    available = [{"name": n, "description": d} for n, d in APPS.items()]
+    picked = [{"name": n, "description": APPS.get(n, ""), "type": "api"} for n in chosen]
+    example = {"intent": "book a table", "available_apps": [{"name": "RestaurantFinder", "description": "x"}]}
+    prompt = (
+        "System: You are an AI assistant whose primary goal is to determine which applications are required "
+        f"to fulfill a user's request. Example input: {example}\n"
+        f"Human: ```{ {'intent': intent, 'applications': available} }```"
+    )
+    return {
+        "name": "TaskAnalyzerAgent",
+        "prompts": [{"role": "system", "value": prompt}, {"role": "generation", "value": json.dumps(picked)}],
+        "data": json.dumps(picked),
+    }
+
+
 def cuga_trajectory(
-    task_id, rounds, score=1.0, merged_prompts=False, with_block=True, intent="pay my roommate back"
+    task_id,
+    rounds,
+    score=1.0,
+    merged_prompts=False,
+    with_block=True,
+    intent="pay my roommate back",
+    offered_apps=None,
 ):
-    """rounds: list of (app, offered APIs, APIs called as written in call_api)."""
+    """rounds: list of (app, offered APIs, APIs called as written in call_api). ``offered_apps``: the apps the
+    TaskAnalyzerAgent chose (default: the rounds' apps)."""
     steps = [
-        {"name": "TaskAnalyzerAgent", "prompts": [], "data": json.dumps({"apps": [r[0] for r in rounds]})},
+        _analyzer_step(
+            intent, offered_apps if offered_apps is not None else list(dict.fromkeys(r[0] for r in rounds))
+        ),
         {"name": "PlanControllerAgent", "prompts": [], "data": json.dumps({"next_subtask": "use the apps"})},
     ]
     for app, offered, calls in rounds:

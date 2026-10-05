@@ -465,7 +465,12 @@ def _next_steps(adapter: Any, logs: str, name: str, decisions: list[str], good: 
         return False, ["no successful run contains it; onboarding learns from successful runs"]
     ready = [d for d in decisions if _onboardable(adapter, good, d)]
     if ready:
-        return True, [f"tabagent onboard {shlex.quote(logs)} --decision {shlex.quote(d)}" for d in ready]
+        kinds = getattr(adapter, "decision_kinds", None) or {}
+        return True, [
+            f"tabagent onboard {shlex.quote(logs)} --decision {shlex.quote(d)}"
+            + (f" --kind {kinds[d]}" if kinds.get(d, "ranking") != "ranking" else "")
+            for d in ready
+        ]
     cls = type(adapter).__name__
     return False, [
         f"{cls} builds no candidates or labels for {name}, so onboard it from Python with your own:",

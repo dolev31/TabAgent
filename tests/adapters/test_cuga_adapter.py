@@ -90,13 +90,11 @@ def test_components_other_nodes_and_live_prefix(tmp_path):
     assert comps[SHORTLISTER] == 1 and comps["CodeAgent"] == 1 and "EvaluationResult" not in comps
 
     t1 = next(t for t in trajs if t.id == "exp_1/t1")
-    (planner, *_) = adapter.decision_points(t1, "TaskAnalyzerAgent") + adapter.decision_points(
-        t1, "PlanControllerAgent"
-    )
+    (planner,) = adapter.decision_points(t1, "PlanControllerAgent")
     with pytest.raises(NotImplementedError, match="labels_fn"):
         adapter.labels(planner)
 
-    custom = CugaAdapter(labels_fn=lambda dp, raw: set(json.loads(dp.target_step["data"])["apps"]))
+    custom = CugaAdapter(labels_fn=lambda dp, raw: {a["name"] for a in json.loads(dp.target_step["data"])})
     custom.load(_logs(tmp_path))
     (dp,) = custom.decision_points(t1, "TaskAnalyzerAgent")
     assert custom.labels(dp) == {"phone", "venmo"} and dp.prefix["steps"] == []
@@ -104,3 +102,42 @@ def test_components_other_nodes_and_live_prefix(tmp_path):
     live = adapter.live_prefix(t1.raw)
     assert not {"score", "eval", "actions_count"} & set(live)
     assert "EvaluationResult" not in {s["name"] for s in live["steps"]}
+
+
+def test_app_analyzer_is_built_in(tmp_path):
+    """The paper's second CUGA decision: candidates from the analyzer's prompt, labels the apps the run
+    called (or, with app_labels="offered", the apps the analyzer chose)."""
+    logs = tmp_path / "apps"
+    logs.mkdir()
+    rounds = [("phone", ["search_contacts"], ["search_contacts"]), ("venmo", ["pay"], ["pay"])]
+    run = cuga_trajectory("t9", rounds, offered_apps=["phone", "venmo", "gmail"])  # gmail never called
+    (logs / "t9.json").write_text(json.dumps(run))
+    used = CugaAdapter()
+    (t,) = used.load(logs)
+    (dp,) = used.decision_points(t, "TaskAnalyzerAgent")
+    cands = used.candidates(dp)
+    assert [c.id for c in cands] == ["gmail", "phone", "spotify", "venmo"]
+    assert next(c for c in cands if c.id == "venmo").description == "Peer-to-peer payments."
+    assert used.labels(dp) == {"phone", "venmo"}
+    assert dp.prefix["steps"] == [] and dp.prefix["intent"] == "pay my roommate back"
+    offered = CugaAdapter(app_labels="offered")
+    (t,) = offered.load(logs)
+    assert offered.labels(offered.decision_points(t, "TaskAnalyzerAgent")[0]) == {"phone", "venmo", "gmail"}
+    assert CugaAdapter.decision_kinds["TaskAnalyzerAgent"] == "multilabel"
+    with pytest.raises(ValueError, match="app_labels"):
+        CugaAdapter(app_labels="chosen")
+
+
+def test_app_analyzer_without_a_listed_catalog_uses_the_apps_seen(tmp_path):
+    logs = tmp_path / "apps"
+    logs.mkdir()
+    rounds = [("phone", ["search_contacts"], ["search_contacts"])]
+    run = cuga_trajectory("t1", rounds)
+    run["steps"][0]["prompts"] = []  # no available_apps in the prompt
+    (logs / "t1.json").write_text(json.dumps(run))
+    other = cuga_trajectory("t2", [("venmo", ["pay"], ["pay"])])
+    (logs / "t2.json").write_text(json.dumps(other))
+    ad = CugaAdapter()
+    trajs = ad.load(logs)
+    dp = ad.decision_points(next(t for t in trajs if t.group == "t1"), "TaskAnalyzerAgent")[0]
+    assert {c.id for c in ad.candidates(dp)} >= {"phone", "venmo"}  # apps seen across the loaded runs

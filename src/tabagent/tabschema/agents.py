@@ -350,7 +350,9 @@ class CodeExecutor:
         if issues:
             msg = "The code violates the extraction rules:\n" + "\n".join(f"- {i}" for i in issues)
             return ExtractionAttempt(code, False, issues=[str(i) for i in issues], error=msg)
-        results = self.sandbox.run_batch(code, prefixes)
+        from tabagent.tabschema.compile import with_flatten  # compile imports this module
+
+        results = self.sandbox.run_batch(with_flatten(code), prefixes)
         out_issues: list[str] = []
         for n, r in enumerate(results):  # an output that is not a flat dict of JSON scalars is a failure
             bad = [str(i) for i in checks.check_output(r.features)] if r.ok else []
@@ -421,6 +423,26 @@ def normalize_verdict(value: Any) -> str:
     return next((x for x in VERDICTS if v.startswith(x)), v)
 
 
+#: Keys and characters per value of each sample output the CodeValidator sees. Code that returns a dict per
+#: row (word counts) can produce thousands of keys, which would fill the prompt.
+SAMPLE_OUTPUT_KEYS, SAMPLE_VALUE_CHARS = 150, 300
+
+
+def sample_output(features: Any) -> Any:
+    """One extractor output as the CodeValidator sees it: at most ``SAMPLE_OUTPUT_KEYS`` keys (with a count of
+    the rest) and long values clipped."""
+    if not isinstance(features, dict):
+        return features
+    keys = list(features)
+    out = {
+        k: (v[:SAMPLE_VALUE_CHARS] + "..." if isinstance(v, str) and len(v) > SAMPLE_VALUE_CHARS else v)
+        for k, v in ((k, features[k]) for k in keys[:SAMPLE_OUTPUT_KEYS])
+    }
+    if len(keys) > SAMPLE_OUTPUT_KEYS:
+        out["..."] = f"{len(keys) - SAMPLE_OUTPUT_KEYS} more keys not shown"
+    return out
+
+
 class CodeValidator(Stage):
     """Checks that executed extraction code reads only real fields and follows each feature's plan; returns
     a verdict per feature (``valid``, ``hallucinated_field``, ``plan_mismatch``)."""
@@ -430,6 +452,12 @@ class CodeValidator(Stage):
     def __call__(
         self, specs: list[FeatureSpec], code: str, schema_example: dict, outputs: list[dict], target: str
     ) -> dict[str, str]:
+        return self.judge(specs, code, schema_example, outputs, target)[0]
+
+    def judge(
+        self, specs: list[FeatureSpec], code: str, schema_example: dict, outputs: list[dict], target: str
+    ) -> tuple[dict[str, str], dict[str, str]]:
+        """The verdict per feature and the validator's evidence for it (the code or schema detail)."""
         spec_dicts = [{k: v for k, v in s.to_dict().items() if k in SPEC_FIELDS} for s in specs]
         prompt = prompts.render(
             "code_validator",
@@ -437,14 +465,18 @@ class CodeValidator(Stage):
             feature_specs=_dump(spec_dicts),
             trajectory_schema=union_schema([schema_example]),
             code=code,
-            sample_output=_dump(outputs[:3]),
+            sample_output=_dump([sample_output(o) for o in outputs[:3]]),
         )
         out = self.ask_json(prompt)
-        items = out.get("features") if isinstance(out, dict) else out
-        return {
+        items = list(json_items(out.get("features") if isinstance(out, dict) else out))
+        verdicts = {
             normalize_name(x.get("feature_name") or ""): normalize_verdict(x.get("verdict") or "")
-            for x in json_items(items)
+            for x in items
         }
+        evidence = {
+            normalize_name(x.get("feature_name") or ""): str(x.get("evidence") or "")[:600] for x in items
+        }
+        return verdicts, evidence
 
 
 class FeatureAggregator(Stage):

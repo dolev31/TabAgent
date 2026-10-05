@@ -46,6 +46,10 @@ from tabagent.tabschema.trajectory import DecisionPoint, clip_for_prompt, clip_s
 AUDIT_MAX_CHARS = 60_000
 #: Feature values longer than this reach the auditor clipped.
 VALUE_CHARS = 500
+#: Columns one auditor call judges at most. A wide extractor (one column per tool or word) would otherwise put
+#: hundreds of plans in one prompt and truncate the answer; each point audits a share of the columns instead,
+#: spread over the planned features and preferring the values that are set at that point.
+AUDIT_MAX_COLUMNS = 48
 #: A feature is dropped only when it was judged (correct or incorrect) on at least ``MIN_JUDGED`` points, at
 #: least ``MIN_INCORRECT`` of them incorrect, and the one-sided Wilson lower bound (``WILSON_Z``) of its
 #: incorrect rate exceeds the threshold.
@@ -106,11 +110,38 @@ class OutputAuditor(Stage):
         }
 
 
-def audit_items(columns: dict[str, dict], features: dict[str, Any]) -> list[dict[str, Any]]:
-    """The auditor's view of one decision point: each column's plan and the value the extractor produced
-    (null when it produced none; long values clipped)."""
-    items = []
+def _is_set(value: Any) -> bool:
+    return value not in (None, 0, False, "", "none", "None") and value == value  # NaN is not set
+
+
+def audit_columns(
+    columns: dict[str, dict], features: dict[str, Any], limit: int = AUDIT_MAX_COLUMNS
+) -> list[str]:
+    """At most ``limit`` columns to audit at one point: round-robin over the planned features (each column's
+    ``feature_name``), and within a feature the columns whose value is set at this point first, then by name.
+    Deterministic, so a rerun asks the same questions (and reuses the cached answers)."""
+    groups: dict[str, list[str]] = {}
     for col, plan in columns.items():
+        groups.setdefault(str(plan.get("feature_name") or col), []).append(col)
+    queues = [
+        sorted(cols, key=lambda c: (not _is_set(features.get(c)), c)) for _, cols in sorted(groups.items())
+    ]
+    out: list[str] = []
+    while len(out) < limit and any(queues):
+        for q in queues:
+            if q and len(out) < limit:
+                out.append(q.pop(0))
+    return out
+
+
+def audit_items(
+    columns: dict[str, dict], features: dict[str, Any], limit: int = AUDIT_MAX_COLUMNS
+) -> list[dict[str, Any]]:
+    """The auditor's view of one decision point: at most ``limit`` columns (see :func:`audit_columns`), each
+    with its plan and the value the extractor produced (null when it produced none; long values clipped)."""
+    items = []
+    for col in audit_columns(columns, features, limit):
+        plan = columns[col]
         item = {
             "feature_name": col,
             "feature_type": plan.get("feature_type", ""),
@@ -232,9 +263,10 @@ def run_audit(
 
 
 def estimate(prefixes: list[dict], n_features: int = 20) -> tuple[int, int]:
-    """Estimated (input, output) tokens of auditing ``prefixes`` with ``n_features`` features each (4
-    characters per token): the template, the clipped prefix, the features' plans and values; about 60
-    output tokens per feature."""
+    """Estimated (input, output) tokens of auditing ``prefixes`` with ``n_features`` features each, at most
+    ``AUDIT_MAX_COLUMNS`` per point (4 characters per token): the template, the clipped prefix, the features'
+    plans and values; about 60 output tokens per feature."""
+    n_features = min(n_features, AUDIT_MAX_COLUMNS)
     template = len(prompts.text("output_auditor"))
     chars = sum(
         template + len(_dump(clip_for_prompt(p, AUDIT_MAX_CHARS))) + n_features * 450 for p in prefixes

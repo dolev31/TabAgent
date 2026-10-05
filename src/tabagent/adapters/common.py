@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Any
@@ -15,18 +16,28 @@ _SPEC_KEYS = frozenset({"description", "api_name", "function", "properties", *_P
 
 
 def iter_files(path: str | Path, suffixes: Iterable[str] = (".json", ".jsonl")) -> list[Path]:
-    """``path`` itself, or every matching file below the directory (recursive, sorted, no hidden files)."""
+    """``path`` itself, or every matching file below the directory (recursive, sorted, no hidden files).
+    Symbolic links to directories are followed, each real directory once, so a folder of links to log
+    folders reads like the folders themselves."""
     p = Path(path)
     if p.is_file():
         return [p]
     if not p.is_dir():
         raise FileNotFoundError(f"no such file or directory: {p}")
     sfx = set(suffixes)
-    return sorted(
-        f
-        for f in p.rglob("*")
-        if f.suffix in sfx and f.is_file() and not any(x.startswith(".") for x in f.relative_to(p).parts)
-    )
+    out, seen = [], set()
+    for root, dirs, files in os.walk(p, followlinks=True):
+        real = os.path.realpath(root)
+        if real in seen:  # a link back up the tree, or a second link to the same folder
+            dirs[:] = []
+            continue
+        seen.add(real)
+        dirs[:] = sorted(d for d in dirs if not d.startswith("."))
+        for name in files:
+            f = Path(root) / name
+            if f.suffix in sfx and not name.startswith(".") and f.is_file():
+                out.append(f)
+    return sorted(out)
 
 
 def run_id(root: str | Path, f: Path) -> str:

@@ -462,6 +462,37 @@ decoding; CatBoost's own pass takes about 1 ms) that holds the interpreter lock,
 longer. Add replicas for more throughput. The full tables, with the in-process mode and the server's time per
 stage, are in [`experiments/efficiency/README.md`](https://github.com/dolev31/TabAgent/blob/main/experiments/efficiency/README.md#serving-servingpy).
 
+## CUGA
+
+Heads onboarded from CUGA trajectories plug back into CUGA where its LLM calls were
+(`tabagent.integrations.cuga`; the paper's in-loop hot swap). Both helpers take the run so far as CUGA's
+`ActivityTracker` holds it, which is the shape of the trajectory files the heads learned from, and return None
+when the head defers, so CUGA keeps its own LLM call:
+
+```python
+from tabagent.integrations.cuga import CugaAppMatcher, CugaShortlister, run_so_far
+
+shortlister = CugaShortlister("shortlister_head", k=9)  # a directory, hf://OWNER/REPO, or a serve URL
+app_matcher = CugaAppMatcher("app_head")
+
+# cuga/backend/cuga_graph/nodes/api/shortlister_agent/shortlister_agent.py, in ShortlisterAgent.run
+result = shortlister.shortlist(run_so_far(tracker), input_variables.api_shortlister_all_filtered_apis)
+if result is not None:
+    return AIMessage(content=ShortListerOutput(thoughts=[], result=result).model_dump_json())
+
+# cuga/backend/cuga_graph/nodes/task_decomposition_planning/analyze_task.py, in TaskAnalyzer.match_apps
+offered = [{"name": a.name, "description": a.description} for a in apps]
+names = app_matcher.match(run_so_far(tracker), offered)
+if names is not None:
+    res = AppMatch(thoughts="", relevant_apps=names)
+```
+
+On CUGA's AppWorld runs, the prefix and candidates the helpers build from the tracker equal the
+training ones for every shortlisting and app-selection decision. After a swap, CUGA records the
+shortlister's step without the LLM's prompts, so later decisions in the same run see steps unlike the training
+ones; measure the swapped agent on held-out tasks before relying on it. With a served head
+(`tabagent serve`), CUGA needs only the core package.
+
 ## Pretrained heads and the demo
 
 `tabagent.load` also takes a Hugging Face Hub repository: `hf://OWNER/REPO`, or `hf://OWNER/REPO@REVISION` with

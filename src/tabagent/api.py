@@ -757,7 +757,7 @@ def onboard(
     adapter: Any = "auto",
     llm: LLM | None = None,
     model: str | None = None,
-    kind: str = "ranking",
+    kind: str | None = None,
     out: str | Path | None = None,
     n_analyze: int | None = None,
     max_cost_usd: float | None = None,
@@ -784,7 +784,9 @@ def onboard(
     decision: the component to replace (see ``tabagent components``); optional when the logs have one.
     adapter: the log adapter, or ``"auto"`` to detect it from the files.
     llm, model: the TabSchema LLM, or the model name to build one from environment keys (default GPT-5.4).
-    kind: the decision pattern: ``ranking``, ``multilabel`` or ``single``.
+    kind: the decision pattern: ``ranking``, ``multilabel`` or ``single``. Default: the adapter's pattern
+        for the decision (``adapter.decision_kinds``: ``multilabel`` for CUGA's app analyzer), else
+        ``ranking``.
     out: save the head to this directory.
     n_analyze: decision points analyzed by the LLM (default 20).
     max_cost_usd: stop TabSchema when its LLM cost exceeds this. Needs a known price for the model
@@ -865,6 +867,10 @@ def onboard(
             decision = next(iter(comps))
         else:
             raise ValueError(f"choose the decision component to replace with decision=...; found {comps}")
+    if kind is None:
+        kind = (getattr(adapter, "decision_kinds", None) or {}).get(decision, "ranking")
+    if gate_coverage is not None and kind == "single":
+        raise ValueError("gate_coverage calibrates a ranking gate; it does not apply to kind='single'")
     dps = [dp for t in good for dp in adapter.decision_points(t, decision)]
     logger.info(
         "onboarding %s: %d trajectories (%d successful), %d decision points",

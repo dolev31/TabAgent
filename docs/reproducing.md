@@ -57,8 +57,9 @@ card with an embedding-similarity feature also downloads the e5-small-v2 encoder
 | OAK and BPO rows of Table 1 | none (the benchmarks are public; loaders are not included yet) | | | | public |
 
 The AppWorld benchmark itself is public; the results above use the CUGA agent's own trajectories on it, which
-are not released. The CUGA trajectory adapter and the integration code are included, so the pipeline runs on
-your own CUGA traces. Table 15's and Fig. 4's TabAgent latency was measured on those trajectories;
+are not released. The CUGA trajectory adapter (both decisions, `ShortlisterAgent` and `TaskAnalyzerAgent`) and
+the hot-swap helpers (`tabagent.integrations.cuga`, see [Deployment](deployment.md#cuga)) are included, so the
+pipeline runs on your own CUGA traces and the heads plug back into CUGA. Table 15's and Fig. 4's TabAgent latency was measured on those trajectories;
 `experiments.efficiency.latency` measures the same quantity on public data (see
 `experiments/efficiency/README.md`). The candidate-overload and head-ablation figures and the efficiency
 benchmark have their own READMEs under `experiments/`.

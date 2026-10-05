@@ -129,6 +129,12 @@ class TabSchemaConfig:
         left out unless ``"conditional"`` is added.
     compile_min_success: share of onboarding decision points the compiled extractor must run on.
     max_null_rate: extractor columns emptier than this are dropped.
+    max_columns_per_feature, max_extractor_columns: caps on the columns one planned feature expands into
+        (code that returns a dict per row, such as word counts, gets one column per key) and on the
+        extractor's columns in all; past them the columns that vary most across decision points are kept.
+    compile_repair: when the CodeValidator flags accepted features in the compiled code, ask the CodeExtractor
+        once more with its objections (the paper's retry prompt), and keep the new code only if it runs and
+        fewer features are flagged.
     dependency_features: dependency statistics added to the card. ``co_usage`` is added when an extractor
         column lists earlier candidates (``co_usage_context``).
     pair_embeddings: add the e5 context-candidate similarity; None adds it when the embed extra is installed.
@@ -176,6 +182,9 @@ class TabSchemaConfig:
     accept: tuple[str, ...] = ("accept",)  # add "conditional" to widen
     compile_min_success: float = 0.95
     max_null_rate: float = 0.5
+    max_columns_per_feature: int = 64
+    max_extractor_columns: int = 512
+    compile_repair: bool = True
     dependency_features: tuple[str, ...] = (
         "candidate_prior",
         "context_candidate_lex",
@@ -210,6 +219,8 @@ class TabSchemaConfig:
             "audit_samples": (self.audit_samples, 1),
             "usefulness_max_decisions": (self.usefulness_max_decisions, 2),
             "usefulness_max_rows": (self.usefulness_max_rows, 1),
+            "max_columns_per_feature": (self.max_columns_per_feature, 1),
+            "max_extractor_columns": (self.max_extractor_columns, 1),
         }
         for name, (value, low) in limits.items():
             if not isinstance(value, int) or isinstance(value, bool) or value < low:
@@ -422,6 +433,24 @@ def _usefulness_md(u: dict[str, Any]) -> list[str]:
         ci = f"[{r['ci'][0]:+.4f}, {r['ci'][1]:+.4f}]"
         out.append(f"| {name} | {r['delta']:+.4f} | {ci} | {r.get('p_holm', '')} | {r['verdict']} |")
     return out
+
+
+def compile_record(compiled: CompiledExtractor) -> dict[str, Any]:
+    """The compile step as ``compile.json``: the attempts and why each failed one failed, every kept column
+    (type and the planned feature it implements), every column's quality statistics, every dropped column or
+    feature with the reason, and the notes."""
+    return {
+        "attempts": compiled.attempts,
+        "attempt_errors": compiled.attempt_errors,
+        "kept": {
+            col: {"type": t, "feature": (compiled.specs.get(col) or {}).get("feature_name")}
+            for col, t in compiled.features.items()
+        },
+        "dropped": dict(compiled.dropped),
+        "quality": compiled.quality,
+        "co_usage_context": compiled.co_usage_context,
+        "notes": list(compiled.notes),
+    }
 
 
 @dataclass
@@ -752,6 +781,9 @@ class TabSchema:
                 max_retries=cfg.max_code_retries,
                 min_success=cfg.compile_min_success,
                 max_null_rate=cfg.max_null_rate,
+                max_columns_per_feature=cfg.max_columns_per_feature,
+                max_columns=cfg.max_extractor_columns,
+                repair=cfg.compile_repair,
                 reserved=RESERVED,
                 candidate_ids=candidates,
                 context_text=cfg.context_text,
@@ -777,6 +809,7 @@ class TabSchema:
         compiled.tests = V.restrict_tests(compiled.tests, compiled.features)
         if compiled.tests:
             store.write_json(V.TESTS_FILE, compiled.tests)
+        store.write_json("compile.json", compile_record(compiled))
         report.compiled = dict(compiled.features)
         report.dropped.update(compiled.dropped)
         report.notes += compiled.notes

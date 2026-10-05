@@ -259,4 +259,4 @@ def check_output(features: Any) -> list[Issue]:
     if not isinstance(features, dict):
         return [Issue("output", "features must be a dict")]
     bad = [k for k, v in features.items() if not (v is None or isinstance(v, (str, int, float, bool)))]
-    return [Issue("output", f"{k} is not a scalar (flatten it with flatten_json)") for k in bad]
+    return [Issue("output", f"{k} is not a scalar (a string, number, bool or None)") for k in bad]

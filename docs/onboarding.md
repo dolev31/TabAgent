@@ -136,13 +136,21 @@ writes the arguments and the replies.
 | Anthropic Messages API format (`tool_use` blocks) | same | same | same |
 | LangChain message dumps | same | same | same |
 | τ²-bench results (`simulations`) | `ToolShortlist`, `NextToolCall` | the domain's tools (`tool_defs`), or a catalog you pass | tools the run called |
-| CUGA trajectories | any agent node, default `ShortlisterAgent` | APIs offered to the shortlister | APIs the code agent called |
+| CUGA trajectories | `ShortlisterAgent` (per shortlisting), `TaskAnalyzerAgent` (app selection, multi-label); any other node with your own candidates and labels | APIs offered to the shortlister; the apps listed in the analyzer's prompt | APIs the code agent called before the next shortlisting; apps the run called |
 | generic JSON (`steps: [{name, ...}]`) | any step name | `candidates_fn=` | `labels_fn=` |
 
 A run counts as successful when its outcome field says so (`success`, `reward`, `score`, the first one
 present; `true`, a positive number or a word such as `passed` means success, anything else failure); runs
 without an outcome are treated as successful with a warning in the report. CUGA runs succeed when
 `score > 0`.
+
+The CUGA adapter builds the two components the paper replaces. `--decision ShortlisterAgent` ranks the APIs
+of the app being shortlisted; `--decision TaskAnalyzerAgent` selects the apps a task needs, a multi-label
+decision that `onboard` recognizes by itself (`--kind` is only needed to override it). Its labels are the apps
+the successful run called; `CugaAdapter(app_labels="offered")` uses the apps the analyzer chose instead, as
+the paper's legacy data did (on CUGA AppWorld runs the two agree on nearly all). Point `onboard` at the
+folder of a CUGA evaluation (one JSON file per task; `results.json` and `metadata.json` are skipped), or at a
+folder of such folders or of links to them.
 
 A decision point's prefix holds the steps before the decision and only the top-level fields that describe
 the task: for chat logs and generic JSON `instruction`, `task`, `query`, `question`, `goal`, `intent` and
@@ -253,6 +261,24 @@ During discovery:
   is kept. An unusable CodeValidator answer leaves the deterministic checks in charge, with a note. A column
   that lists earlier candidates (the tools called before the decision, say) becomes the context of the card's
   fitted co-usage statistic (`fitted:co_usage`).
+* **Nested outputs and wide features.** Code that returns a nested dict is flattened into `parent_child`
+  columns by the CodeExtractor prompt's own `flatten_json`, which TabAgent appends to every extractor (so it
+  runs the same at serving) instead of failing the attempt. Code that returns a dict per row, such as word
+  counts or one entry per entity, becomes one column per key: compile keeps at most
+  `TabSchemaConfig.max_columns_per_feature` (64) columns of one planned feature and
+  `max_extractor_columns` (512) in all, those that vary most across decision points, and the report says
+  what was trimmed. On CUGA's shortlister, word-count features had expanded into thousands of columns.
+* **Repairing flagged features.** When the CodeValidator flags accepted features in the compiled code (a field
+  the trajectories lack, or code that does not follow the plan), the CodeExtractor is asked once more with
+  the validator's objections in the paper's retry prompt; the new code is kept only if it runs and fewer
+  features are flagged (`TabSchemaConfig(compile_repair=False)` turns this off). On CUGA's app selection, the
+  best-rated feature had been dropped because its code counted generic words as app names.
+* **Bounded prompts for wide extractors.** The CodeValidator sees at most 150 keys of each sample output, and
+  the output audit judges at most 48 columns per decision point, spread over the planned features (set
+  values first), so a wide extractor neither fills a prompt nor truncates an answer.
+* **The compile record.** `compile.json` in the run directory holds every code attempt's error, every kept
+  column (its type and the planned feature it implements), every column's quality statistics, and every
+  dropped column with the reason.
 * **The context text.** Every compiled extractor ends with a fixed function, appended by TabAgent and not
   written by the LLM, that adds `context_text`: the prefix's task-level text fields and the texts of its steps
   (system prompts skipped), keeping the start and the latest part of a long history. It gives every card a

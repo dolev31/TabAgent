@@ -405,7 +405,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--model", help="LLM for TabSchema (default: GPT-5.4, or the provider found in the environment)"
     )
     p.add_argument(
-        "--kind", default="ranking", choices=["ranking", "multilabel", "single"], help="the decision pattern"
+        "--kind",
+        default=None,
+        choices=["ranking", "multilabel", "single"],
+        help="the decision pattern (default: the adapter's for the decision, else ranking)",
     )
     p.add_argument("--out", help="directory for the saved head")
     p.add_argument("--n-analyze", type=int, default=20, help="decision points the LLM analyzes")

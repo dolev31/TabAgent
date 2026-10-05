@@ -5,15 +5,24 @@ node that produced it (``TaskAnalyzerAgent``, ``PlanControllerAgent``, ``APIPlan
 ``ShortlisterAgent``, ``CodeAgent``, ``FinalAnswerAgent``, ...) and carries its ``prompts`` (role/value) and
 ``data`` (the node's output, usually JSON). Evaluated runs end with an ``EvaluationResult`` step.
 
-The built-in decision is the API shortlister (the paper's CUGA tool shortlisting): at each
+Two decisions are built in, the two CUGA components the paper replaces. The API shortlister (the paper's CUGA
+tool shortlisting, a ranking): at each
 ``ShortlisterAgent`` step the candidates are the APIs offered to it
 (the ``Available APIs`` block of its prompt, else a catalog given here, e.g. CUGA API docs, else the APIs
 seen for that app across the loaded runs), and the labels are the APIs the ``CodeAgent`` then called
 (``call_api(app, api)``, app-prefixed as ``<app>_<api>``) before the next shortlisting. The prefix is the
 trajectory truncated before the step, with only the ``intent`` and ``dataset_name`` fields (``task_keys``;
 never the ``task_id``, the cross-validation group, nor ``score``, ``eval`` or ``actions_count``, a post-hoc
-count) and without the ``EvaluationResult`` step. Other components work with ``candidates_fn`` and
-``labels_fn``.
+count) and without the ``EvaluationResult`` step.
+
+The app analyzer (``TaskAnalyzerAgent``, the paper's app selection, a multi-label decision: onboard it
+with ``kind="multilabel"``, which ``onboard`` and ``scan`` pick by themselves): the candidates are the apps
+listed in its prompt's input (``applications``, else the apps seen across the loaded runs) and the labels
+are the apps the successful run then called (the paper's G(t), the candidates the run used).
+``app_labels="offered"`` labels the apps the analyzer itself chose instead, as the paper's legacy AppWorld
+data did; on the successful CUGA AppWorld runs checked, the two agree on nearly all.
+
+Other components work with ``candidates_fn`` and ``labels_fn``.
 
 For ``tabagent.scan``, every step of an agent node (or with recorded prompts) is an LLM call, one per recorded
 generation: the shortlister's choices are the APIs it returned, other nodes report the categorical fields of
@@ -23,6 +32,7 @@ latency per step (its ``results.json`` holds per-task totals only), so a scan re
 
 from __future__ import annotations
 
+import ast
 import dataclasses
 import json
 import re
@@ -43,6 +53,7 @@ from tabagent.tabschema.trajectory import (
 )
 
 SHORTLISTER = "ShortlisterAgent"
+ANALYZER = "TaskAnalyzerAgent"
 #: Top-level fields of a CUGA trajectory that its prefixes keep: what describes the task, never the task id.
 TASK_KEYS = ("intent", "dataset_name")
 CUGA_STEPS = frozenset(
@@ -71,6 +82,7 @@ FREE_TEXT_STEPS = frozenset(
 _GENERATION_ROLES = frozenset({"assistant", "generation", "ai"})
 _AVAILABLE = re.compile(r'`Available APIs`:\s*"""(.*?)"""', re.S)
 _APP = re.compile(r"`Current Application`:\s*([^\s`]+)")
+_APPS = re.compile(r"""['"](?:applications|available_apps)['"]\s*:\s*\[""")
 _Q = r"""\\?["']"""  # a quote, possibly escaped when the code sits inside a JSON string
 _CALL = re.compile(
     rf"call_api\(\s*(?:\w+\s*=\s*)?{_Q}([^\"'\\]+){_Q}\s*,\s*(?:\w+\s*=\s*)?{_Q}([^\"'\\]+){_Q}"
@@ -100,6 +112,69 @@ def available_apis(step: dict[str, Any]) -> dict[str, Candidate]:
             if isinstance(data, (dict, list)):
                 return _clean(parse_catalog(data))
     return {}
+
+
+def _literal_list(text: str, start: int) -> list | None:
+    """The JSON or Python-literal list that opens at ``text[start]`` (a ``[``), or None."""
+    end = start
+    for _ in range(64):  # the closing bracket is one of the next ``]``: try them in order
+        end = text.find("]", end + 1)
+        if end < 0:
+            return None
+        chunk = text[start : end + 1]
+        for parse in (json.loads, ast.literal_eval):
+            try:
+                value = parse(chunk)
+            except (ValueError, SyntaxError, TypeError, MemoryError, RecursionError):
+                continue
+            if isinstance(value, list):
+                return value
+    return None
+
+
+def available_apps(step: dict[str, Any]) -> dict[str, Candidate]:
+    """The apps an app-analyzer step could choose: the ``applications`` (or ``available_apps``) list of the
+    input in its prompt, which CUGA writes as a Python literal after ``Human:``, as candidates with their
+    descriptions. The instructions before the input show example lists under the same names; the last list is
+    the input."""
+    for p in reversed(step.get("prompts") or []):
+        text = str(p.get("value", "")) if isinstance(p, dict) else ""
+        human = text.rfind("Human:")
+        text = text[human:] if human >= 0 and _APPS.search(text, human) else text
+        items = None
+        for m in reversed(list(_APPS.finditer(text))):
+            items = _literal_list(text, m.end() - 1)
+            if items:
+                break
+        if items:
+            out = {}
+            for a in items:
+                name = a.get("name") if isinstance(a, dict) else a
+                if isinstance(name, str) and name:
+                    desc = a.get("description", "") if isinstance(a, dict) else ""
+                    out[name] = Candidate(name, name, str(desc or ""))
+            if out:
+                return out
+    return {}
+
+
+def chosen_apps(step: dict[str, Any]) -> set[str]:
+    """The apps an app-analyzer step chose: the names in its output, a list of app objects (or
+    ``{"apps": [...]}``)."""
+    out = step.get("data")
+    if not out:
+        gens = [
+            p.get("value")
+            for p in step.get("prompts") or []
+            if isinstance(p, dict) and str(p.get("role", "")).lower() in _GENERATION_ROLES
+        ]
+        out = gens[-1] if gens else None
+    d = parse_json(out) if isinstance(out, str) else out
+    if isinstance(d, dict):
+        d = d.get("apps") or d.get("result") or []
+    if not isinstance(d, list):
+        return set()
+    return {str(a.get("name") if isinstance(a, dict) else a) for a in d if a}
 
 
 def called_apis(step: dict[str, Any]) -> set[tuple[str, str]]:
@@ -158,7 +233,12 @@ def _score_positive(raw: dict) -> bool:
 
 class CugaAdapter(GenericJsonAdapter):
     """CUGA trajectories -> decision points for any agent node; candidates and labels built in for the
-    ``ShortlisterAgent`` (see the module docstring). A run succeeds when ``score > 0``."""
+    ``ShortlisterAgent`` and the ``TaskAnalyzerAgent`` (see the module docstring). A run succeeds when
+    ``score > 0``. ``app_labels`` is ``"used"`` (the apps the run called) or ``"offered"`` (the apps the
+    analyzer chose)."""
+
+    #: The decision pattern of each built-in decision, for ``onboard`` and ``scan`` when none is given.
+    decision_kinds = {SHORTLISTER: "ranking", ANALYZER: "multilabel"}
 
     scan_notes = (
         "CUGA trajectories record no tokens, cost or latency per step (results.json holds per-task "
@@ -174,7 +254,10 @@ class CugaAdapter(GenericJsonAdapter):
         candidates_fn: Callable[[DecisionPoint], list[Candidate]] | None = None,
         labels_fn: Callable[[DecisionPoint, dict], set[str]] | None = None,
         task_keys: Iterable[str] | None = TASK_KEYS,
+        app_labels: str = "used",
     ):
+        if app_labels not in ("used", "offered"):
+            raise ValueError(f"app_labels must be 'used' or 'offered', not {app_labels!r}")
         super().__init__(
             success=success or _score_positive,
             group_key="task_id",
@@ -186,7 +269,9 @@ class CugaAdapter(GenericJsonAdapter):
         )
         self.target = SHORTLISTER
         self.catalog = _clean(parse_catalog(catalog))
+        self.app_labels = app_labels
         self._observed: dict[str, Candidate] = {}  # APIs offered to or called in the loaded runs
+        self._apps: dict[str, Candidate] = {}  # apps offered to the app analyzer or called in the loaded runs
 
     def load(self, path: str | Path) -> list[Trajectory]:
         """Every trajectory file under ``path`` (recursive; ``results.json``/``metadata.json`` skipped)."""
@@ -227,6 +312,9 @@ class CugaAdapter(GenericJsonAdapter):
                 offered = available_apis(s)
                 choices = _shortlisted(output, offered)
                 out.append(LLMCall(name, choices=choices, catalog=tuple(offered) or None, **usage))
+            elif name == ANALYZER and (apps := available_apps(s)):
+                chosen = tuple(sorted(chosen_apps(s))) or None
+                out.append(LLMCall(name, choices=chosen, catalog=tuple(apps), **usage))
             elif name in FREE_TEXT_STEPS:
                 text = raw_output if isinstance(raw_output, str) else json.dumps(raw_output)
                 out.append(LLMCall(name, text_chars=len(text), **usage))
@@ -239,23 +327,30 @@ class CugaAdapter(GenericJsonAdapter):
         for s in raw.get(self.steps_key, []):
             if not isinstance(s, dict):
                 continue
-            for _, api in called_apis(s):
+            for app, api in called_apis(s):
                 self._observed.setdefault(api, Candidate(api, api))
+                if app:
+                    self._apps.setdefault(app, Candidate(app, app))
             if s.get(self.step_name_key) == SHORTLISTER:
                 self._observed.update(available_apis(s))
+            elif s.get(self.step_name_key) == ANALYZER:
+                self._apps.update(available_apps(s))
 
-    def _require_shortlister(self, dp: DecisionPoint) -> None:
+    def _require_builtin(self, dp: DecisionPoint) -> str:
         name = dp.target_step.get(self.step_name_key)
-        if name != SHORTLISTER:
+        if name not in (SHORTLISTER, ANALYZER):
             raise NotImplementedError(
-                f"CugaAdapter builds candidates and labels for {SHORTLISTER}; "
+                f"CugaAdapter builds candidates and labels for {SHORTLISTER} and {ANALYZER}; "
                 f"pass candidates_fn= and labels_fn= to replace {name}"
             )
+        return name
 
     def candidates(self, dp: DecisionPoint) -> list[Candidate]:
         if self.candidates_fn is not None:
             return self.candidates_fn(dp)
-        self._require_shortlister(dp)
+        if self._require_builtin(dp) == ANALYZER:
+            apps = available_apps(dp.target_step) or self._apps
+            return sorted(apps.values(), key=lambda c: c.id)
         offered = available_apis(dp.target_step)
         if not offered:  # CUGA API names are app-prefixed (<app>_<api>)
             pool, app = self.catalog or self._observed, decision_app(dp)
@@ -263,10 +358,16 @@ class CugaAdapter(GenericJsonAdapter):
         return sorted(offered.values(), key=lambda c: c.id)
 
     def labels(self, dp: DecisionPoint) -> set[str]:
-        """APIs the CodeAgent called after this shortlisting and before the next one (full trajectory)."""
+        """Shortlister: the APIs the CodeAgent called after this shortlisting and before the next one. App
+        analyzer: the apps the run called after it (``app_labels="used"``), or the apps it chose
+        (``"offered"``). Read from the full trajectory."""
         if self.labels_fn is not None:
             return super().labels(dp)
-        self._require_shortlister(dp)
+        if self._require_builtin(dp) == ANALYZER:
+            if self.app_labels == "offered":
+                return chosen_apps(dp.target_step)
+            steps = self._raw[dp.trajectory_id].get(self.steps_key, [])[dp.step_index + 1 :]
+            return {app for s in steps if isinstance(s, dict) for app, _ in called_apis(s) if app}
         out: set[str] = set()
         for s in self._raw[dp.trajectory_id].get(self.steps_key, [])[dp.step_index + 1 :]:
             if s.get(self.step_name_key) == SHORTLISTER:
