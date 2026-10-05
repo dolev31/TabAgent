@@ -30,6 +30,7 @@ import numpy as np
 
 FORMAT_VERSION = 1
 FILES = ("card.yaml", "fitted.json", "fitted.npz", "featurizer.json", "model.cbm")
+FEATURIZER_ARRAYS = "featurizer.npz"  # LSA text projections, written only when the head uses LSA
 STATS_FILE = "feature_stats.json"  # optional: artifacts written before drift monitoring have none
 
 
@@ -38,11 +39,29 @@ def _sha256(path: Path) -> str:
 
 
 # --------------------------------------------------------------------------- featurizer
-def featurizer_state(fz) -> dict[str, Any]:
-    """The JSON-able state of a fitted ``Featurizer``."""
+def featurizer_state(fz, arrays: dict[str, np.ndarray] | None = None) -> dict[str, Any]:
+    """The JSON-able state of a fitted ``Featurizer``; LSA projections go to ``arrays``
+    (``featurizer.npz``)."""
     parts = []
     for col, kind, state in fz.parts:
-        if kind == "text":
+        if kind == "lsa":
+            vec, svd = state
+            key = f"{len(parts)}::components"
+            if arrays is not None:
+                arrays[key] = svd.components_.astype(np.float64)
+            parts.append(
+                {
+                    "col": col,
+                    "kind": kind,
+                    "max_features": vec.max_features,
+                    "ngram_range": list(vec.ngram_range),
+                    "min_df": vec.min_df,
+                    "vocabulary": {t: int(i) for t, i in vec.vocabulary_.items()},
+                    "idf": [float(v) for v in vec.idf_],
+                    "components": key,
+                }
+            )
+        elif kind == "text":
             parts.append(
                 {
                     "col": col,
@@ -58,18 +77,38 @@ def featurizer_state(fz) -> dict[str, Any]:
             parts.append({"col": col, "kind": kind, "median": None if np.isnan(state) else float(state)})
         else:
             parts.append({"col": col, "kind": kind, "codes": {str(k): int(v) for k, v in state.items()}})
-    return {"types": fz.types, "text_max_features": fz.text_max_features, "parts": parts}
+    return {
+        "types": fz.types,
+        "text_max_features": fz.text_max_features,
+        "text_repr": getattr(fz, "text_repr", "tfidf"),
+        "parts": parts,
+    }
 
 
-def featurizer_from_state(d: dict[str, Any]):
-    """Rebuild a fitted ``Featurizer`` from :func:`featurizer_state` output."""
+def featurizer_from_state(d: dict[str, Any], arrays: Any = None):
+    """Rebuild a fitted ``Featurizer`` from :func:`featurizer_state` output (``arrays``: the arrays of
+    ``featurizer.npz``)."""
+    from sklearn.decomposition import TruncatedSVD
     from sklearn.feature_extraction.text import TfidfVectorizer
 
     from tabagent.tabhead import Featurizer
 
-    fz = Featurizer(d["types"], d["text_max_features"])
+    fz = Featurizer(d["types"], d["text_max_features"], d.get("text_repr", "tfidf"))
     for p in d["parts"]:
-        if p["kind"] == "text":
+        if p["kind"] == "lsa":
+            if arrays is None or p["components"] not in arrays:
+                raise ValueError("featurizer.json has an LSA text column but featurizer.npz is missing it")
+            vec = TfidfVectorizer(
+                max_features=p["max_features"], ngram_range=tuple(p["ngram_range"]), min_df=p["min_df"]
+            )
+            vec.vocabulary_ = dict(p["vocabulary"])
+            vec.idf_ = np.asarray(p["idf"], dtype=float)
+            components = np.asarray(arrays[p["components"]], dtype=np.float64)
+            svd = TruncatedSVD(components.shape[0])
+            svd.components_ = components
+            svd.n_features_in_ = components.shape[1]
+            fz.parts.append((p["col"], "lsa", (vec, svd)))
+        elif p["kind"] == "text":
             vec = TfidfVectorizer(
                 max_features=p["max_features"], ngram_range=tuple(p["ngram_range"]), min_df=p["min_df"]
             )
@@ -107,13 +146,17 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
     (out / "fitted.json").write_text(json.dumps(fitted_meta, indent=1, default=str))
     np.savez(out / "fitted.npz", **arrays)
 
-    (out / "featurizer.json").write_text(json.dumps(featurizer_state(head.featurizer_)))
+    fz_arrays: dict[str, np.ndarray] = {}
+    (out / "featurizer.json").write_text(json.dumps(featurizer_state(head.featurizer_, fz_arrays)))
     head.model_.save_model(str(out / "model.cbm"), format="cbm")
     files = FILES
+    if fz_arrays:  # LSA text columns: their SVD projections, as plain arrays (no pickle)
+        np.savez(out / FEATURIZER_ARRAYS, **fz_arrays)
+        files = (*files, FEATURIZER_ARRAYS)
     stats = getattr(agent, "feature_stats_", None)
     if stats:
         (out / STATS_FILE).write_text(json.dumps(stats, separators=(",", ":"), default=str))
-        files = (*FILES, STATS_FILE)
+        files = (*files, STATS_FILE)
 
     if card.extractor and card.extractor.get("path"):
         src = (
@@ -137,6 +180,7 @@ def save(agent, path: str | Path, metrics: dict[str, Any] | None = None) -> Path
             "threshold": head.threshold,
             "seed": head.seed,
             "text_max_features": head.text_max_features,
+            "text_repr": head.text_repr,
             "catboost_overrides": head.catboost_overrides,
             "classes": [c if isinstance(c, str) else int(c) for c in head.classes_],
             "columns": head.columns_,
@@ -195,10 +239,16 @@ def load(path: str | Path, verify: bool = True, trust_code: bool = False):
         threshold=h["threshold"],
         seed=h["seed"],
         text_max_features=h["text_max_features"],
+        text_repr=h.get("text_repr", "tfidf"),  # heads saved before LSA used TF-IDF
         **h["catboost_overrides"],
     )
     head.columns_ = h["columns"]
-    head.featurizer_ = featurizer_from_state(json.loads((src / "featurizer.json").read_text()))
+    fz_arrays = None
+    if (src / FEATURIZER_ARRAYS).exists():
+        with np.load(src / FEATURIZER_ARRAYS, allow_pickle=False) as z:
+            fz_arrays = {k: z[k] for k in z.files}
+    head.featurizer_ = featurizer_from_state(json.loads((src / "featurizer.json").read_text()), fz_arrays)
+    head.text_repr_ = head.featurizer_.text_repr
     model = CatBoostClassifier()
     model.load_model(str(src / "model.cbm"), format="cbm")
     head.model_ = model

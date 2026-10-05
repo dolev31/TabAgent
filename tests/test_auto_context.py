@@ -86,7 +86,8 @@ def test_no_extra_trial_without_context_or_other_state(inner, kw):
     seen = inner(with_context=0.80, without=0.99)
     c = card(**kw)
     best, rows = auto.select(table(), c)
-    assert best.context is True and len(rows) == len(auto.recipes(c)) == len(seen)
+    has_text = any(f.type == "text" for f in c.features)  # the other text representation is tried once
+    assert best.context is True and len(rows) == len(auto.recipes(c)) + has_text == len(seen)
 
 
 def test_build_agent_drops_context_and_keeps_the_extractor_pin():

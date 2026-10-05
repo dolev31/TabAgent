@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Sequence
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -266,7 +267,18 @@ class TabSynth:
         for j in range(int(n_variants.max(initial=0))):
             active = n_variants > j
 
-            def rewrite(s, j=j):
+            memo: dict[str, Any] = {}
+
+            def rewrite(s, j=j, memo=memo):
+                # A decision's text repeats on every candidate row; the paraphrase is a pure function of the
+                # text and j, so each distinct text is rewritten once (same output, one shared string).
+                if isinstance(s, str):
+                    out = memo.get(s)
+                    if out is None:
+                        out = memo[s] = self.paraphrase(
+                            swap_entities(s, 7919 * j + 17) if self.entity_swap else s, j
+                        )
+                    return out
                 return self.paraphrase(swap_entities(s, 7919 * j + 17) if self.entity_swap else s, j)
 
             base = raw_src if self.recompute else src

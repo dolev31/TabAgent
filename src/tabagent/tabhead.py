@@ -42,13 +42,32 @@ PRESETS: dict[str, dict[str, Any]] = {
 CATBOOST_RUNTIME = {"thread_count": 4, "verbose": 0, "allow_writing_files": False}
 
 TFIDF_MAX_FEATURES = 400
+#: The LSA text representation: TF-IDF over ``LSA_TERMS`` terms (unigrams and bigrams) of a column's distinct
+#: texts, reduced by truncated SVD to ``LSA_DIMS`` dense dimensions. ``TabHead(text_repr="auto")`` uses it
+#: for cards with more than ``LSA_AUTO_TEXT_COLUMNS`` text columns (an extractor can return a text in several
+#: forms), where per-column TF-IDF blocks would make the head's matrix tens of thousands of columns wide;
+#: cards with fewer text columns, the paper's among them, keep TF-IDF. In one internal API-shortlisting run with many text
+#: columns (no interval) LSA ranked better than TF-IDF, with 64
+#: dimensions per column instead of 400 and in less than half the time.
+LSA_AUTO_TEXT_COLUMNS, LSA_DIMS, LSA_TERMS = 6, 64, 4000
+TEXT_REPRS = ("auto", "tfidf", "lsa")
+
+
+def resolve_text_repr(text_repr: str, n_text: int) -> str:
+    """``tfidf`` or ``lsa``: ``auto`` picks LSA above ``LSA_AUTO_TEXT_COLUMNS`` text columns."""
+    if text_repr not in TEXT_REPRS:
+        raise ValueError(f"text_repr must be one of {TEXT_REPRS}, not {text_repr!r}")
+    if text_repr != "auto":
+        return text_repr
+    return "lsa" if n_text > LSA_AUTO_TEXT_COLUMNS else "tfidf"
 
 
 class Featurizer:
     """Turn declared feature columns into a numeric matrix, fitted on training rows only.
 
-    text  TF-IDF (unigrams and bigrams, ``max_features`` terms, ``min_df=2``); skipped if the training
-          vocabulary is empty
+    text  TF-IDF (unigrams and bigrams, ``max_features`` terms, ``min_df=2``), or with ``text_repr="lsa"``
+          TF-IDF over the column's distinct texts reduced by truncated SVD to ``LSA_DIMS`` dimensions;
+          skipped if the training vocabulary is empty
     num   numeric, missing values imputed with the training median
     cat   integer codes in order of first appearance in training; unseen values map to -1
 
@@ -56,22 +75,45 @@ class Featurizer:
     representation between folds.
     """
 
-    def __init__(self, types: Mapping[str, FeatureType], text_max_features: int = TFIDF_MAX_FEATURES):
+    def __init__(
+        self,
+        types: Mapping[str, FeatureType],
+        text_max_features: int = TFIDF_MAX_FEATURES,
+        text_repr: str = "tfidf",
+    ):
         bad = {c: t for c, t in types.items() if t not in ("text", "num", "cat")}
         if bad:
             raise ValueError(f"unknown feature types {bad}")
+        if text_repr not in ("tfidf", "lsa"):
+            raise ValueError(f"text_repr must be 'tfidf' or 'lsa', not {text_repr!r}")
         self.types = dict(types)
         self.text_max_features = text_max_features
+        self.text_repr = text_repr
         self.parts: list[tuple[str, str, Any]] = []
 
     def fit(self, X: pd.DataFrame) -> Featurizer:
         """Learn vocabularies, medians and category codes from the training rows ``X``."""
+        from sklearn.decomposition import TruncatedSVD
         from sklearn.feature_extraction.text import TfidfVectorizer
 
         self.parts = []
         for col, kind in self.types.items():
             s = X[col]
-            if kind == "text":
+            if kind == "text" and self.text_repr == "lsa":
+                texts = pd.unique(s.fillna("").astype(str))  # a decision's text repeats on its candidate rows
+                # min_df=1: among distinct texts, a term in one of them still covers a whole decision's rows,
+                # and a short code-like column has each value exactly once
+                vec = TfidfVectorizer(max_features=LSA_TERMS, ngram_range=(1, 2), min_df=1)
+                try:
+                    m = vec.fit_transform(texts)
+                except ValueError:  # empty vocabulary on this training fold
+                    continue
+                k = min(LSA_DIMS, m.shape[1] - 1, m.shape[0] - 1)
+                if k < 1:
+                    self.parts.append((col, "text", vec))  # too few texts or terms to reduce: TF-IDF
+                    continue
+                self.parts.append((col, "lsa", (vec, TruncatedSVD(k, random_state=0).fit(m))))
+            elif kind == "text":
                 vec = TfidfVectorizer(max_features=self.text_max_features, ngram_range=(1, 2), min_df=2)
                 try:
                     vec.fit(s.fillna("").astype(str))
@@ -127,6 +169,10 @@ class Featurizer:
                 text = s.fillna("").astype(str)
                 codes, uniques = pd.factorize(text)
                 blocks[i] = state.transform(uniques).toarray()[codes]
+            elif kind == "lsa":
+                vec, svd = state
+                codes, uniques = pd.factorize(s.fillna("").astype(str))
+                blocks[i] = svd.transform(vec.transform(uniques))[codes]
             else:  # a numeric column holding text: pandas' own coercion
                 blocks[i] = (
                     pd.to_numeric(s, errors="coerce").fillna(state).to_numpy(dtype=float).reshape(-1, 1)
@@ -183,6 +229,8 @@ class TabHead:
     estimator: ``seed -> classifier`` factory for alternative heads (``fit``/``predict_proba``/``classes_``).
     featurize: set False for heads that consume raw columns themselves (for example TabSTAR).
     text_max_features: TF-IDF vocabulary size per text column.
+    text_repr: ``tfidf``, ``lsa`` (TF-IDF reduced by SVD, see ``LSA_DIMS``) or ``auto`` (LSA above
+        ``LSA_AUTO_TEXT_COLUMNS`` text columns); the fitted choice is ``text_repr_``.
     threshold: the multi-label decision threshold (App. J).
     seed: the model seed.
     catboost_overrides: CatBoost parameters that replace the preset's (not allowed with ``estimator``).
@@ -195,6 +243,7 @@ class TabHead:
         estimator: Callable[[int], Any] | None = None,
         featurize: bool = True,
         text_max_features: int = TFIDF_MAX_FEATURES,
+        text_repr: str = "auto",
         threshold: float = 0.5,
         seed: int = 0,
         **catboost_overrides,
@@ -211,6 +260,9 @@ class TabHead:
         self.estimator = estimator
         self.featurize = featurize
         self.text_max_features = text_max_features
+        resolve_text_repr(text_repr, 0)  # validate
+        self.text_repr = text_repr
+        self.text_repr_: str | None = None
         self.threshold = threshold
         self.seed = seed
         self.catboost_overrides = catboost_overrides
@@ -240,7 +292,11 @@ class TabHead:
         if len(np.unique(y)) < 2:
             raise ValueError("TabHead needs at least two label values in the training data")
         if self.featurize:
-            self.featurizer_ = Featurizer(types, self.text_max_features).fit(X[self.columns_])
+            n_text = sum(t == "text" for t in types.values())
+            self.text_repr_ = resolve_text_repr(self.text_repr, n_text)
+            self.featurizer_ = Featurizer(types, self.text_max_features, self.text_repr_).fit(
+                X[self.columns_]
+            )
             Z = self.featurizer_.transform(X[self.columns_])
         else:
             Z = X[self.columns_].reset_index(drop=True)

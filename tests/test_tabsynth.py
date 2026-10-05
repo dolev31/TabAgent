@@ -208,3 +208,21 @@ def test_allocation_sets_variants_per_decision_and_needs_the_table():
         TabSynth(k=2, recompute=True).augment(X, table.labels)
     with pytest.raises(ValueError, match="allocation"):
         TabSynth(allocation="rarest")
+
+
+def test_each_distinct_text_is_paraphrased_once_per_variant():
+    """A decision's text repeats on every candidate row: rewriting it once per variant gives the same rows."""
+    texts = ["Book a flight to Rome and pay with my card.", "Return the blender I ordered last week."]
+    X = pd.DataFrame({"intent": [texts[i // 5] for i in range(10)], "tool": [f"t{i % 5}" for i in range(10)]})
+    y = np.array([1, 0, 0, 0, 0] * 2)
+    calls = []
+
+    def counting(text, j):
+        calls.append((text, j))
+        return det_paraphrase_v1(text, j)
+
+    Xs, ys = TabSynth(k=2, text_cols=["intent"], paraphrase=counting).augment(X, y)
+    assert len(calls) == len(set(calls)) == 2 * len(texts)  # once per (distinct text, variant)
+    Xr, yr = TabSynth(k=2, text_cols=["intent"]).augment(X, y)
+    pd.testing.assert_frame_equal(Xs, Xr)
+    assert (ys == yr).all()

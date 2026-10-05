@@ -70,3 +70,21 @@ def test_loading_an_artifact_never_imports_foreign_code_by_default(tmp_path, mon
     with pytest.raises(PermissionError, match="shoutfeats"):
         load(out)
     assert load(out, trust_code=True).score(df.drop(columns=["y"])).shape == (20,)
+
+
+def test_an_lsa_head_roundtrips_exactly_and_pickle_free(tmp_path):
+    table = make_table(40)
+    agent = TabAgent(
+        make_card(), head=TabHead("ranking", preset="paper", iterations=40, text_repr="lsa")
+    ).fit(table)
+    assert agent.head_.text_repr_ == "lsa"
+    agent.save(tmp_path / "lsa")
+    files = {p.name for p in (tmp_path / "lsa").iterdir()}
+    assert "featurizer.npz" in files and not any(f.endswith((".pkl", ".pickle")) for f in files)
+    manifest = json.loads((tmp_path / "lsa" / "manifest.json").read_text())
+    assert "featurizer.npz" in manifest["sha256"] and manifest["head"]["text_repr"] == "lsa"
+    again = load(tmp_path / "lsa")
+    np.testing.assert_array_equal(again.score(table.drop_labels()), agent.score(table.drop_labels()))
+    (tmp_path / "lsa" / "featurizer.npz").write_bytes(b"tampered")
+    with pytest.raises(ValueError, match="featurizer.npz"):
+        load(tmp_path / "lsa")

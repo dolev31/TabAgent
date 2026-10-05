@@ -87,7 +87,12 @@ of these configurations by a task-grouped 4-fold inner cross-validation on each 
 ## TabHead: the classifier
 
 `TabHead(kind, preset=...)` is CatBoost over a fold-fitted featurizer (TF-IDF for text, codes for categoricals,
-medians for numbers). The default preset, `paper`, is the one configuration the paper uses for every decision
+medians for numbers). A card with more than six text columns (an LLM-written extractor can return one text in
+several forms) gets a dense text representation instead (`text_repr="auto"`, the release's addition): TF-IDF
+over each column's distinct texts reduced by truncated SVD to 64 dimensions. In one internal API-shortlisting run with many
+text columns (no interval) it improved ranking over per-column TF-IDF, in less than half the time; the automatic
+recipe search also tries the other representation and keeps it when it scores strictly better. Cards with fewer
+text columns, the paper's among them, keep TF-IDF. The default preset, `paper`, is the one configuration the paper uses for every decision
 (Sec. 4.2: 300 iterations, learning rate 0.08, depth 6, CatBoost's defaults otherwise); `catboost-default` is
 CatBoost's own schedule (1000 iterations, automatic learning rate). Any sklearn-style classifier plugs in with
 `estimator=` (the head ablation of Fig. 3 and App. K.3).

@@ -29,7 +29,7 @@ import pandas as pd
 
 from tabagent.agent import TabAgent
 from tabagent.evaluation.cv import cross_validate
-from tabagent.tabhead import TabHead
+from tabagent.tabhead import TabHead, resolve_text_repr
 from tabagent.table import DecisionSpec, DecisionTable
 from tabagent.tabschema.card import Feature, FeatureCard
 from tabagent.tabsynth import TabSynth
@@ -137,12 +137,15 @@ class Recipe:
     preset: str = "paper"
     scores: dict = field(default_factory=dict)
     context: bool = True
+    text_repr: str = "auto"
 
     def label(self) -> str:
-        """A short description, for example ``synth=k2 prior=on paper`` (``context=off`` when off)."""
+        """A short description, for example ``synth=k2 prior=on paper`` (``context=off`` when off,
+        ``text=lsa`` or ``text=tfidf`` when the text representation was chosen)."""
         synth = f"k{self.synth_k}" if self.synth_k else "off"
         context = "" if self.context else " context=off"
-        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}{context}"
+        text = "" if self.text_repr == "auto" else f" text={self.text_repr}"
+        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}{context}{text}"
 
 
 def _without_context(card: FeatureCard) -> FeatureCard:
@@ -171,6 +174,7 @@ def build_agent(card: FeatureCard, recipe: Recipe, seed: int = 0, **head_overrid
     if not recipe.context and can_drop_context(c):
         c = _without_context(c)
     synth = TabSynth(k=recipe.synth_k) if recipe.synth_k and c.synth_text else None
+    head_overrides = {"text_repr": recipe.text_repr, **head_overrides}
     head = TabHead(c.spec.kind, preset=recipe.preset, seed=seed, **head_overrides)
     return TabAgent(c, head=head, synth=synth, seed=seed)
 
@@ -235,4 +239,10 @@ def select(
         lean = dataclasses.replace(best, scores={}, context=False)
         if score(lean) and lean.scores[metric] > best.scores[metric]:
             best = lean
+    n_text = sum(f.type == "text" for f in build_agent(card, best, seed).card.features)
+    if n_text and "text_repr" not in head_overrides:  # the other text representation, once
+        default = resolve_text_repr("auto", n_text)
+        other = dataclasses.replace(best, scores={}, text_repr="lsa" if default == "tfidf" else "tfidf")
+        if score(other) and other.scores[metric] > best.scores[metric]:
+            best = other
     return best, pd.DataFrame(rows)

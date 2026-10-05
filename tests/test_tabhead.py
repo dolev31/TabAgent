@@ -144,3 +144,36 @@ def test_featurizer_dedups_text_without_changing_output():
     fz = Featurizer({"t": "text"}).fit(X)
     ref = TfidfVectorizer(max_features=400, ngram_range=(1, 2), min_df=2).fit(X["t"].fillna("").astype(str))
     assert np.array_equal(fz.transform(X), ref.transform(X["t"].fillna("").astype(str)).toarray())
+
+
+def test_many_text_columns_get_a_dense_lsa_representation():
+    import numpy as np
+    import pandas as pd
+
+    from tabagent.tabhead import LSA_AUTO_TEXT_COLUMNS, LSA_DIMS, Featurizer, TabHead, resolve_text_repr
+
+    words = [f"w{i}" for i in range(2000)]
+    rows = [" ".join(words[(i * 7 + j) % 2000] for j in range(40)) for i in range(300)]
+    assert resolve_text_repr("auto", LSA_AUTO_TEXT_COLUMNS) == "tfidf"  # the paper's cards: unchanged
+    assert resolve_text_repr("auto", LSA_AUTO_TEXT_COLUMNS + 1) == "lsa"
+    cols = {f"t{i}": "text" for i in range(10)}
+    X = pd.DataFrame({c: rows for c in cols})
+    lsa = Featurizer(cols, text_repr="lsa").fit(X)
+    Z = lsa.transform(X)
+    assert Z.shape == (300, 10 * LSA_DIMS) and np.isfinite(Z).all()
+    np.testing.assert_allclose(lsa.transform(X.iloc[:5]), Z[:5])  # rows are encoded independently
+    head = TabHead("ranking")
+    y = (np.arange(300) % 7 == 0).astype(int)
+    head.fit(X.assign(n=np.arange(300)), y, {**cols, "n": "num"})
+    assert head.text_repr_ == "lsa"
+
+
+def test_lsa_keeps_short_code_like_text_columns():
+    import pandas as pd
+
+    from tabagent.tabhead import Featurizer
+
+    codes = [f"C{i % 4}" for i in range(80)]  # four distinct values, each on many rows
+    fz = Featurizer({"code": "text"}, text_repr="lsa").fit(pd.DataFrame({"code": codes}))
+    Z = fz.transform(pd.DataFrame({"code": codes}))
+    assert Z.shape[0] == 80 and Z.shape[1] >= 1 and len({tuple(r) for r in Z.round(6)}) == 4
