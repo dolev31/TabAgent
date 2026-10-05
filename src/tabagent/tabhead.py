@@ -21,6 +21,7 @@ original LLM.
 from __future__ import annotations
 
 import copy
+import threading
 from collections.abc import Callable, Mapping
 from typing import Any, Literal
 
@@ -42,6 +43,10 @@ PRESETS: dict[str, dict[str, Any]] = {
 CATBOOST_RUNTIME = {"thread_count": 4, "verbose": 0, "allow_writing_files": False}
 
 TFIDF_MAX_FEATURES = 400
+#: CatBoost models are fitted one at a time per process. In-fold discovery runs folds in threads, and each
+#: fold's usefulness estimate fits CatBoost; concurrent fits from several Python threads crashed natively in
+#: CI. Each fit already uses ``CATBOOST_RUNTIME["thread_count"]`` threads, so little is lost.
+_CATBOOST_FIT = threading.Lock()
 #: The LSA text representation: TF-IDF over ``LSA_TERMS`` terms (unigrams and bigrams) of a column's distinct
 #: texts, reduced by truncated SVD to ``LSA_DIMS`` dense dimensions. ``TabHead(text_repr="auto")`` uses it
 #: for cards with more than ``LSA_AUTO_TEXT_COLUMNS`` text columns (an extractor can return a text in several
@@ -301,7 +306,11 @@ class TabHead:
         else:
             Z = X[self.columns_].reset_index(drop=True)
         self.model_ = self._new_model()
-        self.model_.fit(Z, y)
+        if self.estimator is None:  # CatBoost
+            with _CATBOOST_FIT:
+                self.model_.fit(Z, y)
+        else:
+            self.model_.fit(Z, y)
         return self
 
     def _matrix(self, X: pd.DataFrame):

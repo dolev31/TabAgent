@@ -177,3 +177,39 @@ def test_lsa_keeps_short_code_like_text_columns():
     fz = Featurizer({"code": "text"}, text_repr="lsa").fit(pd.DataFrame({"code": codes}))
     Z = fz.transform(pd.DataFrame({"code": codes}))
     assert Z.shape[0] == 80 and Z.shape[1] >= 1 and len({tuple(r) for r in Z.round(6)}) == 4
+
+
+def test_catboost_fits_from_threads_are_serialized_and_identical():
+    from concurrent.futures import ThreadPoolExecutor
+
+    import numpy as np
+    import pandas as pd
+
+    import tabagent.tabhead as th
+
+    rng = np.random.default_rng(0)
+    X = pd.DataFrame({"a": rng.normal(size=400), "b": rng.normal(size=400)})
+    y = (X.a + 0.3 * rng.normal(size=400) > 0).astype(int)
+    types = {"a": "num", "b": "num"}
+    active, peak = [0], [0]
+    real = th._CATBOOST_FIT
+
+    class Counting:
+        def __enter__(self):
+            real.acquire()
+            active[0] += 1
+            peak[0] = max(peak[0], active[0])
+
+        def __exit__(self, *exc):
+            active[0] -= 1
+            real.release()
+
+    th._CATBOOST_FIT = Counting()
+    try:
+        with ThreadPoolExecutor(4) as pool:
+            heads = list(pool.map(lambda _: th.TabHead("ranking", iterations=30).fit(X, y, types), range(4)))
+    finally:
+        th._CATBOOST_FIT = real
+    assert peak[0] == 1
+    scores = [h.score(X) for h in heads]
+    assert all(np.array_equal(scores[0], s) for s in scores[1:])
