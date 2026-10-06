@@ -3,6 +3,8 @@
     tabagent scan LOGS [--price-in X --price-out Y] [--format text|markdown|json]
                                                   rank the LLM calls in agent logs that TabAgent can replace
     tabagent components LOGS                      list the decision components found in agent logs
+    tabagent check-logs LOGS [--decision NAME] [--format text|json]
+                                                  diagnose agent logs before onboarding (exit 1 on a problem)
     tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION]
     tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox warm|subprocess|docker]
                    [--workers N] [--request-timeout S] [--redact MODULE:FUNCTION] [--log-content]
@@ -81,7 +83,7 @@ def _scan(args) -> int:
 
     if args.top < 1:
         raise ValueError("--top must be at least 1")
-    report = scan(args.logs, prices=_prices(args), top=args.top)
+    report = scan(args.logs, prices=_prices(args), top=args.top, **_reading(args))
     if args.format == "json":
         print(report.to_json())
     else:
@@ -89,14 +91,33 @@ def _scan(args) -> int:
     return 0
 
 
+def _reading(args) -> dict:
+    """How to read the logs (``--no-lazy``, ``--on-other-formats``), as keyword arguments."""
+    return {"lazy": False if args.no_lazy else None, "on_other_formats": args.on_other_formats}
+
+
 def _components(args) -> int:
     from tabagent.adapters import detect_adapter
 
-    adapter = detect_adapter(args.logs)
-    trajs = [t for t in adapter.load(args.logs) if t.success]
+    adapter = detect_adapter(args.logs, on_other_formats=args.on_other_formats)
+    loaded = adapter.load(args.logs, lazy=False) if args.no_lazy else adapter.load(args.logs)
+    trajs = [t for t in loaded if t.success]
     for name, n in sorted(adapter.components(trajs).items(), key=lambda kv: -kv[1]):
         print(f"{n:6d}  {name}")
+    for w in adapter.warnings:
+        print(f"note: {w}", file=sys.stderr)
     return 0
+
+
+def _check_logs(args) -> int:
+    from tabagent.scanner import check_logs
+
+    report = check_logs(args.logs, decision=args.decision, sample=args.sample, **_reading(args))
+    print(
+        report.to_json() if args.format == "json" else report.summary(),
+        end="\n" if args.format == "json" else "",
+    )
+    return 0 if report.ok else 1
 
 
 def _redact(ref: str | None):
@@ -137,17 +158,17 @@ def _model_prices(items: list[str] | None) -> dict[str, tuple[float, float]]:
     return out
 
 
-def _adapter_for(logs: str, catalog: str | None):
+def _adapter_for(logs: str, catalog: str | None, on_other_formats: str = "skip"):
     """The adapter for ``logs``, given the tool catalog file when there is one (``tools=`` for chat-message
     and τ²-bench logs, ``catalog=`` for CUGA)."""
     from tabagent.adapters import detect_adapter
 
     if not catalog:
-        return detect_adapter(logs)
+        return detect_adapter(logs, on_other_formats=on_other_formats)
     try:
-        return detect_adapter(logs, tools=catalog)
+        return detect_adapter(logs, on_other_formats=on_other_formats, tools=catalog)
     except TypeError:
-        return detect_adapter(logs, catalog=catalog)
+        return detect_adapter(logs, on_other_formats=on_other_formats, catalog=catalog)
 
 
 def _onboard(args) -> int:
@@ -157,7 +178,7 @@ def _onboard(args) -> int:
 
     price = _prices(args)
     redact = _redact(args.redact)
-    adapter = _adapter_for(args.logs, args.catalog)
+    adapter = _adapter_for(args.logs, args.catalog, args.on_other_formats)
     llm = None if args.dry_run else auto_llm(args.model)
     model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
     prices = {**({} if price is None else {model: price}), **_model_prices(args.price)} or None
@@ -190,6 +211,7 @@ def _onboard(args) -> int:
         trust_extractor=args.trust_extractor,
         run_dir=args.run_dir,
         gate_coverage=args.gate_coverage,
+        lazy=False if args.no_lazy else None,
     )
     print(result if args.dry_run else result.report)
     if not args.dry_run and args.out:
@@ -354,6 +376,19 @@ def build_parser() -> argparse.ArgumentParser:
         default=argparse.SUPPRESS,
         help="log progress (-vv: also tracebacks)",
     )
+    reading = argparse.ArgumentParser(add_help=False)  # how the logs are read, for every command reading them
+    reading.add_argument(
+        "--no-lazy",
+        action="store_true",
+        help="hold every run in memory; by default, from 256 MB of logs, runs are read again from their "
+        "files when needed (and a file that changes meanwhile stops the command)",
+    )
+    reading.add_argument(
+        "--on-other-formats",
+        default="skip",
+        choices=["skip", "error"],
+        help="what to do with runs of another log format in the folder: skip them with a warning, or stop",
+    )
     sub = ap.add_subparsers(dest="cmd", required=True, metavar="COMMAND")
 
     p = sub.add_parser(
@@ -367,7 +402,7 @@ def build_parser() -> argparse.ArgumentParser:
             "only: no LLM is called."
         ),
         formatter_class=_FORMATTER,
-        parents=[verbose],
+        parents=[verbose, reading],
     )
     p.add_argument("logs", help="a log file or a directory of logs")
     p.add_argument(
@@ -383,10 +418,32 @@ def build_parser() -> argparse.ArgumentParser:
         help="list the decision components in agent logs",
         description="List the decision components found in the successful runs of agent logs, by count.",
         formatter_class=_FORMATTER,
-        parents=[verbose],
+        parents=[verbose, reading],
     )
     p.add_argument("logs", help="a log file or a directory of logs")
     p.set_defaults(fn=_components)
+
+    p = sub.add_parser(
+        "check-logs",
+        help="diagnose agent logs before onboarding (no LLM call)",
+        description=(
+            "Read the logs as onboard would and report what is wrong, where and how to fix it: the files "
+            "read, skipped or repaired; the runs and their outcomes; and, for each decision, its decision "
+            "points, candidates and labels (chosen candidates missing from the offered ones, with near-miss "
+            "names), "
+            "whether live prefixes are rebuilt exactly as in training, and the check that no prefix holds "
+            "post-decision data. Exits with status 1 when a problem would stop an onboarding."
+        ),
+        formatter_class=_FORMATTER,
+        parents=[verbose, reading],
+    )
+    p.add_argument("logs", help="a log file or a directory of logs")
+    p.add_argument("--decision", help="the decision to check (default: every decision the adapter builds)")
+    p.add_argument("--format", default="text", choices=["text", "json"], help="output format")
+    p.add_argument(
+        "--sample", type=int, default=200, help="decision points whose live prefix is rebuilt and compared"
+    )
+    p.set_defaults(fn=_check_logs)
 
     p = sub.add_parser(
         "onboard",
@@ -397,7 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
             "OPENAI_BASE_URL), or Anthropic, Gemini and others through LiteLLM (tabagent[llm])."
         ),
         formatter_class=_FORMATTER,
-        parents=[verbose],
+        parents=[verbose, reading],
     )
     p.add_argument("logs", help="a log file or a directory of logs")
     p.add_argument("--decision", help="the component to replace (see `tabagent components`)")

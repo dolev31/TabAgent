@@ -5,6 +5,7 @@ export OPENAI_API_KEY=...                       # or OPENAI_BASE_URL (any OpenAI
                                                 # or ANTHROPIC_API_KEY / GEMINI_API_KEY with tabagent[llm]
 tabagent scan ./logs                            # which LLM calls are worth replacing (no LLM call)
 tabagent components ./logs                      # the decisions you can replace, with counts
+tabagent check-logs ./logs                      # what is wrong with the logs, where, and how to fix it
 tabagent onboard ./logs --decision ToolShortlist --dry-run
 tabagent onboard ./logs --decision ToolShortlist --out ./my_head
 tabagent onboard ./logs --decision ToolShortlist --out ./my_head \
@@ -132,7 +133,7 @@ writes the arguments and the replies.
 
 | format | decision components | candidates | labels |
 |---|---|---|---|
-| OpenAI chat logs (`messages` with `tool_calls`, optional `tools`) | `ToolShortlist` (per task), `NextToolCall` (per turn) | the run's `tools`, or a catalog you pass | tools the run called |
+| OpenAI chat logs (`messages` with `tool_calls`, legacy `function_call` or Responses API items; optional `tools`) | `ToolShortlist` (per task), `NextToolCall` (per turn) | the run's `tools`, or a catalog you pass | tools the run called |
 | Anthropic Messages API format (`tool_use` blocks) | same | same | same |
 | LangChain message dumps | same | same | same |
 | τ²-bench results (`simulations`) | `ToolShortlist`, `NextToolCall` | the domain's tools (`tool_defs`), or a catalog you pass | tools the run called |
@@ -140,9 +141,13 @@ writes the arguments and the replies.
 | generic JSON (`steps: [{name, ...}]`) | any step name | `candidates_fn=` | `labels_fn=` |
 
 A run counts as successful when its outcome field says so (`success`, `reward`, `score`, the first one
-present; `true`, a positive number or a word such as `passed` means success, anything else failure); runs
-without an outcome are treated as successful with a warning in the report. CUGA runs succeed when
-`score > 0`.
+present). `true`, a positive finite number (or a numeric string) and the words `yes`, `pass`, `passed`,
+`success`, `solved`, `resolved`, `ok` mean success; `false`, zero or a negative number and the words `no`,
+`fail`, `failed`, `error`, `unsolved`, `wrong`, `timeout` mean failure, in any case. Any other value (another
+word, an empty string, `NaN`, an infinity, an object, a list) cannot be read: the run counts as failed and
+the report says how many runs had such a value, with the first ones; pass `success=` (a field name or a
+function of the run) to read them. Runs without an outcome are treated as successful, with a warning. CUGA
+runs succeed when `score > 0`; a missing or unreadable score counts as a failure, with a warning.
 
 The CUGA adapter builds the two components the paper replaces. `--decision ShortlisterAgent` ranks the APIs
 of the app being shortlisted; `--decision TaskAnalyzerAgent` selects the apps a task needs, a multi-label
@@ -150,7 +155,11 @@ decision that `onboard` recognizes by itself (`--kind` is only needed to overrid
 the successful run called; `CugaAdapter(app_labels="offered")` uses the apps the analyzer chose instead, as
 the paper's legacy data did (on CUGA AppWorld runs the two agree on nearly all). Point `onboard` at the
 folder of a CUGA evaluation (one JSON file per task; `results.json` and `metadata.json` are skipped), or at a
-folder of such folders or of links to them.
+folder of such folders or of links to them. The APIs a run called are read from its generated code as Python
+(`call_api(app_name, api_name)`, keyword arguments in any order, an app or API given as a name the code
+assigns one string literal resolved, Markdown fences removed when the code does not parse with them), so a
+call in a comment or a string does not count; code that does not parse is searched with a pattern, comments
+removed.
 
 A decision point's prefix holds the steps before the decision and only the top-level fields that describe
 the task: for chat logs and generic JSON `instruction`, `task`, `query`, `question`, `goal`, `intent` and
@@ -158,14 +167,114 @@ the task: for chat logs and generic JSON `instruction`, `task`, `query`, `questi
 group, not a feature. Other top-level fields (a final
 answer, run statistics) never reach the LLM or the extractor; the report names the ones left out. Pass
 `task_keys=` to the adapter to keep fields that are known before the decision (`task_keys=None` keeps every
-field but the outcome keys). Generic JSON directories are read recursively; `results.json` and
-`metadata.json` (run summaries) and files that are not valid JSON are skipped.
+field but the outcome keys). The prefixes of one run share the step objects they have in common, so a run
+with many decisions takes memory linear in its length: treat a prefix as read-only, and copy it before
+changing it.
 
 Candidate text (each tool's name, description and argument hints) is what the head matches the context
 against. When your logs record only the tool names (τ²-bench's public results, say), pass the catalog:
 `--catalog tools.json` (or `tools=` to the adapter; `catalog=` for CUGA) with OpenAI or Anthropic tool
-schemas, MCP tools or a `{name: description}` mapping. One catalog applies to every run; for a catalog per
-domain, keep the tool definitions in each log file.
+schemas, MCP tools, a `{name: description}` mapping or a `{name: argument schema}` mapping. One catalog
+applies to every run; for a catalog per domain, keep the tool definitions in each log file (a run's `tools`
+field may also be the JSON text of the list; it is never read as a file path). When runs disagree on a
+tool's description, the one most runs give is used (ties: the longest), whatever order the files are read
+in.
+
+### How log files are read
+
+Every adapter reads files the same way, and reports what it skipped or repaired instead of dropping it
+silently: the warnings of `onboard`'s report and dry run, of `tabagent scan`, and `check-logs` below.
+
+* **Files.** A file, or every `.json` and `.jsonl` file below a folder (any case: `.JSON` too), in sorted
+  order. Hidden files and folders are skipped; linked folders are followed, each real folder once, and a file
+  reached through two links is read once. Files with other extensions are not read (`check-logs` lists them:
+  decompress `.gz` files first).
+* **Runs.** A `.json` file holds one run or a list of runs; a `.jsonl` file one run per line. A chat
+  conversation written one message per line is one run, and so is a bare list of messages. A run's id is its
+  path below the folder (`:<index>` for a run in a list or on a line); a second run with the same id (`a.json`
+  and `a.jsonl`) gets the file's suffix, so ids never collide.
+* **Encodings.** UTF-8 with or without a byte-order mark, UTF-16 and UTF-32 with one. A file that is not UTF-8
+  is read in the first of the locale's encoding and cp1252 that reads every byte, with a warning naming it
+  (check that the text reads as intended). A UTF-8 file with a few damaged bytes (a character cut at a buffer
+  boundary) stays UTF-8, and bytes nothing can read become U+FFFD, with a warning that counts them; so does
+  half of a surrogate pair (text cut in the middle of an emoji), which would otherwise fail when the text is
+  written to the run directory or sent to the provider.
+* **Damaged JSON.** A file that is not valid JSON is skipped with its first error (`run3.json: line 12,
+  column 5: Expecting ',' delimiter`); in a `.jsonl` file only the bad lines are skipped, counted, with the
+  first ones, and the file is still read one line at a time. Trailing commas are read without them; `NaN`
+  and `Infinity` are read as numbers. A `.json` file that holds one value per line is read as JSON Lines,
+  and a `.jsonl` file whose first line opens a pretty-printed document (a lone `{` or `[`) as JSON. Only
+  `\n` ends a line: a U+2028 inside a string does not split it.
+* **Deep values.** Values nested deeper than 200 levels are replaced below that depth by a placeholder, with
+  a warning, so that no later stage runs out of recursion; a file nested too deeply to parse at all is
+  skipped.
+* **One format per folder.** A folder can hold files that are not runs of its format: a prompt template, a
+  few-shot or fine-tuning file, a tool catalog, a task list, run summaries. Detection reads the format most
+  files hold (CUGA trajectories over other logs with named steps), and runs of another format are skipped with
+  a warning that counts them and names the first files. Messages without an agent turn (a template, a
+  few-shot example) are not a run. `on_other_formats="error"` (CLI `--on-other-formats error`) stops with
+  `MixedFormatsError` instead: one onboarding reads one format, since the head needs the same adapter at
+  serving time. An adapter you pass yourself reads its own runs and skips the rest with a warning.
+* **Large inputs.** From 256 MB of logs, runs read from a file of their own or from a JSON Lines line are not
+  held in memory. Each is kept as its place in the file and a fingerprint (SHA-256) of exactly the bytes it
+  was read from, and every read checks them: a touched file, or a JSON Lines file the agent appended to,
+  reads the same runs, while a change to a run's own bytes (even one that keeps the file's size and time)
+  stops with `LogChangedError`, saying which file changed. Load the logs again once they stop changing; an
+  onboarding rerun with the same run directory reuses every LLM answer already paid for. `lazy=False` (CLI
+  `--no-lazy`, on `onboard`, `scan`, `components` and `check-logs`) holds every run in memory instead;
+  `lazy=True` reads lazily whatever the size. A few parsed runs are kept per load, and go away with its
+  trajectories. The results are the same either way. On a 1.6 GB folder of agent logs, the peak
+  memory of loading them fell from 2.7 GB to 0.8 GB, of `tabagent scan` from 2.7 GB to 0.9 GB and of
+  `onboard --dry-run` from 2.7 GB to 1.2 GB, for about 1.7 times the reading time. `redact=` keeps them
+  lazy: it gets a copy of each run, each time the run is read, so it must be deterministic.
+
+### Checking the logs
+
+`tabagent check-logs` reads the logs as `onboard` would, calls no LLM, and says what is wrong, where and how
+to fix it; it exits with status 1 when a problem would stop an onboarding:
+
+```bash
+tabagent check-logs ./logs                          # every decision the adapter builds
+tabagent check-logs ./logs --decision NextToolCall --format json
+```
+
+```python
+import tabagent
+
+report = tabagent.check_logs("./logs")  # adapter="auto", decision=None
+print(report.summary())  # report.ok is False when an onboarding would stop; report.to_json()
+```
+
+It reports the files read, skipped or repaired, the runs and how many succeeded, and for each decision its
+decision points and tasks, the share with candidates and with labels, the chosen candidates that are not
+among the offered ones (with a near-miss name when the catalog spells it differently, in another case or
+with an app prefix), whether the prefix rebuilt from each run before its decision equals the training prefix
+(on 200 decision points spread evenly, `--sample`, or all of them when there are fewer), and the adapter's
+check that no prefix holds post-decision data (a check that could not check any point says so). A log that
+changes while it is being read is reported as such. CUGA `call_api` calls whose app or API name is neither a
+literal nor a name assigned one literal are counted. On the public τ²-bench GPT-4.1 logs:
+
+```text
+$ tabagent check-logs ./tau2-results
+Checked ./tau2-results with Tau2Adapter: 3 log files, 1,112 runs (606 successful).
+Components in the successful runs (runs containing them): ToolShortlist (604).
+
+ToolShortlist:
+   604 decision points in 604 successful runs of 199 tasks
+   candidates on 100%, labels on 100% of them; every label is among the offered candidates
+   live prefixes rebuilt exactly as in training on 200 of 200 checked
+   no post-decision data in prefixes (20 checked)
+
+NextToolCall:
+   3,226 decision points in 604 successful runs of 199 tasks
+   candidates on 100%, labels on 100% of them; every label is among the offered candidates
+   live prefixes rebuilt exactly as in training on 200 of 200 checked
+   no post-decision data in prefixes (20 checked)
+
+Next: tabagent onboard ./tau2-results --decision ToolShortlist --dry-run
+```
+
+`--dry-run` lists the same reading notes (files skipped or repaired, unreadable outcomes) after its estimate.
 
 ## Privacy and cost
 

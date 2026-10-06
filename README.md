@@ -192,6 +192,7 @@ five skills TabAgent would hand the agent for a held-out task. The paper reports
 export OPENAI_API_KEY=...        # the LLM TabSchema calls (see below for other providers)
 tabagent scan ./agent_logs                                    # which LLM calls are worth replacing?
 tabagent components ./agent_logs                              # which decisions can be replaced?
+tabagent check-logs ./agent_logs                              # anything wrong with the logs? where?
 tabagent onboard ./agent_logs --decision ToolShortlist --dry-run   # what it will process and cost
 tabagent onboard ./agent_logs --decision ToolShortlist --out ./my_head
 tabagent verify-head ./my_head                                # re-run the extractor's golden tests

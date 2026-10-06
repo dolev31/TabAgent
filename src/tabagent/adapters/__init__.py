@@ -16,6 +16,12 @@ adapters below implement it.
 * ``GenericJsonAdapter``: any log with named steps, with your own candidates and labels;
 * ``detect_adapter(path)``: picks one of the above from the first files.
 
+Every adapter reads files through ``tabagent.adapters.logfiles``: encodings, damaged JSON and JSON Lines,
+linked folders, values nested too deeply, and large inputs read again from their files instead of held in
+memory. Whatever is skipped or repaired is reported in the adapter's ``warnings``, runs of another log format
+included (``detect_adapter(..., on_other_formats="error")`` refuses them with ``MixedFormatsError``).
+``tabagent.check_logs`` (CLI ``tabagent check-logs``) diagnoses a log folder before an onboarding.
+
 At decision time, ``live_prefix(adapter, run, target)`` builds a live run's prefix exactly as in training, and
 ``describe_adapter`` / ``adapter_from_description`` record and rebuild the adapter a head was trained with.
 """
@@ -25,7 +31,8 @@ from tabagent.adapters.cuga import SHORTLISTER, CugaAdapter
 from tabagent.adapters.detect import detect_adapter, detect_format
 from tabagent.adapters.live import describe as describe_adapter
 from tabagent.adapters.live import from_description as adapter_from_description
-from tabagent.adapters.live import live_prefix
+from tabagent.adapters.live import live_prefix, run_before
+from tabagent.adapters.logfiles import LogChangedError, MixedFormatsError
 from tabagent.adapters.openai_messages import (
     NEXT_TOOL_CALL,
     TEXT_REPLY,
@@ -44,6 +51,8 @@ __all__ = [
     "CugaAdapter",
     "GenericJsonAdapter",
     "LLMCall",
+    "LogChangedError",
+    "MixedFormatsError",
     "OpenAIMessagesAdapter",
     "Tau2Adapter",
     "adapter_from_description",
@@ -55,4 +64,5 @@ __all__ = [
     "output_fields",
     "parse_catalog",
     "read_usage",
+    "run_before",
 ]

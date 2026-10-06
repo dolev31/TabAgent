@@ -378,8 +378,12 @@ class FutureCheck:
             return {"skipped": "its run is not among the onboarding runs"}
         if t.id in self.failed:
             return {"skipped": self.failed[t.id]}
+        from tabagent.adapters.logfiles import LogChangedError
+
         try:
             return self._check(t, dp)
+        except LogChangedError:  # a log changed under the check: say so, never report the point as skipped
+            raise
         except Exception as e:  # an adapter that cannot read a run: not read again
             self.failed[t.id] = f"the adapter could not read the run ({type(e).__name__}: {e})"[:300]
             return {"skipped": self.failed[t.id]}

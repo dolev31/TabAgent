@@ -15,7 +15,7 @@ from typing import Any
 from tabagent.adapters.cuga import CugaAdapter
 from tabagent.adapters.openai_messages import OpenAIMessagesAdapter
 from tabagent.adapters.tau2 import Tau2Adapter
-from tabagent.tabschema.trajectory import GenericJsonAdapter, redact
+from tabagent.tabschema.trajectory import DecisionPoint, GenericJsonAdapter, Trajectory, redact, steps_of
 
 _STEP_KEYS = ("steps_key", "step_name_key", "outcome_keys", "outcome_steps")
 
@@ -69,15 +69,43 @@ def live_prefix(adapter: Any, run: dict[str, Any], target: str | None = None) ->
     Chat-message adapters take ``{<task fields>, "messages": [...], "tools": [...]}``; CUGA and generic step
     adapters take the trajectory so far (``{<task fields>, "steps": [...]}``), redacted as in training.
     """
+    if not isinstance(run, dict):
+        raise TypeError(f"a live run is a dict in the format of the training logs, not {type(run).__name__}")
     if isinstance(adapter, OpenAIMessagesAdapter):
         return adapter.live_prefix(run, target if target in adapter.targets else None)
     if hasattr(adapter, "live_prefix"):
         return adapter.live_prefix(run)
     if isinstance(adapter, GenericJsonAdapter):
         a = adapter
-        n = len(run.get(a.steps_key, []))
+        n = len(steps_of(run, a.steps_key))
         return redact(run, a.steps_key, n, a.outcome_keys, a.outcome_steps, a.step_name_key)
     raise TypeError(
         f"{type(adapter).__name__} has no live_prefix(run): build the prefix as in training and pass it to "
         "decide(prefix, ...)"
     )
+
+
+def run_before(adapter: Any, traj: Trajectory, dp: DecisionPoint) -> dict[str, Any]:
+    """The run of ``dp`` as the agent held it when the decision was made, in the logged format: what a live
+    caller passes to :func:`live_prefix`. For chat-message adapters, the run's fields with the messages before
+    the decision; for step adapters, the run with the steps before it. ``live_prefix(adapter, run_before(...),
+    target) == dp.prefix`` is the train/serve parity every built-in adapter keeps (checked by
+    ``tabagent.scanner.check_logs`` and the tests)."""
+    raw = traj.raw
+    if isinstance(adapter, OpenAIMessagesAdapter):
+        messages = raw.get("messages") if isinstance(raw.get("messages"), list) else []
+        base = {k: v for k, v in raw.items() if k != "messages"}
+
+        def n_steps(m: int) -> int:
+            return len(adapter._steps({**base, "messages": messages[:m]})[0])
+
+        lo, hi = 0, len(messages)  # the most messages whose steps end before the decision step
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            if n_steps(mid) <= dp.step_index:
+                lo = mid
+            else:
+                hi = mid - 1
+        return {**base, "messages": messages[:lo]}
+    key = getattr(adapter, "steps_key", "steps")
+    return {**raw, key: steps_of(raw, key)[: dp.step_index]}

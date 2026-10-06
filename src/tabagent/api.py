@@ -76,6 +76,7 @@ class DryRun:
     components: dict[str, int] = field(default_factory=dict)
     model: str = DEFAULT_MODEL
     problems: list[str] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)  # what reading the logs skipped or repaired
 
     def __str__(self) -> str:
         cost = (
@@ -84,11 +85,12 @@ class DryRun:
             else f"unknown (no price for {self.model}; pass prices= or --price-in/--price-out)"
         )
         problems = "".join(f"\nA real run would stop before any LLM call: {p}" for p in self.problems)
+        warnings = "".join(f"\nLogs: {w}" for w in self.warnings)
         return (
             f"{self.n_trajectories} trajectories ({self.n_successful} successful), "
             f"{self.n_decision_points} decision points, {self.n_analyzed} analyzed by the LLM; "
             f"~{self.est_input_tokens:,} input / ~{self.est_output_tokens:,} output tokens; est. cost {cost}"
-            f"{problems}"
+            f"{problems}{warnings}"
         )
 
 
@@ -780,6 +782,8 @@ def onboard(
     sandbox: Any = None,
     stage_models: dict[str, str] | None = None,
     fallback_model: str | None = None,
+    lazy: bool | None = None,
+    on_other_formats: str = "skip",
 ) -> TabAgentHead | DryRun:
     """Onboard an agent decision component from its logs (see the module docstring).
 
@@ -798,7 +802,9 @@ def onboard(
         (``prices``); a budget without a price raises ``ValueError`` before any LLM call.
     prices: ``{model: (USD per 1M input tokens, USD per 1M output tokens)}``.
     dry_run: return a ``DryRun`` (work and cost estimate) without calling the LLM.
-    redact: applied to every raw trajectory before anything can reach the LLM provider.
+    redact: applied to every raw trajectory before anything can reach the LLM provider (it gets a copy; a
+        run read lazily stays lazy and is redacted each time it is read, so ``redact`` must be
+        deterministic).
     search: ``fast`` or ``full`` recipe search (``tabagent.auto.select``).
     n_splits: folds of the grouped cross-validation in the report.
     llm_cost_per_call: the replaced LLM call's cost, to report the savings.
@@ -813,6 +819,12 @@ def onboard(
     stage_models: a model per TabSchema stage, e.g. ``{"extractor": "azure/gpt-6-sol"}`` (see
         ``TabSchemaConfig.stage_models``); each needs a price in ``prices`` with a budget.
     fallback_model: asked once, for any stage, when the provider's content filter stops an answer.
+    lazy: read the runs again from their files when they are needed instead of holding them all (default:
+        from 256 MB of logs); ``False`` holds them in memory (CLI ``--no-lazy``). A lazily read run whose
+        file changes stops the onboarding with ``LogChangedError``.
+    on_other_formats: with ``adapter="auto"``, ``"skip"`` runs of another log format in the folder with a
+        warning (the default), or ``"error"`` to stop with ``MixedFormatsError`` (CLI
+        ``--on-other-formats``).
     config: a full ``TabSchemaConfig``; it then also sets ``model``, ``n_analyze``, ``max_cost_usd``,
         ``prices``, ``stage_models`` and ``fallback_model``, which must not be passed separately.
     gate_coverage: calibrate the confidence gate so this share of decisions stays with the head (rankings).
@@ -851,20 +863,24 @@ def onboard(
         from tabagent.adapters import GenericJsonAdapter, detect_adapter, detect_format
 
         if isinstance(logs, (str, Path)):
-            adapter = detect_adapter(logs)
+            adapter = detect_adapter(logs, on_other_formats=on_other_formats)
         else:  # Trajectory objects: detect the format from the first raw run
             logs = list(logs)
             if not logs:
                 raise ValueError("no trajectories given")
             adapter = (detect_format(logs[0].raw) or GenericJsonAdapter)()
-    trajs = adapter.load(logs) if isinstance(logs, (str, Path)) else list(logs)
-    if redact is not None:  # applied before anything can reach the LLM provider
-        trajs = [Trajectory(t.id, redact(t.raw), t.success, t.group, t.source) for t in trajs]
+    if not isinstance(logs, (str, Path)):
+        trajs = list(logs)
+    else:
+        trajs = adapter.load(logs) if lazy is None else adapter.load(logs, lazy=lazy)
+    if redact is not None:  # applied before anything can reach the LLM provider; lazy runs stay lazy
+        trajs = [t.with_raw(redact) for t in trajs]
     good = [t for t in trajs if t.success]
     if not good:
+        notes = "".join(f"; {w}" for w in getattr(adapter, "warnings", [])[:5])
         raise ValueError(
             f"no successful trajectories among the {len(trajs)} loaded: TabSchema learns from successful "
-            "runs only (check the outcome field the adapter reads)"
+            f"runs only (check the outcome field the adapter reads){notes}"
         )
     comps = adapter.components(good) if hasattr(adapter, "components") else {}
     if decision is None:
@@ -926,7 +942,19 @@ def onboard(
             price = cfg.prices.get(cfg.stage_models.get("auditor") or name)
             tin, tout = tin + ain, tout + aout
             cost = None if cost is None or price is None else cost + (ain * price[0] + aout * price[1]) / 1e6
-        return DryRun(len(trajs), len(good), len(dps), len(sample), tin, tout, cost, comps, name, problems)
+        return DryRun(
+            len(trajs),
+            len(good),
+            len(dps),
+            len(sample),
+            tin,
+            tout,
+            cost,
+            comps,
+            name,
+            problems,
+            warnings=list(getattr(adapter, "warnings", [])),
+        )
 
     llm = llm or auto_llm(cfg.model)
     box = _sandbox_from(sandbox, cfg.timeout_s)

@@ -231,15 +231,14 @@ def cross_validate_discovery(
         TabSchemaConfig,
         rows_to_table,
     )
-    from tabagent.tabschema.trajectory import Trajectory
 
     if adapter == "auto":
         from tabagent.adapters import detect_adapter
 
         adapter = detect_adapter(trajectories)
     trajs = adapter.load(trajectories) if isinstance(trajectories, (str, Path)) else list(trajectories)
-    if redact is not None:  # applied before anything can reach the LLM provider
-        trajs = [Trajectory(t.id, redact(t.raw), t.success, t.group, t.source) for t in trajs]
+    if redact is not None:  # applied before anything can reach the LLM provider; lazy runs stay lazy
+        trajs = [t.with_raw(redact) for t in trajs]
     config = config or TabSchemaConfig()
     llm = llm or auto_llm(config.model)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")

@@ -23,14 +23,13 @@ is the time since the previous message, from the per-message timestamps.
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 from pathlib import Path
 from typing import Any
 
-from tabagent.adapters.common import iter_files, run_id
+from tabagent.adapters import logfiles as lf
 from tabagent.adapters.openai_messages import OUTCOME_KEYS, OpenAIMessagesAdapter
-from tabagent.tabschema.trajectory import Trajectory
+from tabagent.tabschema.trajectory import Trajectory, _not_a_run, _refuse_mixed
 
 
 def _seconds(ts: Any) -> float | None:
@@ -53,8 +52,22 @@ def _solved(run: dict) -> bool:
         return False
 
 
+def _dict(value: Any) -> dict:
+    return value if isinstance(value, dict) else {}
+
+
+def _reward(sim: dict) -> Any:
+    """A simulation's reward: ``reward_info.reward`` (a bare number in ``reward_info`` also counts)."""
+    info = sim.get("reward_info")
+    if isinstance(info, dict):
+        return info.get("reward")
+    return info if isinstance(info, (int, float, str)) and not isinstance(info, bool) else None
+
+
 class Tau2Adapter(OpenAIMessagesAdapter):
     """τ²-bench simulations -> trajectories and tool-selection decision points (see the module docstring)."""
+
+    format_name = "τ²-bench results"
 
     scan_notes = (
         "only the agent's LLM calls are counted: the user simulator's turns and the scripted greeting "
@@ -95,46 +108,88 @@ class Tau2Adapter(OpenAIMessagesAdapter):
     def _model(self, run: dict) -> str | None:
         return run.get("agent") or None
 
-    def load(self, path: str | Path) -> list[Trajectory]:
+    def load(self, path: str | Path, *, lazy: bool | None = None) -> list[Trajectory]:
+        """The simulations of one results file or of every results file below a directory. Files and
+        records that are not τ²-bench results (another log format included) are skipped with a warning, and
+        so are simulations that are not objects; simulations without a task id, naming a task the file does
+        not list, or seen in an earlier file are reported in ``warnings``. Runs are always held in memory
+        (they are built from a results file and its task list), whatever ``lazy`` says."""
         root = Path(path)
-        self.warnings = []
+        self.notes = notes = lf.LoadNotes()
+        self._reset()
         out: list[Trajectory] = []
-        for f in iter_files(root, (".json",)):
-            try:
-                data = json.loads(f.read_text())
-            except ValueError:
-                self.warnings.append(f"{f.name}: not valid JSON, skipped")
-                continue
-            if not (isinstance(data, dict) and isinstance(data.get("simulations"), list)):
-                continue
-            info = data.get("info") or {}
-            env = info.get("environment_info") or {}
-            agent = info.get("agent_info") or {}
-            domain = str(env.get("domain_name") or "")
-            solo = "solo" in str(agent.get("implementation", ""))
-            tickets = {str(t.get("id")): t.get("ticket") or "" for t in data.get("tasks") or []}
-            base = run_id(root, f)
-            for i, sim in enumerate(data["simulations"]):
-                tid = str(sim.get("task_id"))
-                run: dict[str, Any] = {
-                    "task_id": tid,
-                    "domain": domain,
-                    "ticket": tickets.get(tid, "") if solo else "",
-                    "agent": str(agent.get("llm") or ""),
-                    "solo": solo,
-                    "trial": sim.get("trial"),
-                    "messages": [
-                        {k: v for k, v in m.items() if k != "raw_data"}  # the raw LLM payload duplicates it
-                        for m in sim.get("messages") or []
-                        if isinstance(m, dict)
-                    ],
-                    "reward": (sim.get("reward_info") or {}).get("reward"),
-                }
-                if self.include_policy and env.get("policy"):
-                    run["system"] = env["policy"]
-                if env.get("tool_defs"):
-                    run["tools"] = env["tool_defs"]
-                traj = Trajectory(f"{base}:{i}", run, _solved(run), f"{domain}:{tid}", f.name)
-                self._note(traj)
-                out.append(traj)
+        ids = lf.RunIds()
+        seen: set[str] = set()
+        files = lf.iter_files(root)
+        for f in files:
+            base = lf.run_id(root, f)
+            for doc in lf.read_docs(root, f, notes):
+                data = doc.data
+                if not (isinstance(data, dict) and isinstance(data.get("simulations"), list)):
+                    _not_a_run(self, data, doc.where, notes)
+                    continue
+                for i, run, sim_id in self._simulations(data, doc.where, notes):
+                    if sim_id is not None and sim_id in seen:
+                        notes.add(
+                            "duplicate_simulation", f"{doc.where}: simulation {sim_id}", "simulations",
+                            found="simulations whose id occurs earlier too (every copy is read)",
+                            fix="remove copies of the same results file",
+                        )  # fmt: skip
+                    seen.add(sim_id)
+                    rid = ids(base, f, i if doc.line is None else f"{doc.line}.{i}")
+                    group = f"{run['domain']}:{run['task_id']}"
+                    traj = Trajectory(rid, run, _solved(run), group, f.name)
+                    self._note(traj, run)
+                    out.append(traj)
+        _refuse_mixed(self, root, notes, len(out), len(files))
         return out
+
+    def _simulations(self, data: dict, where: str, notes: Any):
+        """``(index, run, simulation id)`` for each simulation of one results file."""
+        info = _dict(data.get("info"))
+        env = _dict(info.get("environment_info"))
+        agent = _dict(info.get("agent_info"))
+        domain = str(env.get("domain_name") or "")
+        solo = "solo" in str(agent.get("implementation", ""))
+        tasks = data.get("tasks") if isinstance(data.get("tasks"), list) else []
+        tickets = {str(t.get("id")): t.get("ticket") or "" for t in tasks if isinstance(t, dict)}
+        for i, sim in enumerate(data["simulations"]):
+            if not isinstance(sim, dict):
+                notes.add(
+                    "bad_simulation", f"{where}: simulations[{i}]", "simulations",
+                    found="simulations that are not objects, skipped",
+                )  # fmt: skip
+                continue
+            tid = str(sim.get("task_id"))
+            if sim.get("task_id") is None:
+                notes.add(
+                    "no_task_id", f"{where}: simulations[{i}]", "simulations",
+                    found="simulations without a task_id (read with the task id 'None')",
+                )  # fmt: skip
+            elif tasks and tid not in tickets:
+                notes.add(
+                    "unknown_task", f"{where}: task {tid}", "simulations",
+                    found="simulations of a task the file's tasks do not list"
+                    + (" (a solo agent's ticket is then empty)" if solo else ""),
+                )  # fmt: skip
+            messages = sim.get("messages")
+            run: dict[str, Any] = {
+                "task_id": tid,
+                "domain": domain,
+                "ticket": tickets.get(tid, "") if solo else "",
+                "agent": str(agent.get("llm") or ""),
+                "solo": solo,
+                "trial": sim.get("trial"),
+                "messages": [
+                    {k: v for k, v in m.items() if k != "raw_data"}  # the raw LLM payload duplicates it
+                    for m in (messages if isinstance(messages, list) else [])
+                    if isinstance(m, dict)
+                ],
+                "reward": _reward(sim),
+            }
+            if self.include_policy and env.get("policy"):
+                run["system"] = env["policy"]
+            if env.get("tool_defs"):
+                run["tools"] = env["tool_defs"]
+            sim_id = sim.get("id")
+            yield i, run, (str(sim_id) if sim_id not in (None, "") else None)
