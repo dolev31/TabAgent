@@ -8,6 +8,12 @@ issues one explained decision per feature (accept / conditional / reject).
 
 The judges and the MetaJudge see at most ``batch`` (25) features per call, so that no answer has to cover
 an arbitrarily long feature list; up to that size every feature is judged in one call, as in the paper.
+
+A batch whose answer cannot be used (unparseable, cut at the output limit, filtered, or a prompt too long) is
+asked again in halves (``agents.in_halves``). A feature that still gets no usable answer from one judge has no
+score from it (the MetaJudge sees the others), and one that gets no MetaJudge decision is reported as such;
+each case is recorded. A judge answers only for the features it was given: other names it returns are ignored.
+When every call of the judges, or of the MetaJudge, fails, the run stops.
 """
 
 from __future__ import annotations
@@ -18,7 +24,15 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from tabagent.tabschema import prompts
-from tabagent.tabschema.agents import FeatureSpec, Stage, in_parallel, json_items, normalize_name
+from tabagent.tabschema.agents import (
+    FeatureSpec,
+    Stage,
+    all_failed,
+    in_halves,
+    in_parallel,
+    normalize_name,
+    shutdown_interrupted,
+)
 from tabagent.tabschema.trajectory import get_json_schema
 
 JUDGES = {"relevance": "judge_relevance", "generality": "judge_generality", "impact": "judge_impact"}
@@ -35,26 +49,55 @@ class Judge(Stage):
 
     def __call__(self, features: list[FeatureSpec]) -> list[dict[str, Any]]:
         dicts = [f.to_dict() for f in features]
-        out = self.ask_json(
-            prompts.render(
-                JUDGES[self.dimension],
-                filtered_features=json.dumps(dicts, indent=2, ensure_ascii=False),
-                features_schema=get_json_schema(dicts),
-            )
+        prompt = prompts.render(
+            JUDGES[self.dimension],
+            filtered_features=json.dumps(dicts, indent=2, ensure_ascii=False),
+            features_schema=get_json_schema(dicts),
         )
-        items = out.get("features") if isinstance(out, dict) else out
-        return [x for x in json_items(items) if normalize_name(x.get("feature_name") or "")]
+        out = self.ask_json(prompt)
+        given = {f.key for f in features}
+        verdicts: dict[str, dict[str, Any]] = {}  # the first verdict on each feature it was given
+        other = []
+        for x in self.items(out, ("features",), prompt):
+            key = normalize_name(x.get("feature_name") or "")
+            if key in given:
+                verdicts.setdefault(key, x)
+            elif key:
+                other.append(str(x.get("feature_name"))[:80])
+        if other:
+            self.note("ignored", features=other[:20], reason="names the judge was not given")
+        return list(verdicts.values())
 
 
 def run_judges(
-    features: list[FeatureSpec], make_stage, workers: int = 3, batch: int = BATCH
+    features: list[FeatureSpec],
+    make_stage,
+    workers: int = 3,
+    batch: int = BATCH,
+    stages: list[Stage] | None = None,
 ) -> dict[str, list[dict]]:
     """Run the three judges concurrently, on at most ``batch`` features per call; ``make_stage(dimension) ->
-    Judge``."""
+    Judge``. A batch whose answer cannot be used is asked again in halves; the stages used are appended to
+    ``stages`` (for their ``events``). Raises when no judge call at all gave a usable answer."""
     chunks = [features[i : i + batch] for i in range(0, len(features), batch)]
-    with ThreadPoolExecutor(max_workers=workers) as pool:
-        futures = {d: [pool.submit(make_stage(d), c) for c in chunks] for d in JUDGES}
-        return {d: [x for f in fs for x in f.result()] for d, fs in futures.items()}
+    judges = {d: make_stage(d) for d in JUDGES}
+    if stages is not None:
+        stages.extend(judges.values())
+    pool = ThreadPoolExecutor(max_workers=workers)
+    try:
+        futures = {d: [pool.submit(in_halves, judges[d], judges[d], c) for c in chunks] for d in JUDGES}
+        parts = {d: [p for f in fs for p in f.result()] for d, fs in futures.items()}
+    except KeyboardInterrupt:  # return at once; threads waiting in a backoff are woken
+        shutdown_interrupted(pool)
+        raise
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    error = all_failed([p for ps in parts.values() for p in ps])
+    if error is not None:
+        raise error
+    return {d: [x for _, result, _ in ps if result for x in result] for d, ps in parts.items()}
 
 
 def judge_table(verdicts: dict[str, list[dict]], analyzed: list[FeatureSpec]) -> list[dict[str, Any]]:
@@ -104,7 +147,8 @@ def normalize_decision(value: Any) -> str:
 
 class MetaJudge(Stage):
     """Reconciles the three judges' rows into one explained decision per feature (the first one, if it
-    decides on a feature twice), ``batch`` table rows per call."""
+    decides on a feature twice), ``batch`` table rows per call. Like a judge, it decides only on the features
+    of its batch: a decision on any other name is ignored and recorded (``events``)."""
 
     role = "meta_judge"
     batch = BATCH
@@ -118,9 +162,15 @@ class MetaJudge(Stage):
             return self._decide(part, rows)
 
         batches = [table[i : i + self.batch] for i in range(0, len(table), self.batch)]
+        parts = [
+            p for ps in in_parallel(lambda b: in_halves(self, decide, b), batches, self.workers) for p in ps
+        ]
+        error = all_failed(parts)
+        if error is not None:
+            raise error
         decisions: dict[str, dict[str, Any]] = {}
-        for out in in_parallel(decide, batches, self.workers):  # merged in batch order
-            for d in out:
+        for _, out, _ in parts:  # merged in batch order
+            for d in out or []:
                 decisions.setdefault(normalize_name(d["feature_name"]), d)
         return list(decisions.values())
 
@@ -133,11 +183,17 @@ class MetaJudge(Stage):
             all_judge_features=json.dumps(table, indent=2, default=str, ensure_ascii=False),
         )
         out = self.ask_json(prompt)
-        if isinstance(out, dict):
-            out = next((out[k] for k in ("features", "decisions") if isinstance(out.get(k), list)), [])
-        decisions: dict[str, dict[str, Any]] = {}  # the first decision on each feature
-        for x in json_items(out):
+        given = {normalize_name(r["feature_name"]) for r in table}
+        decisions: dict[str, dict[str, Any]] = {}  # the first decision on each feature it was given
+        other = []
+        for x in self.items(out, ("features", "decisions"), prompt):
             key = normalize_name(x.get("feature_name") or "")
-            if key and key not in decisions:
-                decisions[key] = {**x, "final_decision": normalize_decision(x.get("final_decision"))}
+            if key in given:
+                decisions.setdefault(
+                    key, {**x, "final_decision": normalize_decision(x.get("final_decision"))}
+                )
+            elif key:
+                other.append(str(x.get("feature_name"))[:80])
+        if other:
+            self.note("ignored", features=other[:20], reason="names the MetaJudge was not given")
         return list(decisions.values())

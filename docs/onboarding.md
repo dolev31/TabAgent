@@ -10,6 +10,7 @@ tabagent onboard ./logs --decision ToolShortlist --dry-run
 tabagent onboard ./logs --decision ToolShortlist --out ./my_head
 tabagent onboard ./logs --decision ToolShortlist --out ./my_head \
     --max-cost 50 --price-in "$PRICE_IN" --price-out "$PRICE_OUT"   # a budget, in USD per 1M tokens
+tabagent runs show ~/.cache/tabagent/runs/<run>  # what each stage produced, dropped, failed and cost
 ```
 
 `tabagent.onboard()` detects the log format, runs TabSchema discovery on the successful runs, builds the
@@ -282,14 +283,46 @@ Trajectories are sent to your LLM provider during discovery. Pass `redact=` (a f
 trajectory before anything is sent) to scrub personal data; the trajectories' file names are sent as they are
 (the analyzer prompt names its trajectory file), so rename files whose names are personal. `redact` changes
 the onboarding trajectories only: `head.decide(prefix, ...)` does not apply it, so apply the same function to
-live prefixes when it changes fields the extractor reads. `--dry-run` reports the trajectories, decision
-points and an estimate of the tokens before any call, plus any problem that would stop a real run (see
-below). `max_cost_usd` (`--max-cost`) stops discovery before a call whose estimated cost (its prompt plus the
-stage's mean answer, counting calls already in flight) would take the total past it; it needs the model's
-prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}` (`--price-in`, `--price-out`; `--price
-MODEL=IN,OUT` for the other models of a run), and is refused for a model without a price. The report gives
-each model's cost and calls. Run directories hold trajectory text and live outside the repository
-(`~/.cache/tabagent/runs` by default).
+live prefixes when it changes fields the extractor reads. Run directories hold trajectory text and live outside
+the repository (`~/.cache/tabagent/runs` by default).
+
+**Before any call**, `--dry-run` (`onboard(dry_run=True)`) reports the trajectories, the decision points and an
+estimate of the tokens and cost of every stage, plus any problem that would stop a real run (see below):
+
+```text
+$ tabagent onboard ./tau2-gpt41 --decision NextToolCall --dry-run --model aws/claude-opus-5-5 \
+    --stage-model extractor=azure/gpt-6-sol --price aws/claude-opus-5-5=3,15 --price azure/gpt-6-sol=2,10
+1112 trajectories (606 successful), 3226 decision points, 20 analyzed by the LLM; ~1,135,735 input / ~628,195
+output tokens; est. cost $11.60
+  stage             model                       calls       input     output     cost
+  analyzer          aws/claude-opus-5-5            20      75,265     90,000    $1.58
+  extractor         azure/gpt-6-sol                48     297,295    187,200    $2.47
+  validator         aws/claude-opus-5-5            22     249,944     62,350    $1.69
+  ...
+  meta_judge        aws/claude-opus-5-5             6     163,444     54,600    $1.31
+  auditor           aws/claude-opus-5-5            12     158,242     40,320    $1.08
+```
+
+The estimate (`tabagent.tabschema.estimate`) renders the FeatureAnalyzer prompts of the very decision points
+the run will analyze, measures each point's schema, the schema merged over the onboarding data and the audited
+points' clipped prefixes, and counts the CodeExtractor's retries, the compile step's repair round and the
+OutputAuditor. What the LLM will do (how many features it proposes and keeps, how long it answers, how often its
+code needs a retry) comes from real runs (`estimate.Profile`), and characters become tokens at the model's
+measured ratio: 2.3 characters per token for Claude models (billed counts on real runs were 2.33 to 2.74) and
+3.9 for others (measured offline with OpenAI's o200k tokenizer, not against billed usage). On four public
+τ²-bench runs (next tool call, $6 to $12 each) and two sets of private agent logs with prompts of up to 160,000
+tokens, the estimate landed within 30% of the actual cost before the audit: 6% to 17% low on τ²-bench, 8% low
+and 26% high on the private logs. The earlier estimate, which assumed 4 characters per token for every model,
+was 22% low on the logs with the longest prompts and counted the audit at about a tenth of its cost. A model
+much more or less verbose than the profile moves the actual cost away from the estimate.
+
+**A budget**, `max_cost_usd` (`--max-cost`), stops discovery before a call whose estimated cost (its prompt at the
+model's characters per token, plus the stage's mean answer, counting calls already in flight) would take the
+total past it. It needs the model's prices, `prices={model: (usd_per_1M_in, usd_per_1M_out)}` (`--price-in`,
+`--price-out`; `--price MODEL=IN,OUT` for the other models of a run), and is refused for a model without a
+price. The stop is clean at any stage, the audit included: the run raises `BudgetExceeded` (the CLI exits with
+status 3), `run.json` says where it stopped, and rerunning with the same run directory and a larger budget pays
+only for what is left. The report gives each model's cost and calls; `tabagent runs show` gives each stage's.
 
 ## LLM providers
 
@@ -315,10 +348,12 @@ list; up to those sizes every feature is handled in one call, as in the paper.
 **A model per stage.** `TabSchemaConfig(stage_models={"extractor": "azure/gpt-6-sol"})` (CLI `--stage-model
 extractor=azure/gpt-6-sol`, repeatable; `judges` covers the three judges) runs one stage on another model,
 for example a strong code model for the CodeExtractor. A provider's content filter can refuse one model's
-answers to one stage outright (the finish reason `content_filter`): such an answer is never retried on the
-same model, cached or re-asked; it raises `LLMContentFiltered`, whose message names the stage. Route that
-stage to another model, or set `fallback_model` (`--fallback-model`), which is asked once whenever a filter
-stops an answer (`llm_calls.jsonl` records the call with `fallback_from`).
+answers to one stage outright (the finish reason `content_filter`, or a request refused for its content): such
+an answer is never retried on the same model or re-asked; it is kept in the run directory, so a rerun meets the
+same filter without paying for it again, and it raises `LLMContentFiltered`, whose message names the stage
+(at one decision point it only skips that point). Route that stage to another model, or set `fallback_model`
+(`--fallback-model`), which is asked once whenever a filter stops an answer (`llm_calls.jsonl` records the
+call with `fallback_from`).
 
 ## When something goes wrong
 
@@ -349,18 +384,47 @@ During discovery:
   cover all four positions in the run and most of the 35 tools, and three runs agreed within half a point.
   Analyzing 40 points in one run did not improve on 20 (one run, 0.837, $21). A smaller `n_analyze` lowers the
   cost (the dry run estimates it); expect a less stable card.
-* **A decision point that fails** (an unusable or truncated answer, a provider error such as a context
-  overflow, code that never runs) is skipped, recorded in `analysis.json` with its error, and counted in the
-  report; the run goes on with the others. When every point fails, the error names the first cause.
+* **A decision point that fails** (an unusable or truncated answer, a content filter, a prompt the model
+  refuses as too long even after its prefix is clipped to half and a quarter of the budget, code that never
+  runs) is skipped, recorded in `analysis.json` with its error, and counted in the report and `run.json`; the
+  run goes on with the others. When every point fails, the error names the first cause.
+* **Provider errors.** A rate limit (429), a dropped or reset connection, a server error (5xx) or an empty
+  answer (a proxy's reply with no choices) is retried by the stage that made the call, with exponential backoff
+  (2, 4, 8, ... seconds, at most 60, with jitter, never under 1 second) or what the provider's `Retry-After`
+  asks, up to `TabSchemaConfig.llm_retries` times (5; `--llm-retries`). Every attempt is a line of
+  `llm_calls.jsonl` (`event: retry`). A provider that stays down stops the run with `LLMUnavailable`,
+  resumable like a budget stop (a failed attempt is usually not billed; one that timed out may have been). A
+  provider that asks to wait more than 5 minutes, or a 429 for an exhausted quota (`insufficient_quota`), stops
+  the run at once. Any other provider error (an invalid key, a model that does not exist, a bad request) is not
+  retried and stops the run at any stage, with the run directory named in the error.
+* **Timeouts.** One request may take `TabSchemaConfig.request_timeout_s` seconds (`--request-timeout`); by
+  default `max(300, 120 + max_tokens / 40)`, room for the stage's longest answer at 40 tokens per second: 520 s
+  for the per-decision-point stages (16,000 tokens), 920 s for the whole-run stages (32,000). A request that
+  times out is retried once; a second timeout is handled like an answer cut at the output limit (the batch is
+  split, the decision point skipped), since a long answer would time out every time.
+* **Unusable answers of the whole-run stages.** When the FeatureAggregator, a judge or the MetaJudge answers a
+  batch unusably (unparseable, without the expected list, cut at the output limit, timed out twice, filtered,
+  or refused as too long), each half of the batch is asked again, down to quarters. A feature that still has no usable answer
+  is aggregated as proposed, scored without that judge, or reported as without a MetaJudge decision, and the
+  report says so; when no call of the stage gives a usable answer, the run stops. An answer that keeps more
+  features than its batch proposed, or answers for names it was not given, is trimmed to what it was asked.
+* **Runaway answers.** One FeatureAnalyzer answer contributes at most 60 proposals, and a feature plan's text
+  fields are clipped to 2,000 characters, so one runaway answer cannot inflate every later prompt.
 * **Extraction code** gets the first attempt and three retries; each retry shows every earlier error. An
-  answer without code counts as a failed attempt. Code may print freely, and fails only the trajectory on
-  which it raises, calls `exit()`, runs past `timeout_s` or returns something other than a flat dict of JSON
-  scalars. In the compile step at most `1 - compile_min_success` of the decision points may fail; those rows
-  get empty features, as they do at serving time.
+  answer without code counts as a failed attempt (code in a Markdown fence, or in `<code>` tags that the
+  thoughts also mention, is recovered). The code fails only the trajectory on which it raises, calls `exit()`,
+  runs past `timeout_s` or returns something other than a flat dict of JSON scalars, and also only the
+  trajectory on which it hangs out of reach of its alarm (a regular expression that backtracks for minutes: its
+  interpreter is killed 2 seconds past `timeout_s`), blows up memory, or crashes its interpreter: a fresh
+  interpreter carries on with the next trajectory (and an interpreter stopped by its chunk's wall-clock limit
+  while its trajectories are slow but within their own limits simply continues in a new one). What it prints is capped at 1 MB per interpreter. A value
+  that is NaN or infinite becomes missing (`None`), by the fixed code appended to every extractor, so training
+  and serving agree. In the compile step at most `1 - compile_min_success` of the decision points may fail;
+  those rows get empty features, as they do at serving time.
 * **Very long traces** reach the FeatureAnalyzer with their longest strings clipped once their JSON passes
   `TabSchemaConfig.max_prompt_chars` (400,000 characters); the extraction code always runs on the full prefix.
-* **The MetaJudge** decides only on features the FeatureAggregator kept; a decision on another name is reported
-  under `dropped`. Accepted and conditionally accepted features are compiled by default:
+* **The MetaJudge** decides only on the features of its batch, as each judge does; a decision on another name is
+  ignored and reported under `dropped`. Accepted and conditionally accepted features are compiled by default:
   `TabSchemaConfig(accept=("accept",))` keeps only accepted ones. On the next-tool-call decision of the
   τ²-bench GPT-4.1 logs, the MetaJudge marked 41% of features conditional, and compiling them raised head P@R
   from 0.761 to 0.827 (10 analyzed decision points) and from 0.840 to 0.869 (20 points), LLM features only,
@@ -380,6 +444,14 @@ During discovery:
   `TabSchemaConfig.max_columns_per_feature` (64) columns of one planned feature and
   `max_extractor_columns` (512) in all, those that vary most across decision points, and the report says
   what was trimmed. On CUGA's shortlister, word-count features had expanded into thousands of columns.
+* **Duplicate text columns.** A compiled text or categorical column that duplicates another kept one word for
+  word on every onboarding decision point (the same lowercased `\w+` tokens, numbers and order; case,
+  punctuation, brackets and quotes aside) is dropped as `redundant with <column>`: a text and the list of its
+  tokens are one column, while a bag of words with counts, n-grams, the same words in another order, a
+  different number, a negation, or a difference on a single decision point keep both. The appended context
+  text counts too (an LLM column equal to it is dropped). Of duplicates the co-usage context is kept first,
+  then the context text, then a categorical form over a text one, then by name
+  (`TabSchemaConfig(drop_redundant_text=False)` turns it off).
 * **Repairing flagged features.** When the CodeValidator flags accepted features in the compiled code (a field
   the trajectories lack, or code that does not follow the plan), the CodeExtractor is asked once more with
   the validator's objections in the paper's retry prompt; the new code is kept only if it runs and fewer
@@ -398,21 +470,75 @@ During discovery:
   even when the LLM's features are all flags and counts. Being part of `extract.py`, it runs identically at
   training and at serving. `TabSchemaConfig(context_text=False)` leaves it out.
 
-A run that stops (a spent budget, no accepted feature, an extractor that cannot be compiled, a provider that
-stays down) leaves a partial `report.md` and every paid answer in its run directory. Rerun with the same
-`run_dir` (`--run-dir`, the run directory itself) to resume: answers the directory holds cost nothing, while
-answers that could not be used are asked again. The report and the card count those reused answers at the
-cost they had when first paid. Two runs on one run directory at once are safe, but may pay twice for the same
-answer. The same trajectories and the same answers give a byte-identical `card.yaml` and `extract.py`; the card
-holds no local paths.
-
 The sandbox isolates accidents, not adversaries. It runs the code in a fresh interpreter without environment
-variables (no API keys), with CPU-time and file-size limits, a memory limit on Linux (`mem_mb`), at most 50
-trajectories per interpreter and `timeout_s` per trajectory; the deterministic checks refuse code that opens
-files, imports modules beyond a small standard-library list, or reaches for interpreter internals (dunder
-attributes, and the frames of generators, coroutines and tracebacks: `gi_frame`, `f_back`, `f_locals`, ...). Use
-`DockerSandbox` (no network, read-only filesystem, 1 GB) for code or traces you do not trust:
-`tabagent.onboard(..., sandbox="docker")` runs discovery, the decision table and the returned head in it.
+variables (no API keys), with CPU-time and file-size limits, a memory limit (`mem_mb`: an address-space limit
+on Linux, with room for the chunk's input; on macOS the interpreter watches its own peak memory over its peak
+with the input loaded), at most 50 trajectories and 32 MB of input per interpreter, and `timeout_s` per
+trajectory; the deterministic checks refuse code that opens files, imports modules beyond a
+small standard-library list, or reaches for interpreter internals (dunder attributes, and the frames of
+generators, coroutines and tracebacks: `gi_frame`, `f_back`, `f_locals`, ...). Use `DockerSandbox` (no
+network, read-only filesystem, 1 GB) for code or traces you do not trust: `tabagent.onboard(...,
+sandbox="docker")` runs discovery, the decision table and the returned head in it.
+
+## Stopping, resuming and inspecting a run
+
+A run that stops leaves a partial `report.md`, `run.json` and every paid answer in its run directory, whether it
+was *stopped* (a spent budget, a provider that stayed down, Ctrl+C, a killed process: rerun to resume) or
+*failed* (no feasible proposal, no accepted feature, an extractor that cannot be compiled, a leaking adapter).
+Rerun with the same `run_dir` (`--run-dir`, the run directory itself) to resume:
+
+* every answer the directory holds is reused at no cost, including the truncated and filtered ones, so a resumed
+  run makes the same decisions as an uninterrupted one and produces the same `card.yaml` and `extract.py`, at
+  the same recorded cost; no answer is paid for twice (the one exception: a call whose answer arrived in the
+  instant before the process was killed, before it was written);
+* a filtered answer goes to the `fallback_model` on the rerun too, when one has been added since (its answer is
+  stored under the fallback model's own key), and an answer cut at the output limit is asked again when the
+  model's output limit (`max_tokens`) has been raised since: both are what the error messages advise;
+* the answers that caused a *failure* (an unparseable answer that stopped a stage, extraction code that never
+  ran) are dropped from the directory, so the rerun asks for them again; a content filter's answer is kept,
+  since the same prompt to the same model would be stopped again (route the stage to another model);
+* the report and the card count reused answers at the cost they had when first paid.
+
+Every file is written atomically, so a process killed at any moment leaves complete files. Two runs on one run
+directory at once (two processes) are safe: each answer is paid once, by whichever asks first, and the other
+waits for it (file locks, on POSIX). The same trajectories and the same answers give a byte-identical `card.yaml`
+and `extract.py`; the card holds no local paths. The tests drive every stage with a scripted LLM that misbehaves
+in every way above, interrupt runs inside every stage (Ctrl+C, `SIGKILL`, the budget, a provider that stays
+down) and check these guarantees (`tests/tabschema/test_chaos.py`, `test_resume.py`).
+
+**`run.json`** is the run's machine-readable summary, written as the run progresses: its status (`running`,
+`completed`, `stopped`, `failed`) and the error that ended it; every session that worked in the directory; per
+stage (adapter check, sample, analyze, aggregate, judge, meta_judge, compile, audit, usefulness, card) its
+status, timing, progress with an estimate of the time left, what it produced, dropped and failed, and its LLM
+calls, tokens and cost (paid now, and reused); every drop counted by reason; and the provider errors and retries.
+`llm_calls.jsonl` records every call and failed attempt with its stage, session and time. At `-v` the CLI logs
+each stage and the analysis's progress (`analyzed decision points: 7/20; about 4m 10s left`).
+
+```bash
+tabagent runs show ~/.cache/tabagent/runs/20261005T181407Z   # the anatomy, stage by stage
+tabagent runs show RUN_DIR --json                              # the same, machine-readable
+tabagent runs list                                             # the run directories, newest first
+```
+
+`runs show` reads run directories made before `run.json` existed too, rebuilding what it can from the stage
+files. The CLI exits with status 3 for a stop a rerun resumes from, 2 for a user error, 0 on success.
+
+**Large onboarding sets.** The compile step runs the extractor on every onboarding decision point, four
+interpreters at a time; when the columns times the decision points would not fit 20 million cells in memory (a
+dict per row, such as word counts, over many decision points), every column first goes through the cheap gates
+on statistics over all decision points (constant, too often empty, flagged by the CodeValidator), presence flags
+are decided from those statistics alone, and the other columns are ranked on a seeded random sample of 2,000
+points, at most `max(64, 20,000,000 / decision points)` of them reaching the full gates (a compile note says
+when that memory cap binds). On 100,000 synthetic decision points, discovery took about 65 seconds on a laptop, with a peak of
+about 0.6 GB, or 1 GB when the extractor produced 100,000 distinct columns.
+
+**Configuration.** Every `TabSchemaConfig` field is checked when the config is made, with a message that names
+the field (`TabSchemaConfig.accept: unknown value(s) ['accepted']`); `TabSchemaConfig.from_dict` names unknown
+keys with the closest field. On the command line, `--config FILE` (JSON or YAML) sets any field, and the flags
+override it: `--n-analyze`, `--accept accept,conditional`, `--sample-strategy`, `--workers`, `--timeout`,
+`--llm-retries`, `--audit-samples`, `--max-cost`, `--no-audit`, `--no-verify-extractor`, `--no-verify-adapter`,
+`--no-usefulness`, `--no-compile-repair`, `--no-context-text`, `--prune-harmful`.
+
 
 ## How the generated code is verified
 

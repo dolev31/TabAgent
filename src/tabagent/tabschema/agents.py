@@ -11,7 +11,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import re
+import threading
+import time
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from typing import Any
@@ -22,16 +25,29 @@ from tabagent.tabschema.llm import (
     CostMeter,
     LLMContentFiltered,
     LLMFormatError,
+    LLMPromptTooLong,
     LLMResponse,
+    LLMTimedOut,
     LLMTruncated,
+    LLMUnavailable,
+    RetryPolicy,
     extract_code,
     extract_json,
     is_content_filtered,
+    is_content_policy_error,
+    is_prompt_too_long,
+    is_timeout,
+    is_transient,
     is_truncated,
+    output_limit,
+    retry_after,
+    status_code,
 )
 from tabagent.tabschema.runstore import RunStore
 from tabagent.tabschema.sandbox import ExecResult, SubprocessSandbox
 from tabagent.tabschema.trajectory import DecisionPoint, clip_for_prompt, get_json_schema, union_schema
+
+logger = logging.getLogger(__name__)
 
 SPEC_FIELDS = (
     "feature_name",
@@ -45,6 +61,39 @@ SPEC_FIELDS = (
 JSON_REPAIR = (
     "\n\nYour previous answer could not be parsed. Return only the requested JSON, with no other text."
 )
+#: Characters a feature plan's name and its other text fields keep (a longer value is clipped with a note), so
+#: one runaway answer cannot inflate every later prompt that lists the features.
+NAME_CHARS, FIELD_CHARS = 200, 2_000
+#: Proposals one FeatureAnalyzer answer contributes at most (real answers propose 13 to 16 on average); the
+#: rest are dropped and recorded, so a runaway answer cannot multiply the cost of the whole-run stages.
+MAX_PROPOSALS = 60
+#: Times a batch of a whole-run stage (aggregator, judges, MetaJudge) is halved when its answer is unusable,
+#: truncated, filtered or its prompt too long: at most 2 ** SPLIT_DEPTH sub-batches, about SPLIT_DEPTH + 1
+#: times the batch's input tokens in the worst case.
+SPLIT_DEPTH = 2
+
+
+#: Set when the run is interrupted (Ctrl+C): every backoff wait ends at once instead of running out its time.
+STOP = threading.Event()
+
+
+def _wait(seconds: float) -> None:
+    """Wait ``seconds`` of backoff, unless the run is interrupted (``STOP``): then raise KeyboardInterrupt."""
+    if STOP.wait(seconds):
+        raise KeyboardInterrupt("TabSchema was interrupted")
+
+
+_sleep = _wait  # one place for tests to replace
+
+
+def short(e: BaseException, limit: int = 300) -> str:
+    """``Type: message`` of an exception, on one line, clipped."""
+    text = " ".join(str(e).split())
+    return f"{type(e).__name__}: {text}"[:limit]
+
+
+def _clip(value: str, limit: int) -> str:
+    return value if len(value) <= limit else f"{value[:limit]} ...[{len(value) - limit} more characters]"
 
 
 @dataclass
@@ -71,9 +120,13 @@ class FeatureSpec:
             known["feature_name"] = d["name"] if d.get("name") is not None else ""
         try:
             support = int(known.pop("support", 1))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             support = 1
-        return cls(**{k: str(v) for k, v in known.items()}, support=support)
+        text = {
+            k: str(v)[:NAME_CHARS] if k == "feature_name" else _clip(str(v), FIELD_CHARS)
+            for k, v in known.items()
+        }
+        return cls(**text, support=support)
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -100,19 +153,48 @@ def json_items(value: Any) -> list[dict[str, Any]]:
 
 
 def in_parallel(fn, items: list, workers: int = 1) -> list:
-    """``[fn(x) for x in items]``, run on up to ``workers`` threads; results keep the order of ``items``."""
+    """``[fn(x) for x in items]``, run on up to ``workers`` threads; results keep the order of ``items``. An
+    interruption (Ctrl+C) returns at once: waiting threads are woken (``STOP``) and not waited for."""
     if workers <= 1 or len(items) <= 1:
         return [fn(x) for x in items]
-    with ThreadPoolExecutor(max_workers=min(workers, len(items))) as pool:
-        return list(pool.map(fn, items))
+    pool = ThreadPoolExecutor(max_workers=min(workers, len(items)))
+    try:
+        out = list(pool.map(fn, items))
+    except KeyboardInterrupt:
+        shutdown_interrupted(pool)
+        raise
+    except BaseException:
+        pool.shutdown(wait=True, cancel_futures=True)
+        raise
+    pool.shutdown(wait=True)
+    return out
+
+
+def shutdown_interrupted(pool: ThreadPoolExecutor) -> None:
+    """Stop a pool after an interruption without waiting for its threads: queued work is cancelled, and
+    threads waiting in a backoff wake up and stop (``STOP``)."""
+    STOP.set()
+    pool.shutdown(wait=False, cancel_futures=True)
 
 
 class Stage:
     """Base of the LLM-backed stages: one prompt in, one answer out, metered and optionally cached.
-    ``workers`` bounds the concurrent calls of a stage that splits its work into batches."""
+    ``workers`` bounds the concurrent calls of a stage that splits its work into batches.
+
+    A call that fails transiently (a rate limit, a dropped connection, a server error, an empty answer) is
+    retried under ``retry`` and raises ``LLMUnavailable`` when the retries run out; a call that times out is
+    retried once and then raises ``LLMTimedOut`` (handled like a truncated answer); a prompt the model refuses
+    as too long raises ``LLMPromptTooLong``; a filtered answer (or a prompt the provider's filter refuses)
+    goes once to the ``fallback`` model and otherwise raises ``LLMContentFiltered``; an answer cut at the
+    output limit raises ``LLMTruncated``. Every attempt is recorded in the run directory's
+    ``llm_calls.jsonl``, and every paid answer is cached, including truncated and filtered ones, so a resumed
+    run meets the same outcome without paying for it again. ``events`` lists what went wrong in this stage's
+    calls (unusable answers, split batches, clipped prompts), for the run's record.
+    """
 
     role = "stage"
     workers = 1
+    retry = RetryPolicy()
 
     def __init__(
         self,
@@ -124,100 +206,281 @@ class Stage:
     ):
         self.llm, self.meter, self.store, self.json_retries = llm, meter or CostMeter(), store, json_retries
         self.fallback = fallback  # asked once when the provider's content filter stops ``llm``'s answer
+        self.events: list[dict[str, Any]] = []
+        self._events_lock = threading.Lock()
 
-    def _key(self, prompt: str) -> dict[str, str]:
-        return {
+    def note(self, event: str, **fields: Any) -> None:
+        """Record what happened in this stage (``events``; thread-safe)."""
+        with self._events_lock:
+            self.events.append({"stage": self.role, "event": event, **fields})
+
+    def _key(self, prompt: str, llm: LLM | None = None) -> dict[str, str]:
+        """The cache key of ``prompt`` asked of ``llm`` (default the stage's model); a fallback model's answer
+        is kept under its own key, next to the filtered answer of the stage's model."""
+        key = {
             "role": self.role,
-            "model": self.llm.model,
+            "model": (llm or self.llm).model,
             "prompt_sha256": hashlib.sha256(prompt.encode()).hexdigest(),
         }
+        if llm is not None and llm is not self.llm:
+            key["fallback_from"] = self.llm.model
+        return key
+
+    def _has_fallback(self) -> bool:
+        return self.fallback is not None and self.fallback.model != self.llm.model
+
+    def unusable(self, error: LLMFormatError, prompts_: list[str]) -> LLMFormatError:
+        """``error``, marked with the prompts whose answers could not be used: if it stops the run, those
+        answers are dropped from the run directory (``forget_cause``) so that a rerun asks for them again,
+        while every answer a run used, or skipped without stopping, is replayed as it was."""
+        error.forget = [(self, list(prompts_))]  # type: ignore[attr-defined]
+        return error
 
     def call(self, prompt: str) -> str:
         """One LLM call. With a run store, calls are content-addressed: a resumed or repeated run reuses
         stored answers instead of paying for them again (the meter counts them as cached, at the cost they
-        had when first paid)."""
+        had when first paid). A filtered answer goes to the ``fallback`` model, whether it is new or replayed
+        (a fallback added after a filtered stop is asked on the rerun); the fallback's answer is stored under
+        its own key. A replayed answer cut at the output limit is asked again when the model's output limit
+        has been raised since. Raises ``LLMTruncated`` or ``LLMContentFiltered`` for such an answer."""
+        value = self._answer(self.llm, prompt)
+        if is_content_filtered(value.get("finish_reason")) and self._has_fallback():
+            value = self._answer(self.fallback, prompt, fallback_from=self.llm.model)
+        self._check(value, prompt)
+        return str(value.get("text") or "")
+
+    def _answer(self, llm: LLM, prompt: str, fallback_from: str = "") -> dict[str, Any]:
+        """``llm``'s stored answer to ``prompt``, or a paid one (stored)."""
+        limit = output_limit(llm, self.role)
         if self.store is None:
-            return self._live(prompt).text
+            return _stored(self._ask(llm, prompt, fallback_from), limit)
         paid: list[LLMResponse] = []
 
         def fetch() -> dict[str, Any]:
-            r = self._live(prompt)
+            r = self._ask(llm, prompt, fallback_from)
             paid.append(r)
-            return {
-                "text": r.text,
-                "model": r.model,
-                "input_tokens": r.input_tokens,
-                "output_tokens": r.output_tokens,
-            }
+            return _stored(r, limit)
 
-        value = self.store.cached("llm", self._key(prompt), fetch)
+        key = self._key(prompt, llm if fallback_from else None)
+        value = self.store.cached("llm", key, fetch)
         if not isinstance(value, dict):  # a cache entry written before usage was stored with the answer
             value = {"text": value}
+        then = value.get("max_tokens")
+        if not paid and is_truncated(value.get("finish_reason")) and limit and then and limit > then:
+            self.note("asked_again", reason=f"output limit raised from {then} to {limit} tokens")
+            self.store.forget("llm", key)  # cut at a lower output limit than the model has now: ask again
+            value = self.store.cached("llm", key, fetch)
         if not paid:
             self.meter.record_cached(
                 self.role,
                 LLMResponse(
-                    value["text"],
-                    value.get("model", self.llm.model),
+                    str(value.get("text") or ""),
+                    value.get("model", llm.model),
                     value.get("input_tokens", 0),
                     value.get("output_tokens", 0),
                 ),
             )
-        return value["text"]
+        return value
+
+    def _check(self, value: dict[str, Any], prompt: str) -> None:
+        finish = value.get("finish_reason", "")
+        model, out = value.get("model", self.llm.model), value.get("output_tokens", 0)
+        if is_content_filtered(finish):
+            stage = "judges" if self.role.startswith("judge_") else self.role
+            also = f" (the fallback {self.fallback.model} was asked too)" if self._has_fallback() else ""
+            raise LLMContentFiltered(
+                f"{self.role}: the provider's content filter stopped {model}'s answer "
+                f"(finish_reason={finish!r}, {out} tokens){also}. The same prompt to the same model would be "
+                "stopped again: give this stage another model with "
+                f"TabSchemaConfig(stage_models={{{stage!r}: ...}}) (CLI --stage-model {stage}=MODEL) or a "
+                "fallback_model (--fallback-model MODEL)"
+            )
+        if is_truncated(finish):
+            raise self.unusable(
+                LLMTruncated(
+                    f"{self.role}: the answer stopped at the model's output limit ({out} tokens), so it is "
+                    "incomplete; raise the backend's max_tokens (whole_run_max_tokens for the aggregator, "
+                    "the judges and the MetaJudge): a rerun then asks again"
+                ),
+                [prompt],
+            )
 
     def forget(self, prompts: list[str]) -> None:
         """Drop the stored answers to ``prompts``, so a rerun asks again instead of replaying an answer that
-        could not be used."""
-        if self.store is not None:
-            for p in prompts:
+        could not be used: the fallback's answer when the stage's model was filtered (that filtered answer
+        is kept: the same prompt would be stopped again), else the stage's model's answer."""
+        if self.store is None:
+            return
+        for p in prompts:
+            primary = self.store.peek("llm", self._key(p))
+            filtered = isinstance(primary, dict) and is_content_filtered(primary.get("finish_reason"))
+            if filtered and self._has_fallback():
+                self.store.forget("llm", self._key(p, self.fallback))
+            else:
                 self.store.forget("llm", self._key(p))
 
-    def _live(self, prompt: str) -> LLMResponse:
-        r = self._ask(self.llm, prompt)
-        if is_content_filtered(r.finish_reason):
-            if self.fallback is not None and self.fallback.model != self.llm.model:
-                r = self._ask(self.fallback, prompt, fallback_from=self.llm.model)
-            if is_content_filtered(r.finish_reason):
-                stage = "judges" if self.role.startswith("judge_") else self.role
-                raise LLMContentFiltered(
-                    f"{self.role}: the provider's content filter stopped {r.model}'s answer "
-                    f"(finish_reason={r.finish_reason!r}, {r.output_tokens} tokens). The same prompt to the "
-                    "same model would be stopped again: give this stage another model with "
-                    f"TabSchemaConfig(stage_models={{{stage!r}: ...}}) (CLI --stage-model {stage}=MODEL) "
-                    "or a fallback_model (--fallback-model MODEL)"
-                )
-        return r
-
     def _ask(self, llm: LLM, prompt: str, fallback_from: str = "") -> LLMResponse:
-        """One paid call to ``llm``: budgeted, metered, logged, and checked for truncation."""
-        self.meter.check()  # a spent budget stops every stage before its next paid call
-        est = self.meter.reserve(self.role, llm.model, len(prompt))  # and so does one about to be
-        try:
-            r = llm.complete(prompt, role=self.role)
-        finally:
+        """One paid call to ``llm``: budgeted, metered, logged, and retried while it fails transiently (a
+        timeout is retried ``retry.timeout_retries`` times, then raised as ``LLMTimedOut``; an empty answer,
+        a proxy's error, is retried like a transient failure)."""
+        waited = 0.0
+        attempt = timeouts = 0
+        while True:
+            attempt += 1
+            self.meter.check()  # a spent budget stops every stage before its next paid call
+            est = self.meter.reserve(self.role, llm.model, len(prompt))  # and so does one about to be
+            t0 = time.monotonic()
+            try:
+                r = llm.complete(prompt, role=self.role)
+            except Exception as e:  # sorted below: retried, refused, filtered, or raised as it is
+                self.meter.release(est)
+                latency = time.monotonic() - t0
+                if is_content_policy_error(e):  # the provider refused the prompt itself: a filtered answer
+                    r = LLMResponse("", llm.model, 0, 0, latency, "content_filter")
+                    self._log(llm, r, fallback_from, attempt, len(prompt), error=e)
+                    return r
+                too_long, timed_out = is_prompt_too_long(e), is_timeout(e)
+                transient = timed_out or is_transient(e)
+                timeouts += timed_out
+                hint = retry_after(e) if transient else None
+                if hint is not None and hint > self.retry.max_retry_after_s:
+                    self._log_failure(llm, e, "error", attempt, len(prompt), latency, 0.0)
+                    raise LLMUnavailable(
+                        f"{self.role}: {llm.model} asked to wait {hint:.0f}s before the next call (more than "
+                        f"{self.retry.max_retry_after_s:.0f}s): rerun later with the same run directory to "
+                        "resume"
+                    ) from e
+                wait = self.retry.wait(attempt, hint) if transient else 0.0
+                spent = timed_out and timeouts > self.retry.timeout_retries
+                last = (
+                    not transient
+                    or spent
+                    or attempt >= self.retry.attempts
+                    or waited + wait > self.retry.max_total_s
+                )
+                event = "prompt_too_long" if too_long else ("retry" if not last else "error")
+                self._log_failure(llm, e, event, attempt, len(prompt), latency, 0.0 if last else wait)
+                if too_long:
+                    raise LLMPromptTooLong(
+                        f"{self.role}: {llm.model} refused the prompt ({len(prompt):,} characters) as longer "
+                        f"than its context window ({short(e, 200)})"
+                    ) from e
+                if not transient:
+                    raise
+                if spent:
+                    raise LLMTimedOut(
+                        f"{self.role}: {llm.model} timed out {timeouts} times on this prompt "
+                        f"({short(e, 160)}): its answer takes longer than the request timeout "
+                        "(TabSchemaConfig.request_timeout_s, --request-timeout), so it is handled like an "
+                        "answer cut at the output limit. The provider may have billed the timed-out attempts"
+                    ) from e
+                if last:
+                    raise LLMUnavailable(
+                        f"{self.role}: {llm.model} failed {attempt} times in a row ({short(e, 200)}), after "
+                        f"{waited:.0f}s of backoff; rerun with the same run directory to resume (a failed "
+                        "attempt is usually not billed; one that timed out may have been)"
+                    ) from e
+                self._backoff(llm, short(e, 160), attempt, wait)
+                waited += wait
+                continue
             self.meter.release(est)
-        # A paid answer is kept (and cached) even when it crosses the budget; the check before the next call
-        # stops the run, and a resumed run does not pay for this one again.
-        self.meter.record(self.role, r, check=False)
-        if self.store is not None:
-            self.store.log_call(
-                {
-                    "stage": self.role,
-                    "model": r.model,
-                    "input_tokens": r.input_tokens,
-                    "output_tokens": r.output_tokens,
-                    "latency_s": round(r.latency_s, 3),
-                    "finish_reason": r.finish_reason,
-                    **({"fallback_from": fallback_from} if fallback_from else {}),
-                }
-            )
-        if is_truncated(r.finish_reason):
-            raise LLMTruncated(
-                f"{self.role}: the answer stopped at the model's output limit ({r.output_tokens} tokens), so "
-                "it is incomplete; raise the backend's max_tokens (whole_run_max_tokens for the aggregator, "
-                "the judges and the MetaJudge)"
-            )
-        return r
+            # A paid answer is kept (and cached) even when it crosses the budget; the check before the next
+            # call stops the run, and a resumed run does not pay for this one again.
+            self.meter.record(self.role, r, check=False, prompt_chars=len(prompt))
+            self._log(llm, r, fallback_from, attempt, len(prompt))
+            if _empty(r):  # no choices, or nothing said: a proxy's error, never stored
+                wait = self.retry.wait(attempt)
+                if attempt >= self.retry.attempts or waited + wait > self.retry.max_total_s:
+                    raise LLMUnavailable(
+                        f"{self.role}: {llm.model} returned an empty answer {attempt} times in a row "
+                        f"(finish_reason={r.finish_reason!r}); rerun with the same run directory to resume"
+                    )
+                self._backoff(llm, f"an empty answer (finish_reason={r.finish_reason!r})", attempt, wait)
+                waited += wait
+                continue
+            return r
+
+    def _backoff(self, llm: LLM, what: str, attempt: int, wait: float) -> None:
+        logger.warning(
+            "TabSchema %s: %s on %s (attempt %d of %d); retrying in %.1fs",
+            self.role,
+            what,
+            llm.model,
+            attempt,
+            self.retry.attempts,
+            wait,
+        )
+        _sleep(wait)
+
+    def _log(
+        self,
+        llm: LLM,
+        r: LLMResponse,
+        fallback_from: str,
+        attempt: int,
+        prompt_chars: int,
+        error: BaseException | None = None,
+    ) -> None:
+        if self.store is None:
+            return
+        self.store.log_call(
+            {
+                "stage": self.role,
+                "model": r.model or llm.model,
+                "input_tokens": r.input_tokens,
+                "output_tokens": r.output_tokens,
+                "latency_s": round(r.latency_s, 3),
+                "finish_reason": r.finish_reason,
+                "prompt_chars": prompt_chars,
+                **({"attempt": attempt} if attempt > 1 else {}),
+                **({"fallback_from": fallback_from} if fallback_from else {}),
+                **({"event": "content_policy", "error": short(error)} if error is not None else {}),
+            }
+        )
+
+    def _log_failure(
+        self,
+        llm: LLM,
+        e: BaseException,
+        event: str,
+        attempt: int,
+        prompt_chars: int,
+        latency: float,
+        wait: float,
+    ) -> None:
+        if self.store is None:
+            return
+        self.store.log_call(
+            {
+                "stage": self.role,
+                "model": llm.model,
+                "event": event,
+                "error": short(e),
+                "status": status_code(e),
+                "attempt": attempt,
+                "wait_s": round(wait, 2),
+                "latency_s": round(latency, 3),
+                "prompt_chars": prompt_chars,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+        )
+
+    def items(self, out: Any, keys: tuple[str, ...], prompt: str) -> list[dict[str, Any]]:
+        """The objects an answer lists: under the first of ``keys`` it has, the answer itself when it is a
+        list, or its only list of objects. An answer with none of these (a scalar, an object of other fields)
+        is unusable: ``LLMFormatError``, marked like an unparseable answer."""
+        if isinstance(out, list):
+            return json_items(out)
+        if isinstance(out, dict):
+            for k in keys:
+                if k in out:
+                    return json_items(out[k])
+            lists = [v for v in out.values() if isinstance(v, list) and any(isinstance(x, dict) for x in v)]
+            if len(lists) == 1:
+                return json_items(lists[0])
+        error = LLMFormatError(f"{self.role}: the answer holds no {keys[0]} list: {str(out)[:200]!r}")
+        raise self.unusable(error, [prompt, prompt + JSON_REPAIR])
 
     def ask_json(self, prompt: str) -> Any:
         """Call the LLM and parse its answer as JSON, re-asking up to ``json_retries`` times."""
@@ -228,37 +491,198 @@ class Stage:
                 return extract_json(text)
             except ValueError:
                 if attempt == self.json_retries:
-                    self.forget(asked)
-                    raise LLMFormatError(f"{self.role}: unparseable answer: {text[:300]!r}") from None
+                    error = LLMFormatError(f"{self.role}: unparseable answer: {text[:300]!r}")
+                    raise self.unusable(error, asked) from None
                 asked.append(prompt + JSON_REPAIR)
                 text = self.call(asked[-1])
         raise RuntimeError("unreachable")
 
 
+def _empty(r: LLMResponse) -> bool:
+    """An answer with no choices, or with nothing in it and no reason to be empty (not filtered, not cut)."""
+    finish = str(r.finish_reason or "").lower()
+    if finish == "empty":
+        return True
+    return not str(r.text or "").strip() and not is_content_filtered(finish) and not is_truncated(finish)
+
+
+def _stored(r: LLMResponse, limit: int | None = None) -> dict[str, Any]:
+    """What the run directory keeps of one answer (for one cut at the output limit, the limit it was asked
+    with, so a rerun with a higher one asks again)."""
+    out: dict[str, Any] = {
+        "text": r.text,
+        "model": r.model,
+        "input_tokens": r.input_tokens,
+        "output_tokens": r.output_tokens,
+    }
+    if r.finish_reason and (is_truncated(r.finish_reason) or is_content_filtered(r.finish_reason)):
+        out["finish_reason"] = r.finish_reason
+    if is_truncated(r.finish_reason) and (r.max_tokens or limit):
+        out["max_tokens"] = r.max_tokens or limit
+    return out
+
+
+def forget_cause(error: BaseException) -> int:
+    """Drop from the run directory the answers marked as the cause of ``error`` (``Stage.unusable``), so a
+    rerun asks for them again; returns how many. Each failed part of a stage marks its own answer by its own
+    error: a filtered answer is never marked (the same prompt to the same model would be stopped again), while
+    an unusable or truncated one is, whatever error ended the run."""
+    n = 0
+    for stage, prompts_ in getattr(error, "forget", None) or []:
+        stage.forget(prompts_)
+        n += len(prompts_)
+    return n
+
+
+def in_halves(
+    stage: Stage, fn, items: list, depth: int = SPLIT_DEPTH, keep: tuple[type, ...] = ()
+) -> list[tuple[list, Any, Any]]:
+    """``fn(items)`` for one batch of a whole-run stage, as ``[(items, result, None)]``. When the answer
+    cannot be used (unparseable, truncated, timed out, filtered, or its prompt too long), each half of the
+    batch is asked again, down to ``depth`` halvings; a part that still fails comes back as ``(items, None,
+    error)``. Errors of the types in ``keep`` are raised instead of split (halving cannot help them). The
+    halvings and the failures are recorded in ``stage.events``. A spent budget or a provider that stays down
+    is raised: those stop the run."""
+    try:
+        return [(items, fn(items), None)]
+    except LLMFormatError as e:
+        if keep and isinstance(e, keep):
+            raise
+        names = [_item_name(x) for x in items]
+        if len(items) > 1 and depth > 0:
+            stage.note("split", items=len(items), error=short(e))
+            logger.warning(
+                "TabSchema %s: an unusable answer for %d items (%s); asking for each half",
+                stage.role,
+                len(items),
+                short(e, 120),
+            )
+            mid = (len(items) + 1) // 2
+            parts = in_halves(stage, fn, items[:mid], depth - 1, keep) + in_halves(
+                stage, fn, items[mid:], depth - 1, keep
+            )
+            for _, _, err in parts:  # a failure that stops the run drops this answer too (``forget_cause``)
+                if err is not None:
+                    err.forget = [*(getattr(err, "forget", None) or []), *(getattr(e, "forget", None) or [])]
+            return parts
+        stage.note("unanswered", items=len(items), features=names[:50], error=short(e))
+        return [(items, None, e)]
+
+
+def _item_name(x: Any) -> str:
+    name = getattr(x, "feature_name", None)
+    if name is None and isinstance(x, dict):
+        name = x.get("feature_name")
+    return str(name or "")
+
+
+def all_failed(parts: list[tuple[list, Any, Any]]) -> BaseException | None:
+    """The error to raise when every part of a whole-run stage failed (the first one, marked with every
+    part's unusable answers), else None."""
+    errors = [e for _, _, e in parts]
+    if not parts or any(e is None for e in errors):
+        return None
+    first = errors[0]
+    marks = [m for e in errors for m in (getattr(e, "forget", None) or [])]
+    if marks:
+        first.forget = marks
+    return first
+
+
 # --------------------------------------------------------------------------- analyzer
+def _json_len(value: Any) -> int:
+    return len(json.dumps(value, default=str, ensure_ascii=False))
+
+
+def _longest_list(value: Any) -> list | None:
+    """The list inside a JSON value whose JSON is longest (lists of fewer than 3 items excluded)."""
+    best, best_len = None, -1
+    stack = [value]
+    while stack:
+        v = stack.pop()
+        if isinstance(v, dict):
+            stack.extend(v.values())
+        elif isinstance(v, list):
+            if len(v) > 2:
+                n = _json_len(v)
+                if n > best_len:
+                    best, best_len = v, n
+            stack.extend(v)
+    return best
+
+
+def fit_for_prompt(value: Any, budget: int) -> Any:
+    """``value`` as a prompt shows it within ``budget`` characters of JSON: itself when it fits; else with its
+    longest strings clipped (:func:`~tabagent.tabschema.trajectory.clip_for_prompt`); and when even that is
+    too long (a history of many short steps), with the middle of its longest lists left out, keeping their
+    first and latest items and saying how many were omitted."""
+    out = clip_for_prompt(value, budget)
+    if out is value or _json_len(out) <= budget:
+        return out
+    for _ in range(64):  # each pass halves one list
+        lst = _longest_list(out)
+        if lst is None:
+            break
+        n = len(lst)
+        keep = max(2, n // 2)
+        head, tail = lst[: keep // 2], lst[n - (keep - keep // 2) :]
+        lst[:] = [*head, f"... {n - len(head) - len(tail)} items omitted to fit the prompt ...", *tail]
+        if _json_len(out) <= budget:
+            break
+    return out
+
+
+def analyzer_prompt(dp: DecisionPoint, target: str, budget: int = 400_000) -> str:
+    """The FeatureAnalyzer prompt for ``dp``: its prefix fit to ``budget`` characters of JSON
+    (:func:`fit_for_prompt`), the schema of the full prefix, the target step (fit to a quarter of the
+    budget)."""
+    return prompts.render(
+        "feature_analyzer",
+        trajectory_json=_dump(fit_for_prompt(dp.prefix, budget)),
+        trajectory_schema=union_schema([dp.prefix]),
+        target_name=target,
+        target_json=_dump(fit_for_prompt(dp.target_step, budget // 4)),
+        trajectory_file=dp.source or dp.trajectory_id,
+    )
+
+
 class FeatureAnalyzer(Stage):
     """Proposes features from one decision point: its prefix, schema and the target step. Prefixes whose JSON
     exceeds ``max_chars`` characters reach the prompt with their longest strings clipped
-    (:func:`~tabagent.tabschema.trajectory.clip_for_prompt`); the schema always describes the full prefix."""
+    (:func:`fit_for_prompt`); the schema always describes the full prefix. When the provider refuses the
+    prompt as longer than the model's context, it is sent again with the prefix fit to half the budget (twice
+    at most). At most ``MAX_PROPOSALS`` proposals of an answer are kept."""
 
     role = "analyzer"
     max_chars = 400_000
 
+    def prompt(self, dp: DecisionPoint, target: str, budget: int | None = None) -> str:
+        """The FeatureAnalyzer prompt for ``dp`` (its prefix fit to ``budget`` characters, default
+        ``max_chars``)."""
+        return analyzer_prompt(dp, target, budget or self.max_chars)
+
     def __call__(self, dp: DecisionPoint, target: str) -> list[FeatureSpec]:
-        prompt = prompts.render(
-            "feature_analyzer",
-            trajectory_json=_dump(clip_for_prompt(dp.prefix, self.max_chars)),
-            trajectory_schema=union_schema([dp.prefix]),
-            target_name=target,
-            target_json=_dump(clip_for_prompt(dp.target_step, self.max_chars // 4)),
-            trajectory_file=dp.source or dp.trajectory_id,
-        )
-        out = self.ask_json(prompt)
-        items = out.get("potential_features") if isinstance(out, dict) else out
-        specs = [FeatureSpec.from_dict(x) for x in json_items(items)]
+        budget = self.max_chars
+        for tries in range(3):
+            try:
+                prompt = self.prompt(dp, target, budget)
+                out = self.ask_json(prompt)
+                break
+            except LLMPromptTooLong:
+                if tries == 2:
+                    raise
+                budget //= 2
+                self.note("clipped", decision_point=dp.id, max_chars=budget)
+        specs = [
+            FeatureSpec.from_dict(x) for x in self.items(out, ("potential_features", "features"), prompt)
+        ]
+        specs = [s for s in specs if s.key]
+        if len(specs) > MAX_PROPOSALS:
+            self.note("capped", decision_point=dp.id, proposed=len(specs), kept=MAX_PROPOSALS)
+            specs = specs[:MAX_PROPOSALS]
         for s in specs:
             s.trajectory_file = s.trajectory_file or dp.source
-        return [s for s in specs if s.key]
+        return specs
 
 
 # --------------------------------------------------------------------------- extraction code
@@ -292,8 +716,14 @@ class CodeExtractor(Stage):
     def __call__(
         self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
     ) -> str:
+        return self.write(specs, schema_example, target, retry_block)[0]
+
+    def prompt(
+        self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
+    ) -> str:
+        """The CodeExtractor prompt for the feature plans ``specs``."""
         spec_dicts = [{k: v for k, v in s.to_dict().items() if k in SPEC_FIELDS} for s in specs]
-        prompt = prompts.render(
+        return prompts.render(
             "code_extractor",
             potential_features=_dump(spec_dicts),
             trajectory_schema=union_schema([schema_example]),
@@ -301,17 +731,24 @@ class CodeExtractor(Stage):
             target_name=target,
             retry_block=retry_block,
         )
+
+    def write(
+        self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
+    ) -> tuple[str, list[str]]:
+        """The code, and the prompts asked for it (the prompt, and the request for tags when the first answer
+        had none)."""
+        prompt = self.prompt(specs, schema_example, target, retry_block)
         text = self.call(prompt)
         try:
-            return extract_code(text)
+            return extract_code(text), [prompt]
         except ValueError:
             pass
         retry = prompt + "\n\nReturn the code between <code> and </code> tags."
         try:
-            return extract_code(self.call(retry))
+            return extract_code(self.call(retry)), [prompt, retry]
         except ValueError:
-            self.forget([prompt, retry])
-            raise LLMFormatError(f"{self.role}: no code in the answer: {text[:300]!r}") from None
+            error = LLMFormatError(f"{self.role}: no code in the answer: {text[:300]!r}")
+            raise self.unusable(error, [prompt, retry]) from None
 
 
 @dataclass
@@ -323,6 +760,7 @@ class ExtractionAttempt:
     results: list[ExecResult] = field(default_factory=list)
     issues: list[str] = field(default_factory=list)
     error: str = ""
+    prompts: list[str] = field(default_factory=list, repr=False)  # the CodeExtractor prompts of this attempt
 
 
 class CodeExecutor:
@@ -385,18 +823,27 @@ def extract_with_retries(
     history: list[ExtractionAttempt] = []
     errors: list[str] = []
     retry_block = ""
+    write = getattr(extractor, "write", None)
     for n in range(max_retries + 1):
         try:
-            code = extractor(specs, schema_example, target, retry_block)
+            if write is not None:
+                code, asked = write(specs, schema_example, target, retry_block)
+            else:
+                code, asked = extractor(specs, schema_example, target, retry_block), []
         except LLMContentFiltered:  # the same prompt to the same model would be stopped again
             raise
-        except LLMFormatError as e:  # an answer without code is a failed attempt like any other
-            attempt = ExtractionAttempt("", False, error=str(e))
+        except (
+            LLMFormatError
+        ) as e:  # an answer without code (or cut short) is a failed attempt like any other
+            asked = [p for _, ps in getattr(e, "forget", None) or [] for p in ps]
+            attempt = ExtractionAttempt("", False, error=str(e), prompts=asked)
         else:
             attempt = executor.run(code, prefixes)
+            attempt.prompts = asked
         history.append(attempt)
         if attempt.ok:
             return attempt, history
+        attempt.results = []  # a failed attempt is kept for its error; its per-row results are not needed
         errors.append(attempt.error)
         retry_block = generate_retry_prompt(n + 1, previous_errors(errors), attempt.code)
     return history[-1], history
@@ -414,6 +861,9 @@ def previous_errors(errors: list[str], limit: int = 6000) -> str:
 # --------------------------------------------------------------------------- validator and aggregator
 VALID = "valid"
 VERDICTS = (VALID, "hallucinated_field", "plan_mismatch", "missing")
+#: Verdicts that reject a proposal at analysis (an unrecognized verdict leaves the proposal to the later
+#: stages).
+REJECTING = frozenset(VERDICTS) - {VALID}
 
 
 def normalize_verdict(value: Any) -> str:
@@ -468,21 +918,26 @@ class CodeValidator(Stage):
             sample_output=_dump([sample_output(o) for o in outputs[:3]]),
         )
         out = self.ask_json(prompt)
-        items = list(json_items(out.get("features") if isinstance(out, dict) else out))
-        verdicts = {
-            normalize_name(x.get("feature_name") or ""): normalize_verdict(x.get("verdict") or "")
-            for x in items
-        }
-        evidence = {
-            normalize_name(x.get("feature_name") or ""): str(x.get("evidence") or "")[:600] for x in items
-        }
+        items = self.items(out, ("features", "verdicts"), prompt)
+        verdicts: dict[str, str] = {}
+        evidence: dict[str, str] = {}
+        for x in items:  # the first verdict on each feature
+            key = normalize_name(x.get("feature_name") or "")
+            if key and key not in verdicts:
+                verdicts[key] = normalize_verdict(x.get("verdict") or "")
+                evidence[key] = str(x.get("evidence") or "")[:600]
         return verdicts, evidence
 
 
 class FeatureAggregator(Stage):
     """Merges the proposals of all analyzed decision points; returns (kept, rejected) features, one per
     normalized name. More than ``batch`` proposals are aggregated ``batch`` at a time (in the given order,
-    most supported first), so that no single answer has to restate every proposal."""
+    most supported first), so that no single answer has to restate every proposal.
+
+    A batch whose answer cannot be used is asked again in halves (:func:`in_halves`); proposals that still get
+    no usable answer are kept as proposed, unaggregated (listed in ``unaggregated`` and in ``events``), unless
+    no batch at all could be aggregated, which raises. An answer keeps at most as many features as its batch
+    proposed (an aggregator merges; it does not invent)."""
 
     role = "aggregator"
     batch = 40
@@ -491,8 +946,30 @@ class FeatureAggregator(Stage):
         support = {s.key: s.support for s in specs}
         kept: dict[str, FeatureSpec] = {}
         rejected: dict[str, FeatureSpec] = {}
+        self.unaggregated: list[str] = []
         batches = similar_together(specs, self.batch)
-        for k, r in in_parallel(self._aggregate, batches, self.workers):  # merged in batch order
+        parts = [
+            p
+            for ps in in_parallel(lambda b: in_halves(self, self._aggregate, b), batches, self.workers)
+            for p in ps
+        ]
+        error = all_failed(parts)
+        if error is not None:
+            raise error
+        for items, result, failed in parts:  # merged in batch order
+            if failed is not None:
+                for s in items:
+                    kept.setdefault(s.key, s)
+                    self.unaggregated.append(s.feature_name)
+                continue
+            k, r = result
+            first: dict[str, FeatureSpec] = {}
+            for s in k:  # one per name, the first one
+                first.setdefault(s.key, s)
+            k = list(first.values())
+            if len(k) > len(items):
+                self.note("trimmed", proposed=len(items), kept=len(k))
+                k = k[: len(items)]
             for s in k:
                 kept.setdefault(s.key, s)
             for s in r:
@@ -503,14 +980,14 @@ class FeatureAggregator(Stage):
 
     def _aggregate(self, specs: list[FeatureSpec]) -> tuple[list[FeatureSpec], list[FeatureSpec]]:
         dicts = [s.to_dict() for s in specs]
-        out = self.ask_json(
-            prompts.render(
-                "feature_aggregator", potential_features=_dump(dicts), features_schema=get_json_schema(dicts)
-            )
+        prompt = prompts.render(
+            "feature_aggregator", potential_features=_dump(dicts), features_schema=get_json_schema(dicts)
         )
+        out = self.ask_json(prompt)
         if isinstance(out, list):  # a bare list: the features it keeps
             out = {"filtered_features": out}
-        out = out if isinstance(out, dict) else {}
+        if not (isinstance(out, dict) and {"filtered_features", "rejected_features"} & set(out)):
+            out = {"filtered_features": self.items(out, ("filtered_features",), prompt)}
 
         def parse(items: Any) -> list[FeatureSpec]:
             return [s for s in map(FeatureSpec.from_dict, json_items(items)) if s.key]

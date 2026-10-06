@@ -35,7 +35,6 @@ from tabagent import auto, hub
 from tabagent.agent import TabAgent
 from tabagent.tabhead import confidence, decode
 from tabagent.table import DecisionTable
-from tabagent.tabschema import prompts
 from tabagent.tabschema.card import FeatureCard
 from tabagent.tabschema.compile import ExtractorRunner
 from tabagent.tabschema.llm import DEFAULT_MODEL, LLM, auto_llm
@@ -46,11 +45,12 @@ from tabagent.tabschema.orchestrator import (
     DiscoveryReport,
     TabSchema,
     TabSchemaConfig,
+    _timeout,
 )
-from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.runstore import RunStore, atomic_write
 from tabagent.tabschema.sampling import sample_decision_points
 from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
-from tabagent.tabschema.trajectory import Candidate, Trajectory, clip_for_prompt, union_schema
+from tabagent.tabschema.trajectory import Candidate, Trajectory
 from tabagent.tabschema.warm import POSIX, RefusingSandbox, WarmSandbox, static_refusal
 
 logger = logging.getLogger(__name__)
@@ -63,8 +63,9 @@ if hasattr(os, "register_at_fork"):  # a forked child must not inherit a lock he
 
 @dataclass
 class DryRun:
-    """What discovery would process, an estimate of its size (4 characters per token), and the problems that
-    would stop a real run before any LLM call (``problems``)."""
+    """What discovery would process, an estimate of its size and cost per stage (``stages``;
+    ``tabagent.tabschema.estimate``), and the problems that would stop a real run before any LLM call
+    (``problems``)."""
 
     n_trajectories: int
     n_successful: int
@@ -76,6 +77,7 @@ class DryRun:
     components: dict[str, int] = field(default_factory=dict)
     model: str = DEFAULT_MODEL
     problems: list[str] = field(default_factory=list)
+    stages: dict[str, dict[str, Any]] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)  # what reading the logs skipped or repaired
 
     def __str__(self) -> str:
@@ -86,12 +88,21 @@ class DryRun:
         )
         problems = "".join(f"\nA real run would stop before any LLM call: {p}" for p in self.problems)
         warnings = "".join(f"\nLogs: {w}" for w in self.warnings)
-        return (
+        lines = [
             f"{self.n_trajectories} trajectories ({self.n_successful} successful), "
             f"{self.n_decision_points} decision points, {self.n_analyzed} analyzed by the LLM; "
             f"~{self.est_input_tokens:,} input / ~{self.est_output_tokens:,} output tokens; est. cost {cost}"
             f"{problems}{warnings}"
-        )
+        ]
+        if self.stages:
+            lines.append(f"  {'stage':<18}{'model':<26}{'calls':>7}{'input':>12}{'output':>11}{'cost':>9}")
+            for name, st in self.stages.items():
+                usd = "?" if st.get("usd") is None else f"${st['usd']:.2f}"
+                lines.append(
+                    f"  {name:<18}{str(st.get('model', ''))[:25]:<26}{st.get('calls', 0):>7.0f}"
+                    f"{st.get('input_tokens', 0):>12,}{st.get('output_tokens', 0):>11,}{usd:>9}"
+                )
+        return "\n".join(lines)
 
 
 class RequestError(ValueError):
@@ -484,10 +495,10 @@ class TabAgentHead:
             sha = hashlib.sha256(self.extractor_code.encode()).hexdigest()
             card.extractor = {**(card.extractor or {}), "path": "extract.py", "sha256": sha}
         self.agent.save(out / "model")
-        if self.extractor_code:
-            (out / "extract.py").write_text(self.extractor_code)
+        if self.extractor_code:  # written atomically: a reader never meets half a file
+            atomic_write(out / "extract.py", self.extractor_code)
             if self.extractor_tests:
-                (out / TESTS_FILE).write_text(json.dumps(self.extractor_tests, indent=1, ensure_ascii=False))
+                atomic_write(out / TESTS_FILE, json.dumps(self.extractor_tests, indent=1, ensure_ascii=False))
         meta = {
             "format_version": HEAD_FORMAT,
             "target": self.target,
@@ -496,11 +507,11 @@ class TabAgentHead:
             "adapter": describe_adapter(self.adapter),
             "redact": _object_path(self.redact),
         }
-        (out / "head.json").write_text(json.dumps(meta, indent=1))
+        atomic_write(out / "head.json", json.dumps(meta, indent=1))
         if self.report is not None:
             self.report.save(out)
         if self.discovery is not None:
-            (out / "discovery.md").write_text(self.discovery.to_markdown())
+            atomic_write(out / "discovery.md", self.discovery.to_markdown())
         return out
 
     @classmethod
@@ -627,85 +638,6 @@ def _explain(error: str, prefix: dict[str, Any]) -> str:
 
 
 # --------------------------------------------------------------------------- onboarding
-# Rough sizes for the dry-run estimate (characters; 4 characters per token). The estimate follows the stages:
-# per sampled decision point the analyzer (the clipped prefix as indented JSON, its schema, the target step),
-# the extractor (the plans of the point's proposals, retried about every other time) and the validator; then
-# the aggregator (40 proposals per call), the three judges and the MetaJudge (25 features per call) on the
-# distinct proposals, and the compile step (extractor and validator on the accepted features).
-# Calibrated on two real onboardings (τ²-bench ToolShortlist, 10 decision points, Claude Opus 5.5 with the
-# extractor on GPT-6 Sol, 2026-10-02): proposals, merging and acceptance rates, and answer lengths per item.
-_PROPOSALS = 15  # features an analyzer answer proposes
-_NEW_SHARE = 0.8  # share of a further decision point's proposals that no earlier point proposed
-_KEPT_SHARE = 0.7  # of the distinct proposals, the share the FeatureAggregator keeps
-# Of the aggregated features, the share of each MetaJudge outcome (1,825 judged features in 19 real runs).
-_DECISION_SHARE = {"accept": 0.36, "conditional": 0.41, "reject": 0.23}
-_SPEC_CHARS, _ROW_CHARS, _CODE_CHARS = 600, 4500, 11000  # one feature plan, one MetaJudge row, extractor code
-_RETRY_FACTOR = 1.8  # extractor calls per extraction, retries and code-tag re-asks included
-_TOKENS_PER_PROPOSAL = {"analyzer": 300, "validator": 170, "aggregator": 270, "judge": 380, "meta": 410}
-_CODE_TOKENS = 2900  # an extractor answer (thoughts and code)
-
-
-def _estimate(
-    sample,
-    prices: dict | None,
-    model: str,
-    max_chars: int = 400_000,
-    stage_models: dict[str, str] | None = None,
-    accept: tuple[str, ...] = ("accept", "conditional"),
-) -> tuple[int, int, float | None]:
-    """Estimated (input tokens, output tokens, USD or None without a price) of discovering on ``sample``;
-    ``accept`` is the MetaJudge outcomes compiled (``TabSchemaConfig.accept``)."""
-    text = prompts.text
-    n = len(sample)
-    unique = _PROPOSALS * (1 + _NEW_SHARE * max(0, n - 1)) if n else 0
-    share = sum(_DECISION_SHARE.get(d, 0.0) for d in set(accept))
-    kept, accepted = _KEPT_SHARE * unique, share * _KEPT_SHARE * unique
-    schemas = [len(json.dumps(union_schema([dp.prefix]), default=str)) for dp in sample]
-    analyzer = sum(
-        len(text("feature_analyzer"))
-        + len(json.dumps(clip_for_prompt(dp.prefix, max_chars), indent=2, default=str, ensure_ascii=False))
-        + schema
-        + len(json.dumps(clip_for_prompt(dp.target_step, max_chars // 4), indent=2, default=str))
-        for dp, schema in zip(sample, schemas, strict=True)
-    )
-    plans = _PROPOSALS * _SPEC_CHARS
-    extractor = _RETRY_FACTOR * sum(
-        len(text("code_extractor")) + s + plans + _CODE_CHARS / 2 for s in schemas
-    )
-    validator = sum(len(text("code_validator")) + s + plans + _CODE_CHARS for s in schemas)
-    schema = max(schemas, default=0)
-    whole_run = (
-        np.ceil(unique / 40) * len(text("feature_aggregator"))
-        + unique * _SPEC_CHARS
-        + 3 * (np.ceil(kept / 25) * len(text("judge_relevance")) + kept * _SPEC_CHARS)
-        + np.ceil(kept / 25) * len(text("meta_judge"))
-        + kept * _ROW_CHARS
-    )
-    compile_ = _RETRY_FACTOR * (len(text("code_extractor")) + schema + accepted * _SPEC_CHARS) + (
-        len(text("code_validator")) + schema + accepted * _SPEC_CHARS + _CODE_CHARS
-    )
-    per = _TOKENS_PER_PROPOSAL
-    whole_run_out = unique * per["aggregator"] + kept * (3 * per["judge"] + per["meta"])
-    # (input chars, output tokens) by the stage whose model prices them
-    stages = {
-        "analyzer": (analyzer, n * _PROPOSALS * per["analyzer"]),
-        "extractor": (extractor + compile_, (n + 1) * _RETRY_FACTOR * _CODE_TOKENS),
-        "validator": (validator, (n * _PROPOSALS + accepted) * per["validator"]),
-        "aggregator": (whole_run, whole_run_out),
-    }
-    tokens_in = int(sum(c for c, _ in stages.values())) // 4
-    tokens_out = int(sum(o for _, o in stages.values()))
-    models = stage_models or {}
-    cost = 0.0
-    for stage, (chars, out) in stages.items():
-        name = models.get(stage) or (models.get("judges") if stage == "aggregator" else None) or model
-        if not prices or name not in prices:
-            return tokens_in, tokens_out, None
-        pin, pout = prices[name]
-        cost += (chars / 4 * pin + out * pout) / 1e6
-    return tokens_in, tokens_out, cost
-
-
 def _sandbox_from(spec: Any, timeout_s: float) -> SubprocessSandbox | None:
     """The sandbox ``onboard``'s ``sandbox=`` names (None: TabSchema's default ``SubprocessSandbox``)."""
     if spec is None or spec == "subprocess":
@@ -923,40 +855,46 @@ def onboard(
                 )
             except PrefixLeakError as e:
                 problems.append(str(e))
+        from tabagent.tabschema.estimate import estimate, summarize
+
         sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
         name = cfg.model or (llm.model if llm is not None else DEFAULT_MODEL)
-        tin, tout, cost = _estimate(
-            sample, cfg.prices, name, cfg.max_prompt_chars, cfg.stage_models, cfg.accept
-        )
-        if cfg.audit:  # the release's OutputAuditor, one call per audited decision point
-            from tabagent.tabschema.audit import estimate as audit_estimate
-
-            ain, aout = audit_estimate(
-                [
-                    dp.prefix
-                    for dp in sample_decision_points(
-                        dps, cfg.audit_samples, cfg.sample_seed, labels, "coverage"
-                    )
-                ]
+        audit_sample = []
+        if cfg.audit:  # the OutputAuditor's points, chosen as run_audit chooses them: unanalyzed ones first
+            seen = {dp.id for dp in sample}
+            unseen = [dp for dp in dps if dp.id not in seen]
+            audit_sample = sample_decision_points(
+                unseen, cfg.audit_samples, cfg.sample_seed, labels, "coverage"
             )
-            price = cfg.prices.get(cfg.stage_models.get("auditor") or name)
-            tin, tout = tin + ain, tout + aout
-            cost = None if cost is None or price is None else cost + (ain * price[0] + aout * price[1]) / 1e6
+            if len(audit_sample) < cfg.audit_samples:
+                audit_sample += sample[: cfg.audit_samples - len(audit_sample)]
+        data = summarize(sample, dps, decision, cfg.max_prompt_chars, audit_sample)
+        est = estimate(
+            data,
+            model=name,
+            prices=cfg.prices,
+            stage_models=cfg.stage_models,
+            accept=cfg.accept,
+            audit=cfg.audit,
+            compile_repair=cfg.compile_repair,
+            max_code_retries=cfg.max_code_retries,
+        )
         return DryRun(
             len(trajs),
             len(good),
             len(dps),
             len(sample),
-            tin,
-            tout,
-            cost,
+            est.input_tokens,
+            est.output_tokens,
+            est.usd,
             comps,
             name,
             problems,
+            est.to_dict()["stages"],
             warnings=list(getattr(adapter, "warnings", [])),
         )
 
-    llm = llm or auto_llm(cfg.model)
+    llm = llm or auto_llm(cfg.model, **_timeout(cfg))
     box = _sandbox_from(sandbox, cfg.timeout_s)
     schema = TabSchema(llm, cfg, adapter, sandbox=box)  # checks the budget can be enforced
     _preflight(adapter, dps, decision, kind)  # and the data, still before any LLM call

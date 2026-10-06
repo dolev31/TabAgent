@@ -5,7 +5,9 @@
     tabagent components LOGS                      list the decision components found in agent logs
     tabagent check-logs LOGS [--decision NAME] [--format text|json]
                                                   diagnose agent logs before onboarding (exit 1 on a problem)
-    tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION]
+    tabagent onboard LOGS --decision NAME --out DIR [--dry-run] [--redact MODULE:FUNCTION] [--config FILE]
+    tabagent runs show RUN_DIR [--json]           a TabSchema run, stage by stage: produced, dropped, cost
+    tabagent runs list [ROOT]                     the run directories under ROOT ($TABAGENT_CACHE/runs)
     tabagent serve DIR|hf://OWNER/REPO [--port 8077] [--trust-extractor | --sandbox warm|subprocess|docker]
                    [--workers N] [--request-timeout S] [--redact MODULE:FUNCTION] [--log-content]
     tabagent verify-head DIR|hf://OWNER/REPO [--sandbox docker] [--require-goldens]
@@ -15,21 +17,27 @@
     tabagent datasets --all --download            fetch and build every public dataset
 
 A user error (a missing file, an unknown dataset, a license to accept, a missing extra, ...) prints one
-message and exits with status 2. ``-v`` logs progress; ``-vv`` also shows tracebacks.
+message and exits with status 2. A run that stopped and can be resumed from its run directory (a spent
+budget, an LLM provider that stayed down) exits with status 3. ``-v`` logs progress; ``-vv`` also shows
+tracebacks.
 """
 
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import os
 import re
 import sys
+import traceback
 
-from tabagent.tabschema.llm import BudgetExceeded, MissingCredentials
+from tabagent.tabschema.llm import BudgetExceeded, LLMUnavailable, MissingCredentials
 
 #: Exceptions that describe a problem with the user's input or environment, not a bug.
 USER_ERRORS = (KeyError, OSError, ValueError, ImportError, BudgetExceeded, MissingCredentials)
+#: A stop that a rerun with the same run directory resumes from (exit status 3).
+RESUMABLE = (BudgetExceeded, LLMUnavailable)
 
 #: Library messages name Python arguments; on the command line the flags are what the user can change.
 _HINTS = (
@@ -171,32 +179,81 @@ def _adapter_for(logs: str, catalog: str | None, on_other_formats: str = "skip")
         return detect_adapter(logs, on_other_formats=on_other_formats, catalog=catalog)
 
 
-def _onboard(args) -> int:
-    import tabagent
-    from tabagent.tabschema import TabSchemaConfig
-    from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
+def _config_file(path: str | None) -> dict:
+    """The TabSchemaConfig fields of a JSON or YAML file (``--config``)."""
+    if not path:
+        return {}
+    from pathlib import Path
 
+    text = Path(path).read_text()
+    try:
+        data = json.loads(text)
+    except ValueError:
+        import yaml
+
+        try:
+            data = yaml.safe_load(text)
+        except yaml.YAMLError as e:
+            raise ValueError(f"--config {path}: neither JSON nor YAML ({e})") from e
+    if not isinstance(data, dict):
+        raise ValueError(f"--config {path}: expected a mapping of TabSchemaConfig fields")
+    return data
+
+
+def tabschema_config(args, model: str):
+    """The TabSchemaConfig of ``tabagent onboard``: the ``--config`` file's fields, overridden by the flags
+    given on the command line (each flag maps to the field of the same name; see ``tabagent onboard
+    --help``)."""
+    from tabagent.tabschema import TabSchemaConfig
+
+    fields = _config_file(getattr(args, "config", None))
     price = _prices(args)
-    redact = _redact(args.redact)
-    adapter = _adapter_for(args.logs, args.catalog, args.on_other_formats)
-    llm = None if args.dry_run else auto_llm(args.model)
-    model = llm.model if llm is not None else (args.model or DEFAULT_MODEL)
-    prices = {**({} if price is None else {model: price}), **_model_prices(args.price)} or None
-    settings = {
+    prices = {**({} if price is None else {model: price}), **_model_prices(args.price)}
+    if prices:
+        fields["prices"] = {**(fields.get("prices") or {}), **prices}
+    stage_models = _pairs(args.stage_model, "--stage-model")
+    if stage_models:
+        fields["stage_models"] = {**(fields.get("stage_models") or {}), **stage_models}
+    flags = {
         "model": args.model,
         "n_analyze": args.n_analyze,
         "max_cost_usd": args.max_cost,
-        "prices": prices,
-        "stage_models": _pairs(args.stage_model, "--stage-model") or None,
         "fallback_model": args.fallback_model,
+        "sample_strategy": args.sample_strategy,
+        "workers": args.workers,
+        "timeout_s": args.timeout,
+        "audit_samples": args.audit_samples,
+        "llm_retries": args.llm_retries,
+        "request_timeout_s": args.request_timeout,
+        "accept": tuple(x.strip() for x in args.accept.split(",") if x.strip()) if args.accept else None,
     }
-    config = TabSchemaConfig(
-        **{k: v for k, v in settings.items() if v is not None},
-        audit=not args.no_audit,
-        verify=not args.no_verify_extractor,
-        verify_adapter=not args.no_verify_adapter,
-        prune_harmful=args.prune_harmful,
-    )
+    fields.update({k: v for k, v in flags.items() if v is not None})
+    switches = {
+        "audit": args.no_audit,
+        "verify": args.no_verify_extractor,
+        "verify_adapter": args.no_verify_adapter,
+        "usefulness": args.no_usefulness,
+        "compile_repair": args.no_compile_repair,
+        "context_text": args.no_context_text,
+    }
+    fields.update({k: False for k, off in switches.items() if off})
+    if args.prune_harmful:
+        fields["prune_harmful"] = True
+    return TabSchemaConfig.from_dict(fields)
+
+
+def _onboard(args) -> int:
+    import tabagent
+    from tabagent.tabschema.llm import DEFAULT_MODEL, auto_llm
+
+    redact = _redact(args.redact)
+    model_name = args.model or _config_file(args.config).get("model")
+    config = tabschema_config(args, model_name or DEFAULT_MODEL)  # checked before the logs are read
+    timeout = {} if config.request_timeout_s is None else {"timeout": config.request_timeout_s}
+    llm = None if args.dry_run else auto_llm(model_name, **timeout)
+    if llm is not None and llm.model != (model_name or DEFAULT_MODEL):  # prices keyed by the model's own name
+        config = tabschema_config(args, llm.model)
+    adapter = _adapter_for(args.logs, args.catalog, args.on_other_formats)
     result = tabagent.onboard(
         args.logs,
         args.decision,
@@ -221,6 +278,31 @@ def _onboard(args) -> int:
         result.redact = result.redact or args.redact
         result.save(args.out)
         print(f"saved to {args.out}")
+    return 0
+
+
+def _runs(args) -> int:
+    from tabagent.tabschema.runlog import list_runs, render, summarize_run
+
+    if args.action == "show":
+        if not args.path:
+            raise ValueError("tabagent runs show needs a RUN_DIR")
+        summary = summarize_run(args.path)
+        print(json.dumps(summary, indent=1, default=str) if args.json else render(summary), end="")
+        return 0
+    from tabagent.defaults import cache_root
+
+    root = args.path or str(cache_root() / "runs")
+    rows = list_runs(root)
+    if args.json:
+        print(json.dumps(rows, indent=1, default=str))
+        return 0
+    if not rows:
+        print(f"no TabSchema run directories under {root}")
+        return 0
+    for r in rows:
+        usd = "?" if r["usd"] is None else f"${r['usd']:.2f}"
+        print(f"{r['run']:<28} {str(r['status']):<18} {usd:>9}  {r['target']}")
     return 0
 
 
@@ -468,9 +550,45 @@ def build_parser() -> argparse.ArgumentParser:
         help="the decision pattern (default: the adapter's for the decision, else ranking)",
     )
     p.add_argument("--out", help="directory for the saved head")
-    p.add_argument("--n-analyze", type=int, default=20, help="decision points the LLM analyzes")
     p.add_argument(
-        "--max-cost", type=float, help="stop if TabSchema's LLM cost exceeds this (USD); needs prices"
+        "--config",
+        metavar="FILE",
+        help='TabSchemaConfig fields as JSON or YAML (e.g. {"n_analyze": 10, "audit_samples": 8}); the '
+        "flags below override it",
+    )
+    p.add_argument("--n-analyze", type=int, help="decision points the LLM analyzes (default 20)")
+    p.add_argument(
+        "--accept",
+        metavar="DECISIONS",
+        help="MetaJudge outcomes compiled into the card, comma-separated (default accept,conditional; e.g. "
+        "accept for the strict policy)",
+    )
+    p.add_argument(
+        "--sample-strategy",
+        choices=["coverage", "tasks"],
+        help="how the analyzed decision points are sampled (default coverage)",
+    )
+    p.add_argument(
+        "--max-cost",
+        type=float,
+        help="stop TabSchema before a call that could take its LLM cost past this (USD); needs prices. The "
+        "run stops resumable (exit status 3): rerun with the same --run-dir and a larger budget",
+    )
+    p.add_argument("--workers", type=int, help="TabSchema LLM calls at once (default 8)")
+    p.add_argument(
+        "--timeout", type=float, help="seconds the generated code may run on one trajectory (default 30)"
+    )
+    p.add_argument(
+        "--llm-retries",
+        type=int,
+        help="retries of an LLM call that fails transiently (rate limit, timeout, server error; default 5)",
+    )
+    p.add_argument("--audit-samples", type=int, help="decision points the OutputAuditor judges (default 12)")
+    p.add_argument(
+        "--request-timeout",
+        type=float,
+        metavar="SECONDS",
+        help="seconds one LLM request may take (default: max(300, 120 + output-token limit / 40))",
     )
     p.add_argument("--price-in", type=float, help="the model's price, USD per 1M input tokens")
     p.add_argument("--price-out", type=float, help="the model's price, USD per 1M output tokens")
@@ -535,6 +653,21 @@ def build_parser() -> argparse.ArgumentParser:
         "step's own input, declare decision_input_keys instead",
     )
     p.add_argument(
+        "--no-usefulness",
+        action="store_true",
+        help="skip the usefulness estimate (drop-feature grouped CV on the onboarding rows; no LLM calls)",
+    )
+    p.add_argument(
+        "--no-compile-repair",
+        action="store_true",
+        help="do not ask the CodeExtractor once more for the features the CodeValidator flags at compile",
+    )
+    p.add_argument(
+        "--no-context-text",
+        action="store_true",
+        help="do not append the fixed context-text function to the extractor",
+    )
+    p.add_argument(
         "--prune-harmful",
         action="store_true",
         help="drop the features whose removal clearly helps in grouped CV on the onboarding rows (by "
@@ -542,6 +675,22 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p.add_argument("--dry-run", action="store_true", help="estimate the work and cost, call no LLM")
     p.set_defaults(fn=_onboard)
+
+    p = sub.add_parser(
+        "runs",
+        help="inspect TabSchema run directories",
+        description=(
+            "show: a run directory's anatomy, stage by stage: what each stage produced, what was dropped "
+            "and why, what failed, the LLM calls, tokens and cost, from run.json (or rebuilt from the stage "
+            "files of an older run). list: the run directories under ROOT (default $TABAGENT_CACHE/runs)."
+        ),
+        formatter_class=_FORMATTER,
+        parents=[verbose],
+    )
+    p.add_argument("action", choices=["show", "list"], help="show one run, or list the runs under a root")
+    p.add_argument("path", nargs="?", help="the run directory (show) or the root directory (list)")
+    p.add_argument("--json", action="store_true", help="print the machine-readable summary")
+    p.set_defaults(fn=_runs)
 
     p = sub.add_parser(
         "serve",
@@ -657,11 +806,18 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    """Run the CLI; returns the exit status (0 success, 1 partial failure, 2 user error)."""
+    """Run the CLI; returns the exit status: 0 success, 1 partial failure, 2 user error, 3 a stop that a rerun
+    with the same run directory resumes from (a spent budget, a provider that stayed down), 130 interrupted.
+    Under ``-vv`` errors also print their traceback; a resumable stop keeps its status 3."""
     args = build_parser().parse_args(argv)
     _configure_logging(args.verbose)
     try:
         return args.fn(args)
+    except RESUMABLE as e:
+        if args.verbose > 1:
+            traceback.print_exc()
+        print(f"tabagent {args.cmd}: stopped: {_message(e)}", file=sys.stderr)
+        return 3
     except USER_ERRORS as e:
         if args.verbose > 1:
             raise

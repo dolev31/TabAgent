@@ -627,3 +627,22 @@ def test_workers_that_keep_dying_while_idle_are_replaced_with_backoff_and_logged
     assert stats["restarts"] >= stats["idle_deaths"]
     died = [r for r in caplog.records if getattr(r, "fields", {}).get("event") == "worker_died_idle"]
     assert len(died) == stats["idle_deaths"]
+
+
+@pytest.mark.skipif(not POSIX, reason="warm workers need POSIX")
+def test_the_pool_works_where_os_waitid_is_missing(monkeypatch):
+    """macOS with Python 3.10 to 3.12 has no ``os.waitid``: the pool polls its workers instead, replaces one
+    that died, and stops them all on close."""
+    monkeypatch.delattr(os, "waitid", raising=False)
+    box = WarmSandbox(size=1, timeout_s=10)
+    try:
+        assert box.run("features = {'x': trajectory['x']}", {"x": 1}).features == {"x": 1}
+        (pid,) = box.pids()
+        os.kill(pid, 9)  # the worker dies while idle (a zombie until polled: no waiting on it here)
+        time.sleep(0.5)
+        r = box.run("features = {'x': trajectory['x']}", {"x": 2})
+        assert r.ok and r.features == {"x": 2} and box.stats()["restarts"] == 1
+        pids = box.pids()
+    finally:
+        box.close()
+    assert not any(_alive(p) for p in pids)

@@ -30,7 +30,9 @@ from __future__ import annotations
 import dataclasses
 import hashlib
 import json
+import re
 import warnings
+from collections import Counter
 from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any
@@ -63,6 +65,18 @@ CAT_MAX_CHARS = 64  # a "categorical" plan whose values are longer and mostly di
 MAX_COLUMNS_PER_FEATURE, MAX_EXTRACTOR_COLUMNS = 64, 512
 #: A co-usage context: most of its items are candidate ids, on enough rows, and it lists few of them per row.
 CO_USAGE_SHARE, CO_USAGE_ROWS, CO_USAGE_MAX_ITEMS = 0.8, 0.2, 0.5
+#: Duplicate text columns: two text or categorical columns whose normalized token sequences (``_sequence``:
+#: the lowercased ``\w+`` tokens, in order, digits kept) are equal on every decision point hold the same
+#: content in two forms (raw text and its tokens, say); one is kept. The comparison is screened on a seeded
+#: sample of ``DUPLICATE_SCREEN_ROWS`` decision points and confirmed on all of them.
+DUPLICATE_SCREEN_ROWS = 2_000
+_TOKEN = re.compile(r"\w+")
+#: Cells (decision points x output columns) the quality gates hold in memory at once. Past it (a dict per row
+#: over many decision points), every column first goes through the cheap gates on statistics gathered over all
+#: decision points; presence flags are then decided without the table, and the other columns are ranked on a
+#: seeded sample of ``PRECAP_ROWS`` decision points, at most ``max(64, CELL_BUDGET / decision points)`` of
+#: them going through the full gates.
+CELL_BUDGET, PRECAP_ROWS = 20_000_000, 2_000
 
 
 class ExtractionError(RuntimeError):
@@ -72,7 +86,9 @@ class ExtractionError(RuntimeError):
 #: Appended to every extractor the sandbox runs and to every compiled ``extract.py``, after the LLM's code:
 #: the CodeExtractor prompt's own ``flatten_json`` applied to the output ("use flatten_json to flatten every
 #: dict that goes into the final csv file", App. D.2), so a nested dict becomes ``parent_child`` columns
-#: instead of a failed attempt. Being part of ``extract.py``, it runs identically at training and inference.
+#: instead of a failed attempt; and a value that is not a finite number (NaN, an infinity from a division by
+#: zero) becomes missing (None), as the head treats it, instead of a value JSON cannot carry. Being part of
+#: ``extract.py``, it runs identically at training and inference.
 FLATTEN_MARK = "# --- appended by TabAgent (not LLM-written): flatten nested dicts"
 FLATTEN_CODE = f"""
 
@@ -82,6 +98,8 @@ def _tabagent_flatten(obj, prefix=""):
     for key, value in obj.items():
         if isinstance(value, dict):
             flat.update(_tabagent_flatten(value, f"{{prefix}}{{key}}_"))
+        elif isinstance(value, float) and (value != value or value in (float("inf"), float("-inf"))):
+            flat[f"{{prefix}}{{key}}"] = None
         else:
             flat[f"{{prefix}}{{key}}"] = value
     return flat
@@ -158,8 +176,9 @@ class CompiledExtractor:
     column implements, what was dropped and why, and per-column quality statistics.
 
     ``verification`` is the record of the release's compile-time checks (``tabagent.tabschema.verify``),
-    ``tests`` the golden tests saved as ``extractor_tests.json``, and ``outputs`` the code's features on each
-    onboarding decision point, in order (None where it failed), before the context text was appended."""
+    ``tests`` the golden tests saved as ``extractor_tests.json``, and ``outputs`` the code's values of the
+    kept columns on each onboarding decision point, in order (None where it failed), before the context text
+    was appended."""
 
     code: str
     features: dict[str, str]  # output column -> frozen type (text / num / cat)
@@ -306,10 +325,18 @@ def _variation(values: pd.Series) -> float:
     return float(1 - counts.iloc[0] / len(values))
 
 
-def _cap_columns(result: CompiledExtractor, frame: pd.DataFrame, per_feature: int, total: int) -> None:
+def _cap_columns(
+    result: CompiledExtractor,
+    frame: pd.DataFrame,
+    per_feature: int,
+    total: int,
+    known: dict[str, float] | None = None,
+) -> None:
     """Keep at most ``per_feature`` columns of one planned feature and ``total`` columns in all, those that
-    vary most across decision points; the rest are dropped with the reason."""
-    variation = {c: _variation(frame[c]) for c in result.features}
+    vary most across decision points (``known``: the variation of columns that are not in ``frame``); the rest
+    are dropped with the reason."""
+    known = known or {}
+    variation = {c: known[c] if c in known else _variation(frame[c]) for c in result.features}
     groups: dict[str, list[str]] = {}
     for col in result.features:
         groups.setdefault(str(result.specs[col].get("feature_name") or col), []).append(col)
@@ -337,6 +364,145 @@ def _cap_columns(result: CompiledExtractor, frame: pd.DataFrame, per_feature: in
         result.features.pop(c, None)
         result.specs.pop(c, None)
         result.dropped[c] = why
+
+
+def _sample_variation(keys: list[str], rows: list[dict]) -> dict[str, float]:
+    """``_variation`` of each key over ``rows`` (a key missing from a row counts as a value), in one pass over
+    the rows' entries, for wide sparse outputs."""
+    counts: dict[str, Counter] = {k: Counter() for k in keys}
+    for row in rows:
+        for k, v in row.items():
+            c = counts.get(k)
+            if c is not None:
+                c["<missing>" if v is None else str(v)] += 1
+    n = max(1, len(rows))
+    out = {}
+    for k, c in counts.items():
+        present = sum(c.values())
+        top = max(c.most_common(1)[0][1] if c else 0, n - present)
+        out[k] = 1 - top / n
+    return out
+
+
+_EMPTY = frozenset({"", "None", "nan", "[]", "{}"})
+
+
+def _is_null(v: Any) -> bool:
+    return v is None or (isinstance(v, float) and v != v)
+
+
+def _column_stats(keys: list[str], rows: list[dict]) -> dict[str, dict[str, Any]]:
+    """Per column, over every row, in one pass over the rows' entries: the rows with a value (``nonnull``),
+    the empty-looking values among them (``empty``, as the null-rate gate counts them) and up to two distinct
+    values (``values``)."""
+    stats = {k: {"nonnull": 0, "empty": 0, "values": []} for k in keys}
+    for row in rows:
+        for k, v in row.items():
+            st = stats.get(k)
+            if st is None or _is_null(v):
+                continue
+            st["nonnull"] += 1
+            if isinstance(v, str) and v.strip() in _EMPTY:
+                st["empty"] += 1
+            vals = st["values"]
+            if len(vals) < 2 and v not in vals:
+                vals.append(v)
+    return stats
+
+
+def _true(v: Any) -> bool:
+    return (isinstance(v, bool) and v) or (isinstance(v, (int, float)) and not isinstance(v, bool) and v == 1)
+
+
+def _precap(
+    result: CompiledExtractor,
+    keys: list[str],
+    outputs: list[dict | None],
+    by_key: dict[str, FeatureSpec],
+    reserved: frozenset[str] | set[str],
+    verdicts: dict[str, str],
+    max_null_rate: float,
+    per_feature: int,
+    produced: set[str],
+    seed: int = DEFAULT_SEED,
+) -> tuple[list[str], dict[str, tuple], dict[str, float]]:
+    """Narrow the output columns before the quality gates when they would not fit ``CELL_BUDGET``:
+
+    1. the cheap gates, on statistics over every decision point: reserved and unplanned names, features the
+       CodeValidator flags, constant columns and columns too often empty (as the full gates decide them);
+    2. presence flags (one true value where present, missing elsewhere) are decided from those statistics,
+       without the table, and ranked by their presence, so a rare flag that varies is never crowded out;
+    3. the other columns are ranked by their variation on a seeded sample of ``PRECAP_ROWS`` decision points;
+       of each feature at most twice ``per_feature`` and in all ``max(64, CELL_BUDGET / decision points)``
+       go on to the full gates (the memory cap: a note says when it binds).
+
+    Returns the columns for the full gates, the flags (column -> (plan, itself, value, rows present)) and the
+    flags' variation."""
+    ok = [o for o in outputs if o is not None]
+    n = max(1, len(ok))
+    stats = _column_stats(keys, ok)
+    groups: dict[str, list[str]] = {}
+    flags: dict[str, tuple] = {}
+    flag_var: dict[str, float] = {}
+    for k in keys:
+        spec, itself = _match_spec(k, by_key)
+        st = stats[k]
+        verdict = verdicts.get(spec.key) if spec else None
+        nonnull, values = st["nonnull"], st["values"]
+        flag = 0 < nonnull < n and len(values) == 1 and _true(values[0])
+        n_unique = len(values) + (nonnull < n)
+        if spec is not None:
+            produced.add(spec.key)
+        if k in reserved:
+            result.dropped[k] = "name reserved by the decision table"
+        elif spec is None:
+            result.dropped[k] = "not in the accepted feature plan"
+        elif verdict in ("hallucinated_field", "plan_mismatch"):
+            result.dropped[k] = f"CodeValidator: {verdict}"
+        elif n_unique <= 1 or (len(values) <= 1 and not flag):
+            result.dropped[k] = "constant across onboarding decision points"
+        elif not flag and (n - nonnull + st["empty"]) / n > max_null_rate:
+            result.dropped[k] = f"null rate {(n - nonnull + st['empty']) / n:.2f} > {max_null_rate}"
+        elif flag:
+            flags[k] = (spec, itself, values[0], nonnull)
+            flag_var[k] = min(nonnull, n - nonnull) / n
+        else:
+            groups.setdefault(spec.key, []).append(k)
+    rng = np.random.default_rng(seed)
+    idx = np.sort(rng.choice(len(ok), size=min(PRECAP_ROWS, len(ok)), replace=False)) if ok else []
+    sample = [ok[i] for i in idx]
+    candidates = [k for cols in groups.values() for k in cols]
+    variation = _sample_variation(candidates, sample)
+    rank = {k: (-variation[k], k) for k in candidates}
+    kept: list[str] = []
+    for spec_key, cols in groups.items():
+        cols = sorted(cols, key=rank.__getitem__)
+        for k in cols[2 * per_feature :]:
+            result.dropped[k] = (
+                f"one of {len(cols)} columns of {by_key[spec_key].feature_name}: only the {per_feature} that "
+                "vary most are kept (max_columns_per_feature; ranked on a sample of "
+                f"{len(sample)} decision points)"
+            )
+        kept += cols[: 2 * per_feature]
+    limit = max(64, CELL_BUDGET // max(1, len(outputs)))
+    if len(kept) > limit:
+        for k in sorted(kept, key=rank.__getitem__)[limit:]:
+            result.dropped[k] = (
+                f"the extractor's columns other than presence flags are capped at {limit} for {len(outputs)} "
+                "decision points (memory: max(64, 20,000,000 / decision points)); this one varies less"
+            )
+        result.notes.append(
+            f"the memory cap bound: of {len(kept)} columns other than presence flags, the {limit} that vary "
+            f"most went through the quality gates (max(64, 20,000,000 / {len(outputs)} decision points))"
+        )
+        kept = sorted(kept, key=rank.__getitem__)[:limit]
+    result.notes.append(
+        f"the extractor produced {len(keys)} distinct columns on {len(outputs)} decision points: the quality "
+        f"gates ran on statistics over every decision point ({len(flags)} presence flag(s) decided from "
+        "them) to bound memory"
+    )
+    keep = set(kept)
+    return [k for k in keys if k in keep], flags, flag_var
 
 
 def _is_flag(values: pd.Series) -> bool:
@@ -376,6 +542,7 @@ def compile_extractor(
     steps_key: str = "steps",
     label_of: Callable[[DecisionPoint], Iterable[Any]] | None = None,
     adapter_name: str = "",
+    drop_redundant_text: bool = True,
 ) -> CompiledExtractor:
     """Write, check and quality-gate one extractor for the ``accepted`` features (see the module docstring).
     Output columns named like a column of the decision table (``reserved``) are dropped; ``candidate_ids``
@@ -385,6 +552,9 @@ def compile_extractor(
     coverage-sampled ones (:func:`tabagent.tabschema.verify.verify_extractor`; ``future`` is the adapter's
     :class:`~tabagent.tabschema.verify.FutureCheck`, ``label_of`` its labels), and failing columns are
     dropped. Up to ``goldens`` golden tests are recorded in ``tests``.
+
+    With ``drop_redundant_text``, a text column whose normalized token sequence equals another kept text
+    column's on every decision point is dropped (:func:`_drop_duplicate_text`).
 
     Raises ``ExtractionError`` when no code runs on enough decision points or no column passes the gates, and
     :class:`~tabagent.tabschema.verify.PrefixLeakError` when the adapter's prefixes change with the run's
@@ -399,7 +569,10 @@ def compile_extractor(
         extractor, executor, accepted, prefixes, example, target, max_retries
     )
     if not attempt.ok:
-        raise ExtractionError(f"extractor failed after {len(history)} attempts: {attempt.error[:500]}")
+        error = ExtractionError(f"extractor failed after {len(history)} attempts: {attempt.error[:500]}")
+        # a rerun asks for new code instead of replaying the attempts that failed
+        error.forget = [(extractor, [p for h in history for p in h.prompts])]  # type: ignore[attr-defined]
+        raise error
 
     by_key = {s.key: s for s in accepted}
     notes: list[str] = []
@@ -437,8 +610,6 @@ def compile_extractor(
         notes.append(f"the CodeValidator's answer was unusable, so no feature was judged by it ({e})")
 
     outputs = [r.features if r.ok else None for r in attempt.results]
-    frame = pd.DataFrame([o or {} for o in outputs])
-    ok_rows = np.array([o is not None for o in outputs])
     result = CompiledExtractor(
         with_flatten(attempt.code),
         {},
@@ -446,8 +617,27 @@ def compile_extractor(
         attempt_errors=[h.error[:4000] for h in history if not h.ok],
         notes=notes,
     )
-
-    produced = set()
+    for h in history:  # the outputs are read: the attempts' per-row results are not held any longer
+        h.results = []
+    all_keys = list(dict.fromkeys(k for o in outputs if o for k in o))
+    keys, produced = all_keys, set()
+    flags: dict[str, tuple] = {}
+    flag_var: dict[str, float] = {}
+    if len(keys) * max(1, len(outputs)) > CELL_BUDGET:  # bound the memory of the gates
+        keys, flags, flag_var = _precap(
+            result,
+            keys,
+            outputs,
+            by_key,
+            reserved,
+            verdicts,
+            max_null_rate,
+            max_columns_per_feature,
+            produced,
+            seed,
+        )
+    frame = pd.DataFrame([{k: o[k] for k in keys if k in o} if o else {} for o in outputs], columns=keys)
+    ok_rows = np.array([o is not None for o in outputs])
     for col in frame.columns:
         spec, itself = _match_spec(col, by_key)
         verdict = verdicts.get(spec.key) if spec else None
@@ -480,20 +670,38 @@ def compile_extractor(
         else:
             result.features[col] = _resolve_type(spec.feature_type if itself else "computed", values)
             result.specs[col] = spec.to_dict()
+    for col, (spec, itself, value, present) in flags.items():  # decided from statistics over every point
+        result.quality[col] = {
+            "null_rate": 0.0,
+            "n_unique": 2,
+            "spec": spec.feature_name,
+            "validator": verdicts.get(spec.key),
+        }
+        typed = pd.Series([value] * max(2, min(present, 1000)))
+        result.features[col] = _resolve_type(spec.feature_type if itself else "computed", typed)
+        result.specs[col] = spec.to_dict()
+    if flags:  # in the outputs' column order, as the full gates leave them
+        result.features = {k: result.features[k] for k in all_keys if k in result.features}
+        result.specs = {k: result.specs[k] for k in all_keys if k in result.specs}
     for key, spec in by_key.items():
         if key not in produced:
             result.dropped.setdefault(
                 spec.feature_name, "accepted but not produced by the compiled extractor"
             )
-    _cap_columns(result, frame.loc[ok_rows], max_columns_per_feature, max_columns)
+    _cap_columns(result, frame.loc[ok_rows], max_columns_per_feature, max_columns, flag_var)
     if not result.features:
         reasons = "; ".join(f"{k}: {v}" for k, v in result.dropped.items())
         raise ExtractionError(f"every compiled feature failed the quality gates ({reasons[:1000]})")
     if candidate_ids:
         result.co_usage_context = _co_usage_context(result, frame.loc[ok_rows], set(candidate_ids))
+    taken = set(reserved) | set(all_keys)
+    del frame
+    context = None
     if context_text:  # after the co-usage search: the context text is free text, never a candidate list
-        _add_context_text(result, prefixes, set(reserved) | set(frame.columns), outcome_keys)
-    result.outputs = outputs
+        context = _add_context_text(result, prefixes, taken, outcome_keys)
+    kept = list(result.features)  # later checks read only the kept columns: the rest is not held in memory
+    result.outputs = [None if o is None else {k: o[k] for k in kept if k in o} for o in outputs]
+    del outputs, attempt
     if verify:
         _verify(
             result,
@@ -507,6 +715,8 @@ def compile_extractor(
             label_of,
             adapter_name,
         )
+    if drop_redundant_text:  # after verification, so a column is never dropped for one verification drops
+        _drop_duplicate_text(result, context, seed)
     result.tests = V.make_tests(
         result.code,
         list(result.features),
@@ -569,15 +779,95 @@ def _verify(
         raise ExtractionError(f"every compiled feature failed the verification checks ({reasons[:1000]})")
 
 
+def _sequence(value: Any) -> tuple[str, ...]:
+    r"""The normalized token sequence of a text value: its ``\w+`` tokens, lowercased, in order. Digits and
+    word order count; case, punctuation, brackets and quotes do not, so a text and the list of its tokens
+    (``"Find my friends."``, ``'["find", "my", "friends"]'``) give the same sequence, while a bag of words
+    with counts, n-grams joined by ``_``, or a negation do not."""
+    if _is_null(value) or isinstance(value, bool):
+        return ()
+    return tuple(_TOKEN.findall(str(value).lower()))
+
+
+def _drop_duplicate_text(
+    result: CompiledExtractor, context: tuple[str, list[str]] | None = None, seed: int = DEFAULT_SEED
+) -> None:
+    """Drop the LLM-written text and categorical columns that duplicate another kept one: an equal normalized
+    token sequence (``_sequence``) on every decision point, the appended context text (``context``: its column
+    and values) included. Only exact duplicates go; a column that differs from the other on any decision
+    point, in any word, number or order, is kept, whatever the overlap. Of a group of duplicates the co-usage
+    context is kept first, then the context text, then a categorical form over a text one, then by name. Pairs
+    are screened on a seeded sample of ``DUPLICATE_SCREEN_ROWS`` decision points and confirmed on all of
+    them."""
+    n = len(result.outputs)
+    if not n:
+        return
+
+    def values(col: str) -> list[Any]:
+        if context is not None and col == context[0]:
+            return [None if o is None else t for o, t in zip(result.outputs, context[1], strict=True)]
+        return [None if o is None else o.get(col) for o in result.outputs]
+
+    cols = [c for c, t in result.features.items() if t in ("text", "cat")]
+    cols = [c for c in cols if c in result.llm_columns or (context is not None and c == context[0])]
+    if len(cols) < 2:
+        return
+
+    def priority(c: str) -> tuple:
+        return (
+            c != result.co_usage_context,
+            context is None or c != context[0],
+            result.features[c] != "cat",
+            c,
+        )
+
+    rng = np.random.default_rng(seed)
+    screen = np.sort(rng.choice(n, size=min(DUPLICATE_SCREEN_ROWS, n), replace=False))
+    full: dict[str, list[tuple[str, ...]]] = {}
+
+    def sequences(c: str) -> list[tuple[str, ...]]:
+        if c not in full:
+            full[c] = [_sequence(v) for v in values(c)]
+        return full[c]
+
+    sampled = {c: [_sequence(values(c)[i]) for i in screen] for c in cols} if n > len(screen) else None
+    keepers: list[str] = []
+    dropped = 0
+    for col in sorted(cols, key=priority):
+        twin = None
+        for k in keepers:
+            if sampled is not None and sampled[col] != sampled[k]:
+                continue
+            if sequences(col) == sequences(k):
+                twin = k
+                break
+        if twin is None:
+            keepers.append(col)
+            continue
+        result.drop(
+            col,
+            f"redundant with {twin}: the same words and numbers in the same order on every one of the {n} "
+            "onboarding decision points (case and punctuation aside)",
+        )
+        dropped += 1
+    if dropped:
+        result.notes.append(
+            f"{dropped} text column(s) duplicated another kept text column word for word on every decision "
+            "point and were dropped (redundant with ...; see compile.json)"
+        )
+
+
 def _add_context_text(
     result: CompiledExtractor, prefixes: list[dict], taken: set[str], skip: Iterable[str] = ()
-) -> None:
-    """Append the context-text code to the extractor when its text varies across decision points."""
+) -> tuple[str, list[str]] | None:
+    """Append the context-text code to the extractor when its text varies across decision points; returns its
+    column and values (None when it is not added)."""
     column = CONTEXT_TEXT_COLUMN if CONTEXT_TEXT_COLUMN not in taken else f"tabagent_{CONTEXT_TEXT_COLUMN}"
-    values = pd.Series(context_texts(prefixes, column, skip))
+    texts = context_texts(prefixes, column, skip)
+    values = pd.Series(texts)
     if values.nunique() <= 1:
         result.notes.append("no context text added: the prefixes hold no text that varies across decisions")
-        return
+        return None
     result.code += context_text_code(column, skip)
     result.features[column] = "text"
     result.specs[column] = {
@@ -591,6 +881,7 @@ def _add_context_text(
         "null_rate": float((values.str.strip() == "").mean()),
         "n_unique": int(values.nunique()),
     }
+    return column, texts
 
 
 def _co_usage_context(result: CompiledExtractor, frame: pd.DataFrame, candidates: set[str]) -> str | None:
@@ -600,7 +891,7 @@ def _co_usage_context(result: CompiledExtractor, frame: pd.DataFrame, candidates
     statistics are recorded in ``quality``."""
     best, best_share = None, 0.0
     for col, typ in result.features.items():
-        if typ == "num":
+        if typ == "num" or col not in frame:  # a presence flag decided from statistics lists nothing
             continue
         items = [context_items(v) for v in frame[col]]
         flat = [x for it in items for x in it]

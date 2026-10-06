@@ -94,6 +94,11 @@ class _FoldDiscovery:
             return key
         cfg = self.config
         if budget is not None:  # a share of the budget, set by discover_all for concurrent folds
+            if budget <= 0:
+                raise BudgetExceeded(
+                    f"in-fold discovery cost ${self.spent:.2f} left no budget for this fold "
+                    f"(max_cost_usd={cfg.max_cost_usd})"
+                )
             cfg = dataclasses.replace(cfg, max_cost_usd=budget)
         elif cfg.max_cost_usd is not None:  # one budget for all folds: each fold gets what is left
             remaining = cfg.max_cost_usd - self.spent
@@ -240,7 +245,9 @@ def cross_validate_discovery(
     if redact is not None:  # applied before anything can reach the LLM provider; lazy runs stay lazy
         trajs = [t.with_raw(redact) for t in trajs]
     config = config or TabSchemaConfig()
-    llm = llm or auto_llm(config.model)
+    llm = llm or auto_llm(
+        config.model, **({} if config.request_timeout_s is None else {"timeout": config.request_timeout_s})
+    )
     stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     base_dir = Path(run_dir) if run_dir else cache_root() / "runs" / f"{stamp}-infold"
 

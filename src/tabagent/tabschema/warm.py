@@ -414,12 +414,24 @@ class _Worker:
 
     # ------------------------------------------------------------------ requests
     def alive(self) -> bool:
-        """Whether the worker process runs (without reaping it, so its process group stays ours)."""
+        """Whether the worker process runs (without reaping it where ``os.waitid`` exists, so its process
+        group stays ours). Without it (macOS before Python 3.13), the worker is polled, which reaps it once it
+        has exited; its process group, still in use by anything left in it, is killed right away, under the
+        kill lock."""
         if self.dead:
             return False
-        try:
-            return os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None
-        except ChildProcessError:
+        if hasattr(os, "waitid"):
+            try:
+                return os.waitid(os.P_PID, self.pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is None
+            except ChildProcessError:
+                return False
+        with self._kill_lock:
+            if self.proc.returncode is not None:
+                return False
+            if self.proc.poll() is None:
+                return True
+            with contextlib.suppress(OSError):  # a group outlives its leader while a member is left
+                os.killpg(self.pid, signal.SIGKILL)
             return False
 
     def call(self, trajectory_json: str, timeout: float) -> tuple[ExecResult, bool]:

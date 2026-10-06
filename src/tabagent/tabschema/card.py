@@ -241,7 +241,9 @@ class FeatureCard:
         if p.suffix not in (".yaml", ".yml"):
             p.mkdir(parents=True, exist_ok=True)
             p = p / "card.yaml"
-        p.write_text(yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True, width=110))
+        from tabagent.tabschema.runstore import atomic_write  # a reader never sees half a card
+
+        atomic_write(p, yaml.safe_dump(self.to_dict(), sort_keys=False, allow_unicode=True, width=110))
         return p
 
     @classmethod

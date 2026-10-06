@@ -28,7 +28,7 @@ import tabagent
 from tabagent import DecisionSpec, DecisionTable, Feature, FeatureCard, TabAgent, TabHead
 from tabagent.adapters import NEXT_TOOL_CALL, TOOL_SHORTLIST, CugaAdapter, OpenAIMessagesAdapter
 from tabagent.api import DryRun, TabAgentHead
-from tabagent.tabschema import TabSchema, TabSchemaConfig, Trajectory, checks, prompts
+from tabagent.tabschema import TabSchema, TabSchemaConfig, Trajectory, agents, checks, prompts
 from tabagent.tabschema.agents import (
     CodeExecutor,
     CodeExtractor,
@@ -47,6 +47,7 @@ from tabagent.tabschema.llm import (
     LiteLLM,
     LLMResponse,
     LLMTruncated,
+    LLMUnavailable,
     OpenAIChatLLM,
     auto_llm,
     extract_code,
@@ -89,6 +90,15 @@ ENV_KEYS = (
     "GEMINI_API_KEY",
     "MISTRAL_API_KEY",
 )
+
+
+@pytest.fixture(autouse=True)
+def waits(monkeypatch) -> list[float]:
+    """The backoff waits the stages asked for between retries of a failed LLM call, in order: recorded instead
+    of slept, so no test waits for real (modules that import this fixture get it too)."""
+    asked: list[float] = []
+    monkeypatch.setattr(agents, "_sleep", asked.append)
+    return asked
 
 
 @pytest.fixture
@@ -287,7 +297,11 @@ def with_bad_feature(p, n):
 
 
 def down(p, n):
-    raise ConnectionError("provider unavailable")
+    raise ConnectionError("provider unavailable")  # transient: retried, then LLMUnavailable
+
+
+def broken(p, n):
+    raise KeyError("no such field in the provider's answer")  # not transient
 
 
 # =========================================================================== 1. LLM answers
@@ -331,12 +345,24 @@ def test_answers_cut_at_the_output_limit_raise_a_clear_error(tmp_path):
 
 @pytest.mark.parametrize(
     "answer",
-    ["", "   ", "I cannot help with that.", '{"potential_features": [', "null", "42", '"text"', "[]"],
-    ids=["empty", "blank", "refusal", "truncated", "null", "number", "string", "empty-list"],
+    ["I cannot help with that.", '{"potential_features": [', "null", "42", '"text"', "[]"],
+    ids=["refusal", "truncated", "null", "number", "string", "empty-list"],
 )
 def test_unusable_analyzer_answers_end_in_a_clear_error(tmp_path, answer):
     with pytest.raises(RuntimeError, match="no feasible feature proposals .*analysis.json"):
         discover(tmp_path, FakeLLM(analyzer=lambda p, n: answer))
+
+
+@pytest.mark.parametrize("answer", ["", "   "], ids=["empty", "blank"])
+def test_empty_answers_are_a_provider_error_retried_and_never_stored(tmp_path, answer, waits):
+    """An empty answer (or a proxy's reply with no choices) says nothing about the prompt: it is retried like
+    a transient failure, and never stored, so a rerun asks again."""
+    with pytest.raises(LLMUnavailable, match="empty answer 6 times"):
+        discover(tmp_path, FakeLLM(analyzer=lambda p, n: answer))
+    assert len(waits) >= 5 and all(w >= 1 for w in waits)
+    once = FakeLLM(analyzer=lambda p, n: answer if n == 0 else DEFAULT["analyzer"](p, n))
+    result = discover(tmp_path, once, run_id="r2")  # one empty answer, then a real one
+    assert set(result.extractor.features) == set(EXPRESSIONS)
 
 
 @pytest.mark.parametrize(
@@ -362,16 +388,16 @@ def test_wrong_shapes_on_some_decision_points_only_lose_those_points(tmp_path, p
 def test_provider_errors_on_some_decision_points_only_lose_those_points(tmp_path):
     def flaky(p, n):
         if "weather" in p:
-            raise ConnectionError("context length exceeded")
+            raise ValueError("unsupported parameter for this model")  # not transient: never retried
         return DEFAULT["analyzer"](p, n)
 
     result = discover(tmp_path, FakeLLM(analyzer=flaky), n_analyze=16, workers=4)
     lost = [a for a in result.report.analyzed if a["error"]]
-    assert len(lost) == 4 and all("ConnectionError: context length" in a["error"] for a in lost)
+    assert len(lost) == 4 and all("ValueError: unsupported parameter" in a["error"] for a in lost)
     assert "4 failed, see analysis.json" in result.report.to_markdown()
     assert set(result.extractor.features) == set(EXPRESSIONS)
-    with pytest.raises(RuntimeError, match="first error: ConnectionError: provider unavailable"):
-        discover(tmp_path, FakeLLM(analyzer=down), run_id="r2")  # every point fails: the cause is named
+    with pytest.raises(RuntimeError, match="first error: KeyError: .*no such field"):
+        discover(tmp_path, FakeLLM(analyzer=broken), run_id="r2")  # every point fails: the cause is named
 
 
 def test_feature_fields_of_the_wrong_type_are_coerced():
@@ -459,8 +485,12 @@ def test_enormous_and_non_ascii_answers(tmp_path):
 
 
 def test_whole_run_stages_work_in_batches(tmp_path):
-    many = [spec(f"feature_{i:02d}") for i in range(60)]
-    llm = FakeLLM(analyzer=lambda p, n: json.dumps({"potential_features": PROPOSALS + many}))
+    def analyzer(p, n):  # 20 features of the point's own and the usual three: 63 distinct proposals
+        task = next(i for i, (t, _) in enumerate(TASKS) if t.split("{")[0] in p)
+        many = [spec(f"feature_{task}_{i:02d}") for i in range(20)]
+        return json.dumps({"potential_features": PROPOSALS + many})
+
+    llm = FakeLLM(analyzer=analyzer)
     result = discover(tmp_path, llm)
     roles = llm.roles()
     assert roles["aggregator"] == 2  # 63 proposals, 40 per call
@@ -672,7 +702,10 @@ def test_one_slow_trajectory_fails_alone():
     assert not attempt.ok and "timed out" in attempt.error  # fed back to the CodeExtractor's retry
 
 
-def test_a_hang_that_ignores_the_alarm_keeps_the_finished_results():
+def test_a_hang_that_ignores_the_alarm_fails_alone():
+    """A trajectory its alarm cannot stop (here the alarm is ignored; in practice a loop in C code, such as a
+    backtracking regex) is stopped by killing its interpreter shortly after its own timeout, and a fresh one
+    runs the rest of the chunk."""
     code = (
         "import signal\n"
         "if trajectory['hang']:\n"
@@ -682,9 +715,12 @@ def test_a_hang_that_ignores_the_alarm_keeps_the_finished_results():
         "features = {'x': trajectory['i']}\n"
     )
     items = [{"hang": i == 2, "i": i} for i in range(4)]
+    t0 = time.monotonic()
     res = SubprocessSandbox(timeout_s=1, chunk=4).run_batch(code, items)
-    assert [r.ok for r in res] == [True, True, False, False] and "timed out" in res[2].error
-    assert [r.features for r in res[:2]] == [{"x": 0}, {"x": 1}]
+    assert time.monotonic() - t0 < 10  # about the timeout plus the grace, not the chunk's wall-clock limit
+    assert [r.ok for r in res] == [True, True, False, True] and "timed out" in res[2].error
+    assert res[2].kind == "timeout"
+    assert [r.features for r in res if r.ok] == [{"x": 0}, {"x": 1}, {"x": 3}]
 
 
 ESCAPES = {
@@ -754,9 +790,10 @@ def test_exit_calls_fail_their_item_and_keep_results_aligned():
     )
     modes = ["ok", "exit", "raise", "interrupt", "ok", "os_exit", "ok"]
     res = SubprocessSandbox(timeout_s=20).run_batch(code, [{"mode": m} for m in modes])
-    assert [r.ok for r in res] == [True, False, False, False, True, False, False]
-    assert res[0].features == res[4].features == {"mode": "ok"}
-    assert "SystemExit" in res[2].error and "exited early" in res[6].error
+    # os._exit kills the interpreter: that trajectory fails, and a fresh interpreter runs the rest
+    assert [r.ok for r in res] == [True, False, False, False, True, False, True]
+    assert res[0].features == res[4].features == res[6].features == {"mode": "ok"}
+    assert "SystemExit" in res[2].error and "exited early" in res[5].error and res[5].kind == "crash"
 
 
 def test_printing_code_cannot_corrupt_the_result_channel():
@@ -1140,7 +1177,7 @@ def test_a_column_of_earlier_tool_calls_feeds_the_co_usage_statistic(tmp_path):
 
 def test_crash_then_resume_reuses_every_paid_call(tmp_path):
     prices = {"fake": (1.0, 2.0)}
-    with pytest.raises(ConnectionError):
+    with pytest.raises(LLMUnavailable, match="judge_impact: fake failed 6 times"):
         discover(tmp_path, FakeLLM(judge_impact=down), prices=prices)
     assert "Judged features" in (tmp_path / "runs" / "r1" / "report.md").read_text()  # a partial report
     second = FakeLLM()
@@ -1158,7 +1195,7 @@ def test_crash_then_resume_reuses_every_paid_call(tmp_path):
 def test_onboard_reruns_resume_from_the_run_directory(tmp_path):
     run_dir = tmp_path / "run"
     kw = dict(adapter=adapter(), config=config(), run_dir=run_dir, n_splits=2, iterations=20)
-    with pytest.raises(ConnectionError):
+    with pytest.raises(LLMUnavailable):
         tabagent.onboard(runs(), TARGET, llm=FakeLLM(meta_judge=down), **kw)
     assert (run_dir / "config.json").exists()  # run_dir is the run directory itself
     first = FakeLLM()
@@ -1342,6 +1379,10 @@ def test_litellm_sends_a_user_turn_and_a_per_stage_output_budget(monkeypatch, no
         {"role": "user", "content": USER_TURN},
     ]
     assert [c["max_tokens"] for c in fake.calls] == [16_000, 32_000]
+    # the stage retries transient errors (and records them); LiteLLM's own retries are off, requests bounded
+    # the request timeout scales with the stage's output limit: max(300, 120 + max_tokens / 40)
+    assert fake.calls[0]["num_retries"] == 0 and [c["timeout"] for c in fake.calls] == [520.0, 920.0]
+    assert LiteLLM("anthropic/x", timeout=60).timeout == 60
     small = FakeLiteLLMModule(limit=8192)  # an older model: asked again at its own limit
     monkeypatch.setitem(sys.modules, "litellm", small)
     assert LiteLLM("anthropic/claude-3-5-sonnet").complete("PROMPT", role="aggregator").text == "ok"
@@ -1356,6 +1397,7 @@ def test_openai_backend_adapts_to_the_server_and_auto_llm_picks_it(monkeypatch, 
 
     oa = OpenAIChatLLM("small-model", base_url="http://localhost:9/v1")  # a keyless compatible server
     assert oa.client.api_key == "EMPTY"
+    assert oa.client.max_retries == 0  # the stage retries transient errors, each attempt recorded
     too_large = openai.BadRequestError(
         "max_tokens is too large: 32000. This model supports at most 16384 completion tokens",
         response=httpx.Response(400, request=httpx.Request("POST", "http://localhost:9/v1")),
@@ -1506,8 +1548,13 @@ def test_content_filtered_answers_are_not_retried_on_the_same_model(tmp_path):
     with pytest.raises(Exception, match="content filter") as err:
         discover(tmp_path, llm)
     assert "stage_models" in str(err.value) and "extractor" in str(err.value)
-    # one call per analyzed decision point: no code-tag re-ask and no retries with the same model
-    assert llm.roles()["extractor"] == config().n_analyze
+    # the three points ask the same prompt: one paid call, no code-tag re-ask and no retries with the same
+    # model; the filtered answer is kept, so a rerun meets the same filter without paying for it again
+    assert llm.roles()["extractor"] == 1
+    again = FakeLLM(extractor=filtered)
+    with pytest.raises(Exception, match="content filter"):
+        discover(tmp_path, again)
+    assert "extractor" not in again.roles()
 
 
 def test_a_fallback_model_answers_when_the_content_filter_stops_one(tmp_path):
@@ -1589,14 +1636,17 @@ def test_cli_parses_stage_models_prices_and_a_catalog(tmp_path):
 
 
 def test_dry_run_prices_each_stage_at_its_model(tmp_path):
-    from tabagent.api import _estimate
+    from tabagent.tabschema.estimate import estimate, summarize
 
     trajs = runs()
-    dps = [dp for t in trajs for dp in adapter().decision_points(t, TARGET)][:3]
-    one = _estimate(dps, {"a": (1.0, 1.0)}, "a")
-    split = _estimate(dps, {"a": (1.0, 1.0), "b": (10.0, 10.0)}, "a", stage_models={"extractor": "b"})
-    assert one[:2] == split[:2] and split[2] > one[2]  # same work, the code costs more on "b"
-    assert _estimate(dps, {"a": (1.0, 1.0)}, "a", stage_models={"extractor": "b"})[2] is None  # no price
+    dps = [dp for t in trajs for dp in adapter().decision_points(t, TARGET)]
+    data = summarize(dps[:3], dps, TARGET)
+    one = estimate(data, model="a", prices={"a": (1.0, 1.0)})
+    split = estimate(
+        data, model="a", prices={"a": (1.0, 1.0), "b": (10.0, 10.0)}, stage_models={"extractor": "b"}
+    )
+    assert one.output_tokens == split.output_tokens and split.usd > one.usd  # same work, the code costs more
+    assert estimate(data, model="a", prices={"a": (1.0, 1.0)}, stage_models={"extractor": "b"}).usd is None
 
 
 # =========================================================================== the appended context text

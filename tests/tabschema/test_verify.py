@@ -32,7 +32,7 @@ from tabagent import cli
 from tabagent.tabschema import TabSchemaConfig, Trajectory, prompts
 from tabagent.tabschema.audit import OutputAuditor, normalize_audit_verdict, run_audit
 from tabagent.tabschema.compile import context_texts
-from tabagent.tabschema.llm import CostMeter
+from tabagent.tabschema.llm import BudgetExceeded, CostMeter
 from tabagent.tabschema.runstore import RunStore
 from tabagent.tabschema.trajectory import GenericJsonAdapter
 from tabagent.tabschema.verify import (
@@ -450,14 +450,17 @@ def test_the_auditor_is_a_routable_cached_stage(tmp_path):
     assert prompts.sha256("output_auditor") == result.card.provenance["prompts_sha256"]["output_auditor"]
 
 
-def test_a_spent_budget_skips_the_audit_instead_of_failing_the_run():
+def test_a_spent_budget_stops_the_audit_like_any_stage():
+    """A partial audit would decide on fewer points than configured: the run stops, resumable, instead."""
     dps = dps_of(runs())
     meter = CostMeter(prices={"fake": (1e6, 1e6)}, max_cost_usd=0.01)  # no call fits
-    stage = OutputAuditor(FakeLLM(), meter)
+    llm = FakeLLM()
+    stage = OutputAuditor(llm, meter)
     columns = {"user_intent": spec("user_intent")}
     outputs = [{"user_intent": dp.prefix["intent"]} for dp in dps]
-    rec = run_audit(stage, columns, dps, outputs, TARGET, samples=4, max_incorrect=0.25, seed=0)
-    assert rec["skipped"] == "the LLM budget ran out before the audit" and not rec["dropped"]
+    with pytest.raises(BudgetExceeded, match="auditor"):
+        run_audit(stage, columns, dps, outputs, TARGET, samples=4, max_incorrect=0.25, seed=0)
+    assert llm.calls == []
 
 
 def test_dry_runs_count_the_audit(tmp_path):

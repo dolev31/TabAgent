@@ -91,7 +91,9 @@ class Backends:
         if kind == "api":
             from tabagent.tabschema.llm import OpenAIChatLLM
 
-            return OpenAIChatLLM(self.model, temperature=None, max_tokens=512)
+            # transient errors (429s) are retried here: the baseline has no TabSchema stage to retry them,
+            # and a failed call would silently drop its row
+            return OpenAIChatLLM(self.model, temperature=None, max_tokens=512, max_retries=4)
         if kind == "ce":
             return L.HFCrossEncoder(self.model, device=self.args.device)
         return L.HFCausalLM(self.model, device=self.args.device)

@@ -22,25 +22,45 @@ OutputAuditor reads the decision point the way the FeatureAnalyzer did and check
    recorded. The audit never empties a card: when it would drop every LLM-written feature, it drops none and
    says so prominently (the paid run is kept).
 
-The auditor is a stage like the others (role ``auditor``): ``TabSchemaConfig.stage_models`` can route it,
-and it is metered, budgeted and cached in the run directory. The audit only removes features, so an
-unusable answer, a content filter or a provider error on one point loses only that point. When no point
-gets a usable answer, or the budget runs out first, the audit is skipped with a note and the extractor is
-kept as compiled.
+The auditor is a stage like the others (role ``auditor``): ``TabSchemaConfig.stage_models`` can route it, and
+it is metered, budgeted and cached in the run directory. The audit only removes features, so an unusable
+answer on one point loses only that point (an answer cut at the output limit is asked again for each half of
+the point's features first), and so does a content filter or a prompt too long once the point's prefix has
+been clipped to half its budget and asked again. When no point gets a usable answer, the audit is skipped with
+a note and the extractor is kept as compiled. A spent budget, a provider that stays down, or any other
+provider error (an invalid key, a model that does not exist, a bad request) stops the run, as at every other
+stage: a partial audit would decide on fewer points than the configured one (rerun with the same run
+directory, or ``audit=False``).
 """
 
 from __future__ import annotations
 
 import json
 import math
+import threading
 from collections.abc import Callable, Iterable
 from typing import Any
 
 from tabagent.tabschema import prompts
-from tabagent.tabschema.agents import Stage, _dump, in_parallel, json_items, normalize_name
-from tabagent.tabschema.llm import BudgetExceeded
+from tabagent.tabschema.agents import (
+    Stage,
+    _dump,
+    all_failed,
+    fit_for_prompt,
+    in_halves,
+    in_parallel,
+    normalize_name,
+    short,
+)
+from tabagent.tabschema.llm import (
+    BudgetExceeded,
+    LLMContentFiltered,
+    LLMPromptTooLong,
+    LLMUnavailable,
+    status_code,
+)
 from tabagent.tabschema.sampling import sample_decision_points
-from tabagent.tabschema.trajectory import DecisionPoint, clip_for_prompt, clip_strings
+from tabagent.tabschema.trajectory import DecisionPoint, clip_strings
 
 #: The prefix's JSON budget in an auditor prompt (longer prefixes have their longest strings clipped).
 AUDIT_MAX_CHARS = 60_000
@@ -92,22 +112,25 @@ class OutputAuditor(Stage):
     role = "auditor"
     max_chars = AUDIT_MAX_CHARS
 
-    def __call__(self, prefix: dict, items: list[dict], target: str) -> dict[str, tuple[str, str]]:
+    def __call__(
+        self, prefix: dict, items: list[dict], target: str, max_chars: int | None = None
+    ) -> dict[str, tuple[str, str]]:
         prompt = prompts.render(
             "output_auditor",
             target_name=target,
-            trajectory_json=_dump(clip_for_prompt(prefix, self.max_chars)),
+            trajectory_json=_dump(fit_for_prompt(prefix, max_chars or self.max_chars)),
             features=_dump(items),
         )
         out = self.ask_json(prompt)
-        rows = out.get("features") if isinstance(out, dict) else out
-        return {
-            normalize_name(x.get("feature_name") or ""): (
-                normalize_audit_verdict(x.get("verdict") or ""),
-                str(x.get("reason") or "")[:300],
-            )
-            for x in json_items(rows)
-        }
+        verdicts: dict[str, tuple[str, str]] = {}
+        for x in self.items(out, ("features",), prompt):  # the first verdict on each feature
+            key = normalize_name(x.get("feature_name") or "")
+            if key and key not in verdicts:
+                verdicts[key] = (
+                    normalize_audit_verdict(x.get("verdict") or ""),
+                    str(x.get("reason") or "")[:300],
+                )
+        return verdicts
 
 
 def _is_set(value: Any) -> bool:
@@ -169,6 +192,7 @@ def run_audit(
     exclude: frozenset[str] | set[str] = frozenset(),
     workers: int = 1,
     label_of: Callable[[DecisionPoint], Iterable[Any]] | None = None,
+    progress: Callable[[int, int, int], None] | None = None,
 ) -> dict[str, Any]:
     """Audit the extractor's values for ``columns`` (``{column: plan}``) on a sample of the decision points it
     ran on (``outputs`` aligned with ``decision_points``; ``exclude``: the analyzed points; ``label_of``: the
@@ -200,13 +224,49 @@ def run_audit(
         rec["skipped"] = "nothing to audit (no decision point with features, or no LLM-written feature)"
         return mask_secrets(rec, by_key=False)
 
+    done = [0, 0]  # points audited, of which failed
+    lock = threading.Lock()
+
     def one(dp: DecisionPoint) -> dict[str, Any]:
-        try:
-            verdicts = auditor(dp.prefix, audit_items(columns, values[dp.id]), target)
-        except BudgetExceeded as e:
-            return {"decision_point": dp.id, "error": f"BudgetExceeded: {e}", "budget": True}
-        except Exception as e:  # an unusable answer, a content filter, a provider error: this point only
-            return {"decision_point": dp.id, "error": f"{type(e).__name__}: {e}"[:300]}
+        out = judge(dp)
+        with lock:
+            done[0] += 1
+            done[1] += "error" in out
+            if progress is not None:
+                progress(done[0], len(sample), done[1])
+        return out
+
+    def judge(dp: DecisionPoint) -> dict[str, Any]:
+        items = audit_items(columns, values[dp.id])
+        budget = auditor.max_chars
+        for tries in range(2):
+            try:
+                # an answer cut at the output limit, or unusable, is asked again for each half of the
+                # features; a filter or a prompt too long is about the prefix: it is clipped harder, once
+                parts = in_halves(
+                    auditor,
+                    lambda its, b=budget: auditor(dp.prefix, its, target, b),
+                    items,
+                    keep=(LLMContentFiltered, LLMPromptTooLong),
+                )
+                error = all_failed(parts)
+                if error is not None:
+                    raise error
+                break
+            except (LLMContentFiltered, LLMPromptTooLong) as e:
+                if tries == 1:
+                    return {"decision_point": dp.id, "error": f"{type(e).__name__}: {e}"[:300]}
+                budget //= 2
+                auditor.note("clipped", decision_point=dp.id, max_chars=budget, error=short(e, 120))
+            except (BudgetExceeded, LLMUnavailable):  # the run stops, resumable: no partial audit
+                raise
+            except Exception as e:  # an unusable answer, or any failure of this point's own: it is skipped
+                if (
+                    status_code(e) is not None
+                ):  # a provider's error (an invalid key, a bad request): the run's
+                    raise
+                return {"decision_point": dp.id, "error": f"{type(e).__name__}: {e}"[:300]}
+        verdicts = {k: v for _, got, _ in parts for k, v in (got or {}).items()}
         if not verdicts:
             return {"decision_point": dp.id, "error": "the answer judged no feature"}
         return {"decision_point": dp.id, "verdicts": verdicts}
@@ -216,11 +276,8 @@ def run_audit(
     answered = [r for r in results if "verdicts" in r]
     rec["answered"] = len(answered)
     if not answered:
-        budget = any(r.get("budget") for r in results)
         first = rec["errors"][0] if rec["errors"] else "no answer"
-        rec["skipped"] = (
-            "the LLM budget ran out before the audit" if budget else f"no usable auditor answer ({first})"
-        )
+        rec["skipped"] = f"no usable auditor answer ({first})"
         return mask_secrets(rec, by_key=False)
     for col in columns:
         counts = dict.fromkeys(VERDICTS, 0)
@@ -260,15 +317,3 @@ def run_audit(
         for r in answered
     ]
     return mask_secrets(rec, by_key=False)
-
-
-def estimate(prefixes: list[dict], n_features: int = 20) -> tuple[int, int]:
-    """Estimated (input, output) tokens of auditing ``prefixes`` with ``n_features`` features each, at most
-    ``AUDIT_MAX_COLUMNS`` per point (4 characters per token): the template, the clipped prefix, the features'
-    plans and values; about 60 output tokens per feature."""
-    n_features = min(n_features, AUDIT_MAX_COLUMNS)
-    template = len(prompts.text("output_auditor"))
-    chars = sum(
-        template + len(_dump(clip_for_prompt(p, AUDIT_MAX_CHARS))) + n_features * 450 for p in prefixes
-    )
-    return chars // 4, len(prefixes) * n_features * 60

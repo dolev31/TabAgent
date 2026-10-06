@@ -27,22 +27,35 @@ function of one trajectory prefix, so applying it to held-out decisions leaks no
 statistic is fitted by the card inside ``cross_validate``'s training folds. Running discovery itself inside
 each fold means calling ``discover`` on that fold's trajectories.
 
-A decision point whose analysis fails (an unusable answer, a provider error, code that never runs) is
-skipped and recorded in ``analysis.json``; the run goes on with the others. A run that stops (a spent budget,
-no feature accepted, an extractor that cannot be compiled) leaves a partial ``report.md`` and every paid
-answer in its run directory: rerunning with that directory resumes, and cached answers cost nothing.
+A decision point whose analysis fails (an unusable answer, a content filter, code that never runs) is skipped
+and recorded in ``analysis.json``; the run goes on with the others. A batch of a whole-run stage whose answer
+is unusable is asked again in halves (``agents.in_halves``). A provider error that is transient is retried
+with backoff by the stage (``llm.RetryPolicy``); one that persists stops the run (``LLMUnavailable``).
+
+``run.json`` in the run directory follows the run as it progresses: each stage's status, timing, progress,
+output, drops, failures and LLM cost (``tabagent.tabschema.runlog``; ``tabagent runs show``). A run that stops
+(a spent budget, a provider that stays down, an interruption) or fails (no feature accepted, an extractor that
+cannot be compiled) leaves a partial ``report.md``, ``run.json`` and every paid answer in its run directory:
+rerunning with that directory resumes, every answer it holds costs nothing, and the resumed run produces the
+card an uninterrupted run would have.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import difflib
 import json
 import logging
-from concurrent.futures import ThreadPoolExecutor
+import math
+import numbers
+import time
+from collections import Counter
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pandas as pd
 
 from tabagent.defaults import DEFAULT_SEED
@@ -50,6 +63,10 @@ from tabagent.table import DecisionSpec, DecisionTable
 from tabagent.tabschema import prompts
 from tabagent.tabschema import verify as V
 from tabagent.tabschema.agents import (
+    REJECTING,
+    STOP,
+    VALID,
+    VERDICTS,
     CodeExecutor,
     CodeExtractor,
     CodeValidator,
@@ -58,8 +75,10 @@ from tabagent.tabschema.agents import (
     FeatureSpec,
     LLMFormatError,
     extract_with_retries,
+    forget_cause,
     normalize_name,
     premerge,
+    shutdown_interrupted,
 )
 from tabagent.tabschema.audit import OutputAuditor, run_audit
 from tabagent.tabschema.card import Feature, FeatureCard
@@ -71,8 +90,9 @@ from tabagent.tabschema.compile import (
     context_texts,
 )
 from tabagent.tabschema.judges import DECISIONS, Judge, MetaJudge, judge_table, run_judges
-from tabagent.tabschema.llm import LLM, BudgetExceeded, CostMeter, auto_llm
-from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.llm import LLM, BudgetExceeded, CostMeter, LLMUnavailable, auto_llm, status_code
+from tabagent.tabschema.runlog import RunLog, drop_reason, stopped_status
+from tabagent.tabschema.runstore import RunStore, atomic_write
 from tabagent.tabschema.sampling import STRATEGIES, coverage, sample_decision_points
 from tabagent.tabschema.sandbox import SubprocessSandbox
 from tabagent.tabschema.trajectory import (
@@ -134,9 +154,18 @@ class TabSchemaConfig:
     max_columns_per_feature, max_extractor_columns: caps on the columns one planned feature expands into
         (code that returns a dict per row, such as word counts, gets one column per key) and on the
         extractor's columns in all; past them the columns that vary most across decision points are kept.
+        On many decision points memory caps the columns other than presence flags further, to
+        ``max(64, 20,000,000 / decision points)`` (512 at 39,000 points, 200 at 100,000); presence flags are
+        decided from statistics over every point and only ever capped by these two; a compile note says when
+        the memory cap binds.
     compile_repair: when the CodeValidator flags accepted features in the compiled code, ask the CodeExtractor
         once more with its objections (the paper's retry prompt), and keep the new code only if it runs and
         fewer features are flagged.
+    drop_redundant_text: drop a compiled text column that duplicates another kept text column (the appended
+        context text included) word for word on every onboarding decision point: the same lowercased tokens,
+        numbers and order, so a text and the list of its tokens collapse into one. Overlap, containment or
+        the same words in another order never drop a column. Of duplicates a categorical form is kept over a
+        text one.
     dependency_features: dependency statistics added to the card. ``co_usage`` is added when an extractor
         column lists earlier candidates (``co_usage_context``).
     pair_embeddings: add the e5 context-candidate similarity; None adds it when the embed extra is installed.
@@ -173,6 +202,20 @@ class TabSchemaConfig:
     usefulness: estimate each feature's contribution by drop-column grouped cross-validation on the onboarding
         rows, on at most ``usefulness_max_decisions`` decision points (``tabagent.tabschema.usefulness``); a
         report only, unless ``prune_harmful`` also drops the features whose removal clearly helps.
+
+    Operations:
+
+    llm_retries: retries of an LLM call that fails transiently (a rate limit, a dropped connection, a server
+        error, an empty answer), with exponential backoff that honors the provider's ``Retry-After``; past
+        them the run stops with ``LLMUnavailable``, resumable from its run directory. A call that times out
+        is retried once, then handled like an answer cut at the output limit.
+    request_timeout_s: seconds one LLM request may take, for the backends ``auto_llm`` builds; None scales it
+        with the stage's output limit: ``max(300, 120 + max_tokens / 40)``, room for the longest answer at 40
+        tokens per second (520 s for the per-decision-point stages' 16,000 tokens, 920 s for the whole-run
+        stages' 32,000).
+
+    Every field is checked when the config is made (types and ranges), with a message naming the field;
+    :meth:`from_dict` builds one from a mapping (a JSON or YAML file) and names unknown keys.
     """
 
     model: str | None = None
@@ -187,6 +230,7 @@ class TabSchemaConfig:
     max_columns_per_feature: int = 64
     max_extractor_columns: int = 512
     compile_repair: bool = True
+    drop_redundant_text: bool = True
     dependency_features: tuple[str, ...] = (
         "candidate_prior",
         "context_candidate_lex",
@@ -213,26 +257,33 @@ class TabSchemaConfig:
     prune_harmful: bool = False
     usefulness_max_decisions: int = DEFAULT_MAX_DECISIONS
     usefulness_max_rows: int = DEFAULT_MAX_ROWS
+    llm_retries: int = 5
+    request_timeout_s: float | None = None
 
     def __post_init__(self) -> None:
-        limits = {
-            "verify_samples": (self.verify_samples, 1),
-            "goldens": (self.goldens, 0),
-            "audit_samples": (self.audit_samples, 1),
-            "usefulness_max_decisions": (self.usefulness_max_decisions, 2),
-            "usefulness_max_rows": (self.usefulness_max_rows, 1),
-            "max_columns_per_feature": (self.max_columns_per_feature, 1),
-            "max_extractor_columns": (self.max_extractor_columns, 1),
-        }
-        for name, (value, low) in limits.items():
-            if not isinstance(value, int) or isinstance(value, bool) or value < low:
-                raise ValueError(
-                    f"TabSchemaConfig.{name} must be an integer of at least {low}, not {value!r}"
-                )
-        if not 0 <= self.audit_max_incorrect < 1:
+        _validate(self)
+
+    @classmethod
+    def from_dict(cls, d: dict[str, Any]) -> TabSchemaConfig:
+        """A config from a mapping (a JSON or YAML file's content), checked like any config; an unknown key is
+        an error that suggests the closest field name."""
+        if not isinstance(d, dict):
             raise ValueError(
-                f"TabSchemaConfig.audit_max_incorrect must be in [0, 1), not {self.audit_max_incorrect!r}"
+                f"a TabSchemaConfig is a mapping of field names to values, not {type(d).__name__}"
             )
+        fields = {f.name for f in dataclasses.fields(cls)}
+        unknown = sorted(set(d) - fields)
+        if unknown:
+            hints = []
+            for k in unknown:
+                close = difflib.get_close_matches(str(k), sorted(fields), n=1)
+                hints.append(f"{k!r}" + (f" (did you mean {close[0]!r}?)" if close else ""))
+            raise ValueError(f"unknown TabSchemaConfig field(s): {', '.join(hints)}")
+        return cls(**d)
+
+    def to_dict(self) -> dict[str, Any]:
+        """The config as JSON-able values (``from_dict`` reads it back)."""
+        return {k: list(v) if isinstance(v, tuple) else v for k, v in dataclasses.asdict(self).items()}
 
 
 STAGE_ROLES = (
@@ -246,6 +297,133 @@ STAGE_ROLES = (
     "meta_judge",
     "auditor",
 )
+DEPENDENCY_FEATURES = ("candidate_prior", "context_candidate_lex", "context_candidate_sim", "co_usage")
+
+
+def _timeout(cfg: TabSchemaConfig) -> dict[str, float]:
+    """``auto_llm``'s timeout argument for ``cfg`` (none when the request timeout is left to the backend)."""
+    return {} if cfg.request_timeout_s is None else {"timeout": cfg.request_timeout_s}
+
+
+def _is_bool(v: Any) -> bool:
+    return isinstance(v, (bool, np.bool_))
+
+
+def _is_int(v: Any) -> bool:
+    return isinstance(v, numbers.Integral) and not _is_bool(v)
+
+
+def _is_number(v: Any) -> bool:
+    return isinstance(v, numbers.Real) and not _is_bool(v) and math.isfinite(float(v))
+
+
+def _validate(cfg: TabSchemaConfig) -> None:
+    """Check every field of ``cfg`` (types and ranges), normalizing lists to tuples; ``ValueError`` names the
+    field, the expected value and the one given."""
+
+    def bad(name: str, expected: str) -> ValueError:
+        return ValueError(f"TabSchemaConfig.{name} must be {expected}, not {getattr(cfg, name)!r}")
+
+    ints = {
+        "n_analyze": 1,
+        "max_code_retries": 0,
+        "json_retries": 0,
+        "max_columns_per_feature": 1,
+        "max_extractor_columns": 1,
+        "workers": 1,
+        "max_prompt_chars": 1_000,
+        "verify_samples": 1,
+        "goldens": 0,
+        "audit_samples": 1,
+        "usefulness_max_decisions": 2,
+        "usefulness_max_rows": 1,
+        "llm_retries": 0,
+    }
+    for name, low in ints.items():
+        v = getattr(cfg, name)
+        if not _is_int(v) or v < low:
+            raise bad(name, f"an integer of at least {low}")
+        setattr(cfg, name, int(v))  # numpy integers become Python ones
+    if not _is_int(cfg.sample_seed):
+        raise bad("sample_seed", "an integer")
+    cfg.sample_seed = int(cfg.sample_seed)
+    for name in (
+        "compile_repair",
+        "drop_redundant_text",
+        "context_text",
+        "verify",
+        "verify_adapter",
+        "audit",
+        "usefulness",
+        "prune_harmful",
+    ):
+        if not _is_bool(getattr(cfg, name)):
+            raise bad(name, "True or False")
+        setattr(cfg, name, bool(getattr(cfg, name)))
+    if cfg.pair_embeddings is not None:
+        if not _is_bool(cfg.pair_embeddings):
+            raise bad("pair_embeddings", "True, False or None")
+        cfg.pair_embeddings = bool(cfg.pair_embeddings)
+    for name in ("model", "fallback_model"):
+        v = getattr(cfg, name)
+        if v is not None and (not isinstance(v, str) or not v.strip()):
+            raise bad(name, "a model name or None")
+    if cfg.sample_strategy not in STRATEGIES:
+        raise bad("sample_strategy", f"one of {STRATEGIES}")
+    for name, allowed in (("accept", DECISIONS), ("dependency_features", DEPENDENCY_FEATURES)):
+        v = getattr(cfg, name)
+        if isinstance(v, str) or not isinstance(v, (tuple, list, set, frozenset)):
+            raise bad(name, f"a tuple of {allowed}, such as {allowed[:2]}")
+        unknown = [x for x in v if x not in allowed]
+        if unknown:
+            raise ValueError(f"TabSchemaConfig.{name}: unknown value(s) {unknown}; use some of {allowed}")
+        setattr(cfg, name, tuple(dict.fromkeys(v)))
+    if not cfg.accept:
+        raise bad("accept", f"a non-empty tuple of {DECISIONS}")
+    if not _is_number(cfg.compile_min_success) or not 0 < cfg.compile_min_success <= 1:
+        raise bad("compile_min_success", "a number in (0, 1]")
+    if not _is_number(cfg.max_null_rate) or not 0 <= cfg.max_null_rate <= 1:
+        raise bad("max_null_rate", "a number in [0, 1]")
+    if not _is_number(cfg.audit_max_incorrect) or not 0 <= cfg.audit_max_incorrect < 1:
+        raise bad("audit_max_incorrect", "a number in [0, 1)")
+    if not _is_number(cfg.timeout_s) or cfg.timeout_s <= 0:
+        raise bad("timeout_s", "a positive number of seconds")
+    if cfg.max_cost_usd is not None and (not _is_number(cfg.max_cost_usd) or cfg.max_cost_usd < 0):
+        raise bad("max_cost_usd", "a non-negative number of USD or None")
+    if cfg.request_timeout_s is not None and (
+        not _is_number(cfg.request_timeout_s) or cfg.request_timeout_s <= 0
+    ):
+        raise bad("request_timeout_s", "a positive number of seconds or None")
+    for name in ("compile_min_success", "max_null_rate", "audit_max_incorrect", "timeout_s"):
+        setattr(cfg, name, float(getattr(cfg, name)))
+    for name in ("max_cost_usd", "request_timeout_s"):
+        if getattr(cfg, name) is not None:
+            setattr(cfg, name, float(getattr(cfg, name)))
+    if not isinstance(cfg.prices, dict):
+        raise bad("prices", "a mapping {model: (USD per 1M input tokens, USD per 1M output tokens)}")
+    prices = {}
+    for model, price in cfg.prices.items():
+        ok = (
+            isinstance(price, (tuple, list))
+            and len(price) == 2
+            and all(_is_number(x) and x >= 0 for x in price)
+        )
+        if not isinstance(model, str) or not ok:
+            raise ValueError(
+                f"TabSchemaConfig.prices[{model!r}] must be (USD per 1M input tokens, USD per 1M output "
+                f"tokens), two non-negative numbers, not {price!r}"
+            )
+        prices[model] = (float(price[0]), float(price[1]))
+    cfg.prices = prices
+    if not isinstance(cfg.stage_models, dict):
+        raise bad("stage_models", "a mapping {stage: model}")
+    roles = (*STAGE_ROLES, "judges")
+    unknown = sorted(set(cfg.stage_models) - set(roles))
+    if unknown:
+        raise ValueError(f"stage_models: unknown stages {unknown}; use {list(roles)}")
+    for role, model in cfg.stage_models.items():
+        if not isinstance(model, str) or not model.strip():
+            raise ValueError(f"TabSchemaConfig.stage_models[{role!r}] must be a model name, not {model!r}")
 
 
 @dataclass
@@ -468,13 +646,13 @@ class DiscoveryResult:
         and ``discovery.json`` to ``path``."""
         out = Path(path)
         out.mkdir(parents=True, exist_ok=True)
-        (out / "extract.py").write_text(self.extractor.code)
+        atomic_write(out / "extract.py", self.extractor.code)
         if self.extractor.tests:
-            (out / V.TESTS_FILE).write_text(json.dumps(self.extractor.tests, indent=1, ensure_ascii=False))
+            atomic_write(out / V.TESTS_FILE, json.dumps(self.extractor.tests, indent=1, ensure_ascii=False))
         self.card.save(out / "card.yaml")
-        (out / "discovery.md").write_text(self.report.to_markdown())
+        atomic_write(out / "discovery.md", self.report.to_markdown())
         report = dataclasses.asdict(self.report)
-        (out / "discovery.json").write_text(json.dumps(report, indent=1, default=str))
+        atomic_write(out / "discovery.json", json.dumps(report, indent=1, default=str))
         return out
 
 
@@ -505,7 +683,7 @@ class TabSchema:
         stage_llms: dict[str, LLM] | None = None,
     ):
         self.config = config or TabSchemaConfig()
-        self.llm = llm or auto_llm(self.config.model)
+        self.llm = llm or auto_llm(self.config.model, **_timeout(self.config))
         self.adapter = adapter or GenericJsonAdapter()
         self.store = store
         self.sandbox = sandbox or SubprocessSandbox(timeout_s=self.config.timeout_s)
@@ -519,7 +697,7 @@ class TabSchema:
         self.llms = {self.llm.model: self.llm, **(stage_llms or {})}
         for name in {*self.config.stage_models.values(), self.config.fallback_model} - {None}:
             if name not in self.llms:
-                self.llms[name] = auto_llm(name)
+                self.llms[name] = auto_llm(name, **_timeout(self.config))
         for name in self.llms:
             self.meter.require_price(name)
 
@@ -540,9 +718,25 @@ class TabSchema:
         st = cls(*args, self.llm, self.meter, self.store, self.config.json_retries)
         st.llm = self.llm_for(st.role)
         st.workers = self.config.workers
+        st.retry = dataclasses.replace(st.retry, attempts=self.config.llm_retries + 1)
         fb = self.config.fallback_model
         st.fallback = self.llms[fb] if fb else None
+        self._stages.append(st)
         return st
+
+    def _progress(self, stage: str, what: str):
+        """A callback ``(done, total, failed)`` that records a stage's progress and logs it."""
+        log = getattr(self, "log", None)
+
+        def report(done: int, total: int, failed: int) -> None:
+            if log is not None:
+                logger.info("TabSchema: %s: %s", what, log.progress(stage, done, total, failed))
+
+        return report
+
+    def _events(self, since: int = 0) -> list[dict[str, Any]]:
+        """The events of the stages made since the ``since``-th one (unusable answers, split batches, ...)."""
+        return [e for st in self._stages[since:] for e in st.events]
 
     # ------------------------------------------------------------------ discovery
     def discover(
@@ -556,8 +750,9 @@ class TabSchema:
 
         ``trajectories`` are ``Trajectory`` objects or a path the adapter reads; only successful ones are
         used. ``kind`` is the decision pattern and ``name`` the card name. Every intermediate artifact is
-        written to the run directory; a run that stops leaves a partial ``report.md`` there, and rerunning
-        with the same directory resumes it.
+        written to the run directory, with ``run.json`` (the run's progress and anatomy,
+        ``tabagent runs show``); a run that stops leaves a partial ``report.md`` there, and rerunning with the
+        same directory resumes it.
         """
         cfg = self.config
         trajs = (
@@ -579,11 +774,24 @@ class TabSchema:
             )
         store = self.store or RunStore()
         self.store = store
+        self._stages = []
+        STOP.clear()  # a backoff wait ends early only on an interruption of this run
         report = DiscoveryReport(target, len(trajs), len(good), len(dps), run_dir=str(store.dir))
+        log = RunLog(store, self.meter, target)
+        self.log = log
+        log.set(
+            "data",
+            {
+                "trajectories": len(trajs),
+                "successful": len(good),
+                "decision_points": len(dps),
+                "tasks": len({str(dp.group or dp.trajectory_id) for dp in dps}),
+            },
+        )
         store.write_json(
             "config.json",
             {
-                **cfg.__dict__,
+                **cfg.to_dict(),
                 "target": target,
                 "kind": kind,
                 "model": self.llm.model,
@@ -591,36 +799,122 @@ class TabSchema:
                 "prompts_sha256": {p: prompts.sha256(p) for p in prompts.PROMPTS},
             },
         )
+        t0 = time.monotonic()
         try:
-            future = self.check_adapter(good, target, dps)  # before any LLM call: a leak costs nothing
+            with log.stage("adapter_check") as rec:
+                future = self.check_adapter(good, target, dps)  # before any LLM call: a leak costs nothing
+                rec["produced"] = {
+                    "checked": future.get("checked", 0),
+                    "leaks": len(future.get("leaks") or []),
+                }
             if future["notes"]:
                 report.notes += future["notes"]
             compiled, decisions = self._run(
                 dps, target, store, report, candidate_ids(self.adapter, dps), good, kind, future
             )
-        except Exception as e:  # leave a partial report next to the paid answers, then fail
+            report.cost = self.meter.summary()
+            with log.stage("card") as rec:
+                card = self._card(compiled, decisions, kind, name or f"{target}_tabschema", len(dps))
+                card.save(store.path("card.yaml"))
+                rec["produced"] = {
+                    "features": len(card.features),
+                    "extractor columns": len(compiled.features),
+                }
+        except BaseException as e:  # leave a partial report and run.json next to the paid answers, then fail
             if isinstance(e, V.PrefixLeakError):
                 report.verification = e.record
                 report.notes.append(f"onboarding stopped before any LLM call: {e}")
+            forgotten = forget_cause(e) if isinstance(e, Exception) else 0
             report.cost = self.meter.summary()
             store.write_text("report.md", report.to_markdown())
-            if isinstance(e, (BudgetExceeded, ExtractionError, LLMFormatError)):
+            status = stopped_status(e)
+            log.finish(status, e, {"drops_by_reason": drops_by_reason(report, cfg), "seconds": _secs(t0)})
+            if isinstance(e, (BudgetExceeded, ExtractionError, LLMFormatError, LLMUnavailable)):
+                if status == "stopped":
+                    hint = "rerun with that run directory to resume (answers it holds cost nothing)"
+                else:
+                    hint = "rerun with that run directory: the answers it holds cost nothing" + (
+                        f", and the {forgotten} answer(s) that caused this failure are asked again"
+                        if forgotten
+                        else ""
+                    )
                 raise type(e)(
-                    f"{e}. The partial report and every paid answer are in {store.dir}: rerun with that run "
-                    "directory to resume (cached answers cost nothing)"
+                    f"{e}. The partial report, run.json and every paid answer are in {store.dir}: {hint}"
                 ) from e
+            if isinstance(e, Exception) and hasattr(e, "add_note"):  # a provider's own error keeps its type
+                stage = next((k for k, r in log.data["stages"].items() if r.get("status") == status), "?")
+                e.add_note(
+                    f"TabSchema stopped in stage {stage}; the partial report, run.json and every paid answer "
+                    f"are in {store.dir} (rerun with it to resume)"
+                )
             raise
-        report.cost = self.meter.summary()
         logger.info(
-            "TabSchema: compiled an extractor with %d features (%d dropped); LLM cost %s",
+            "TabSchema: compiled an extractor with %d features (%d dropped); LLM: %s",
             len(compiled.features),
             len(compiled.dropped),
             self.meter.describe(self.llm.model),
         )
-        card = self._card(compiled, decisions, kind, name or f"{target}_tabschema", len(dps))
-        card.save(store.path("card.yaml"))
         store.write_text("report.md", report.to_markdown())
+        log.finish(
+            "completed",
+            extra={
+                "drops_by_reason": drops_by_reason(report, cfg),
+                "seconds": _secs(t0),
+                "outputs": {"card": "card.yaml", "extractor": "extract.py", "report": "report.md"},
+            },
+        )
         return DiscoveryResult(card, compiled, report)
+
+    def _analyze_point(
+        self,
+        dp: DecisionPoint,
+        target: str,
+        analyzer: FeatureAnalyzer,
+        extractor: CodeExtractor,
+        validator: CodeValidator,
+        known: set,
+        outcome_keys: tuple[str, ...],
+    ) -> dict[str, Any]:
+        """One decision point's analysis: proposals, feasible code, the CodeValidator's verdicts. A failure
+        that is this point's own (an unusable answer, a content filter, code that never runs) loses the point
+        and is recorded; a spent budget, a provider that stays down, a provider's error (an invalid key, a
+        model that does not exist, a bad request) or an interruption stops the run."""
+        cfg = self.config
+        rec: dict[str, Any] = {"decision_point": dp.id, "proposed": [], "kept": [], "error": ""}
+        try:
+            specs = analyzer(dp, target)
+            rec["proposed"] = [s.feature_name for s in specs]
+            executor = CodeExecutor(self.sandbox, known, outcome_keys)
+            attempt, history = extract_with_retries(
+                extractor, executor, specs, [dp.prefix], dp.prefix, target, cfg.max_code_retries
+            )
+            rec["attempts"] = len(history)
+            if not attempt.ok:
+                rec["error"] = f"infeasible after {len(history)} attempts: {attempt.error[:300]}"
+                rec["_forget"] = [(extractor, [p for h in history for p in h.prompts])]
+                return {**rec, "specs": []}
+            try:
+                verdicts = validator(specs, attempt.code, dp.prefix, [attempt.results[0].features], target)
+            except LLMFormatError as e:  # the deterministic checks passed; keep the proposals unjudged
+                verdicts, rec["validator_error"] = {}, str(e)[:300]
+            kept = [s for s in specs if verdicts.get(s.key, VALID) not in REJECTING]
+            rec["kept"] = [s.feature_name for s in kept]
+            rec["validator"] = verdicts
+            odd = sorted({v for v in verdicts.values() if v not in VERDICTS})
+            if odd:
+                rec["validator_unrecognized"] = odd[:10]
+            return {**rec, "specs": [s.to_dict() for s in kept]}
+        except (BudgetExceeded, LLMUnavailable):
+            raise
+        except Exception as e:  # one decision point's own failure (an unusable answer, a filter) is skipped
+            if (
+                status_code(e) is not None
+            ):  # a provider's error (an invalid key, a bad request): not the point's
+                raise
+            logger.warning("TabSchema: analyzing %s failed: %s: %s", dp.id, type(e).__name__, e)
+            rec["error"] = f"{type(e).__name__}: {e}"[:500]
+            rec["_forget"] = list(getattr(e, "forget", None) or [])
+            return {**rec, "specs": []}
 
     def _run(
         self,
@@ -637,13 +931,18 @@ class TabSchema:
         the release's audit and usefulness estimate. Fills ``report`` as it goes; returns the compiled
         extractor and the MetaJudge's decisions."""
         cfg = self.config
+        log = getattr(self, "log", None) or RunLog(store, self.meter, target)
+        if not hasattr(self, "_stages"):
+            self._stages = []
         known = union_paths(dp.prefix for dp in dps)
         outcome_keys = tuple(getattr(self.adapter, "outcome_keys", ()))
         labels = getattr(self.adapter, "labels", None)
-        sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
-        store.write_json("sample.json", [dp.id for dp in sample])
-        covered = coverage(dps, sample, labels)
-        store.write_json("sample_coverage.json", covered)
+        with log.stage("sample") as rec:
+            sample = sample_decision_points(dps, cfg.n_analyze, cfg.sample_seed, labels, cfg.sample_strategy)
+            store.write_json("sample.json", [dp.id for dp in sample])
+            covered = coverage(dps, sample, labels)
+            store.write_json("sample_coverage.json", covered)
+            rec["produced"] = {"points": len(sample), **{k: f"{a}/{b}" for k, (a, b) in covered.items()}}
         report.notes.append(
             f"analyzed sample ({cfg.sample_strategy}) covers "
             + ", ".join(f"{a}/{b} {kind}" for kind, (a, b) in covered.items())
@@ -655,160 +954,262 @@ class TabSchema:
             len(sample),
             store.dir,
         )
-        analyzer, extractor = self._stage(FeatureAnalyzer), self._stage(CodeExtractor)
-        analyzer.max_chars = cfg.max_prompt_chars
-        validator = self._stage(CodeValidator)
 
-        def analyze(dp: DecisionPoint) -> dict[str, Any]:
-            rec: dict[str, Any] = {"decision_point": dp.id, "proposed": [], "kept": [], "error": ""}
+        # --- analysis, one decision point per worker
+        mark = len(self._stages)
+        with log.stage("analyze") as rec:
+            analyzer, extractor = self._stage(FeatureAnalyzer), self._stage(CodeExtractor)
+            analyzer.max_chars = cfg.max_prompt_chars
+            validator = self._stage(CodeValidator)
+            pool = ThreadPoolExecutor(max_workers=cfg.workers)
             try:
-                specs = analyzer(dp, target)
-                rec["proposed"] = [s.feature_name for s in specs]
-                executor = CodeExecutor(self.sandbox, known, outcome_keys)
-                attempt, history = extract_with_retries(
-                    extractor, executor, specs, [dp.prefix], dp.prefix, target, cfg.max_code_retries
-                )
-                rec["attempts"] = len(history)
-                if not attempt.ok:
-                    rec["error"] = f"infeasible after {len(history)} attempts: {attempt.error[:300]}"
-                    return {**rec, "specs": []}
-                try:
-                    verdicts = validator(
-                        specs, attempt.code, dp.prefix, [attempt.results[0].features], target
+                futures = [
+                    pool.submit(
+                        self._analyze_point, dp, target, analyzer, extractor, validator, known, outcome_keys
                     )
-                except LLMFormatError as e:  # the deterministic checks passed; keep the proposals unjudged
-                    verdicts, rec["validator_error"] = {}, str(e)[:300]
-                kept = [s for s in specs if verdicts.get(s.key, "valid") == "valid"]
-                rec["kept"] = [s.feature_name for s in kept]
-                rec["validator"] = verdicts
-                return {**rec, "specs": [s.to_dict() for s in kept]}
-            except BudgetExceeded:
+                    for dp in sample
+                ]
+                failed = 0
+                for done, f in enumerate(as_completed(futures), 1):
+                    a = f.result()
+                    failed += bool(a["error"])
+                    logger.info(
+                        "TabSchema: analyzed decision points: %s",
+                        log.progress("analyze", done, len(sample), failed),
+                    )
+                analyses = [f.result() for f in futures]
+            except KeyboardInterrupt:  # return at once; threads waiting in a backoff are woken
+                shutdown_interrupted(pool)
                 raise
-            except Exception as e:  # one decision point's failure (a bad answer, a provider error) is skipped
-                logger.warning("TabSchema: analyzing %s failed: %s: %s", dp.id, type(e).__name__, e)
-                rec["error"] = f"{type(e).__name__}: {e}"[:500]
-                return {**rec, "specs": []}
-
-        pool = ThreadPoolExecutor(max_workers=cfg.workers)
-        try:
-            analyses = list(pool.map(analyze, sample))
-        finally:  # on an error (a spent budget, say) drop the decision points not yet started
-            pool.shutdown(wait=True, cancel_futures=True)
-        logger.info(
-            "TabSchema: analyzed %d decision points; %d feasible proposals",
-            len(analyses),
-            sum(len(a["specs"]) for a in analyses),
-        )
-        report.analyzed = [{k: v for k, v in a.items() if k != "specs"} for a in analyses]
-        store.write_json("analysis.json", analyses)
-        proposals = premerge([FeatureSpec.from_dict(s) for a in analyses for s in a["specs"]])
-        if not proposals:
-            errors = [a["error"] for a in analyses if a["error"]]
-            first = f"; first error: {errors[0]}" if errors else ""
-            raise RuntimeError(
-                f"no feasible feature proposals from the {len(analyses)} analyzed decision points{first}; "
-                f"see analysis.json in {store.dir}"
-            )
-
-        filtered, rejected = self._stage(FeatureAggregator)(proposals)
-        logger.info("TabSchema: aggregated %d proposals into %d features", len(proposals), len(filtered))
-        report.aggregated = [f.feature_name for f in filtered]
-        report.rejected_by_aggregator = [f.feature_name for f in rejected]
-        store.write_json(
-            "aggregator.json",
-            {"filtered": [f.to_dict() for f in filtered], "rejected": [f.to_dict() for f in rejected]},
-        )
-        proposed = {p.key for p in proposals}
-        renamed = [f.feature_name for f in filtered if f.key not in proposed]
-        if renamed:
-            report.notes.append(
-                "the FeatureAggregator kept features under names no analyzer proposed (judged without the "
-                f"analyzer's view): {', '.join(renamed)}"
-            )
-        if not filtered:
-            raise ExtractionError(
-                f"the FeatureAggregator kept none of the {len(proposals)} proposals; see aggregator.json"
-            )
-
-        verdicts = run_judges(filtered, lambda d: self._stage(Judge, d), workers=max(3, cfg.workers))
-        table = judge_table(verdicts, proposals)
-        decisions = self._stage(MetaJudge)(verdicts, table)
-        store.write_json("judges.json", {"verdicts": verdicts, "table": table, "meta": decisions})
-        accept = {d for d in cfg.accept if d in DECISIONS}
-        by_key = {normalize_name(d["feature_name"]): d for d in decisions}
-        accepted = [f for f in filtered if f.key in by_key and by_key[f.key]["final_decision"] in accept]
-        kept_keys = {f.key for f in filtered}
-        for key, d in by_key.items():
-            if key not in kept_keys:
-                report.dropped[str(d["feature_name"])] = (
-                    "the MetaJudge decided on a name the FeatureAggregator did not keep (renamed or invented)"
+            except BaseException:  # a spent budget, say: drop the decision points not yet started
+                pool.shutdown(wait=True, cancel_futures=True)
+                raise
+            pool.shutdown(wait=True)
+            marks = [m for a in analyses for m in a.pop("_forget", None) or [] if a["error"]]
+            unjudged = sum(bool(a.get("validator_error")) for a in analyses)
+            if unjudged:
+                report.notes.append(
+                    f"the CodeValidator's answer was unusable at {unjudged} analyzed decision point(s); "
+                    "their proposals went on unjudged by it (analysis.json)"
                 )
-        for f in filtered:
-            if f.key not in by_key:
-                report.dropped[f.feature_name] = "the MetaJudge gave no decision on it"
-        logger.info("TabSchema: judged %d features; the MetaJudge accepted %d", len(filtered), len(accepted))
-        scores = {normalize_name(row["feature_name"]): row for row in table}
-        for d in decisions:
-            row = scores.get(normalize_name(d["feature_name"]), {})
-            report.judged.append(
-                {
-                    "feature_name": d["feature_name"],
-                    "final_decision": d["final_decision"],
-                    "meta_score": d.get("meta_score"),
-                    **{k: row.get(f"judge_{k}_score") for k in ("relevance", "generality", "impact")},
-                }
+            report.analyzed = [{k: v for k, v in a.items() if k != "specs"} for a in analyses]
+            store.write_json("analysis.json", analyses)
+            proposals = premerge([FeatureSpec.from_dict(x) for a in analyses for x in a["specs"]])
+            rec["produced"] = {
+                "points": len(analyses),
+                "proposals": sum(len(a["proposed"]) for a in analyses),
+                "feasible": sum(len(a["specs"]) for a in analyses),
+                "distinct": len(proposals),
+            }
+            rec["failures"] = dict(Counter(_error_kind(a["error"]) for a in analyses if a["error"]))
+            rec["events"] = _event_counts(self._events(mark))
+            logger.info(
+                "TabSchema: analyzed %d decision points (%d failed); %d feasible proposals, %d distinct",
+                len(analyses),
+                failed,
+                sum(len(a["specs"]) for a in analyses),
+                len(proposals),
             )
-        if not accepted:
+            if not proposals:
+                errors = [a["error"] for a in analyses if a["error"]]
+                first = f"; first error: {errors[0]}" if errors else ""
+                err = RuntimeError(
+                    f"no feasible feature proposals from the {len(analyses)} analyzed decision points"
+                    f"{first}; see analysis.json in {store.dir}"
+                )
+                err.forget = marks  # type: ignore[attr-defined]
+                raise err
+
+        # --- aggregation
+        mark = len(self._stages)
+        with log.stage("aggregate") as rec:
+            aggregator = self._stage(FeatureAggregator)
+            filtered, rejected = aggregator(proposals)
+            unaggregated = list(getattr(aggregator, "unaggregated", []))
+            logger.info("TabSchema: aggregated %d proposals into %d features", len(proposals), len(filtered))
+            report.aggregated = [f.feature_name for f in filtered]
+            report.rejected_by_aggregator = [f.feature_name for f in rejected]
+            events = self._events(mark)
+            store.write_json(
+                "aggregator.json",
+                {
+                    "filtered": [f.to_dict() for f in filtered],
+                    "rejected": [f.to_dict() for f in rejected],
+                    **({"unaggregated": unaggregated} if unaggregated else {}),
+                    **({"events": events} if events else {}),
+                },
+            )
+            rec["produced"] = {
+                "proposals": len(proposals),
+                "features": len(filtered),
+                "rejected": len(rejected),
+            }
+            rec["events"] = _event_counts(events)
+            if unaggregated:
+                report.notes.append(
+                    "**the FeatureAggregator gave no usable answer for "
+                    f"{len(unaggregated)} proposal(s); they were judged as proposed, unaggregated** "
+                    "(aggregator.json)"
+                )
+            proposed = {p.key for p in proposals}
+            renamed = [f.feature_name for f in filtered if f.key not in proposed]
+            if renamed:
+                report.notes.append(
+                    "the FeatureAggregator kept features under names no analyzer proposed (judged without "
+                    f"the analyzer's view): {', '.join(renamed)}"
+                )
+            if not filtered:
+                raise ExtractionError(
+                    f"the FeatureAggregator kept none of the {len(proposals)} proposals; see aggregator.json"
+                )
+
+        # --- the three judges, then the MetaJudge
+        mark = len(self._stages)
+        with log.stage("judge") as rec:
+            verdicts = run_judges(
+                filtered,
+                lambda d: self._stage(Judge, d),
+                workers=max(3, cfg.workers),
+                stages=[],
+            )
+            table = judge_table(verdicts, proposals)
+            unscored = {d: len(filtered) - len(v) for d, v in verdicts.items() if len(v) < len(filtered)}
+            rec["produced"] = {
+                "features": len(filtered),
+                **{f"{d} scores": len(v) for d, v in verdicts.items()},
+            }
+            rec["events"] = _event_counts(self._events(mark))
+            if unscored:
+                rec["failures"] = {f"no {d} score": n for d, n in unscored.items()}
+                report.notes += [
+                    f"**the {d} judge gave no usable score for {n} of {len(filtered)} features; the "
+                    "MetaJudge decided on them without it** (judges.json)"
+                    for d, n in unscored.items()
+                ]
+        judge_events = self._events(mark)
+        mark = len(self._stages)
+        with log.stage("meta_judge") as rec:
+            decisions = self._stage(MetaJudge)(verdicts, table)
+            events = [*judge_events, *self._events(mark)]
+            store.write_json(
+                "judges.json",
+                {
+                    "verdicts": verdicts,
+                    "table": table,
+                    "meta": decisions,
+                    **({"events": events} if events else {}),
+                },
+            )
+            accept = {d for d in cfg.accept if d in DECISIONS}
+            by_key = {normalize_name(d["feature_name"]): d for d in decisions}
+            accepted = [f for f in filtered if f.key in by_key and by_key[f.key]["final_decision"] in accept]
+            for e in self._events(mark):  # decisions on names the MetaJudge was not given: ignored
+                for name in e.get("features", []) if e.get("event") == "ignored" else []:
+                    report.dropped[str(name)] = (
+                        "the MetaJudge decided on a name it was not given (renamed or invented); ignored"
+                    )
+            for f in filtered:
+                if f.key not in by_key:
+                    report.dropped[f.feature_name] = "the MetaJudge gave no decision on it"
+            logger.info(
+                "TabSchema: judged %d features; the MetaJudge accepted %d", len(filtered), len(accepted)
+            )
+            scores = {normalize_name(row["feature_name"]): row for row in table}
+            for d in decisions:
+                row = scores.get(normalize_name(d["feature_name"]), {})
+                report.judged.append(
+                    {
+                        "feature_name": d["feature_name"],
+                        "final_decision": d["final_decision"],
+                        "meta_score": d.get("meta_score"),
+                        **{k: row.get(f"judge_{k}_score") for k in ("relevance", "generality", "impact")},
+                    }
+                )
             counts = {
                 k: sum(by_key[f.key]["final_decision"] == k for f in filtered if f.key in by_key)
                 for k in DECISIONS
             }
-            raise ExtractionError(
-                f"the MetaJudge accepted none of the {len(filtered)} aggregated features ({counts}); see "
-                f"judges.json. TabSchemaConfig.accept (now {cfg.accept}) sets which of accept, conditional "
-                "and reject are compiled"
-            )
+            rec["produced"] = {**counts, "compiled": len(accepted)}
+            rec["events"] = _event_counts(self._events(mark))
+            if not accepted:
+                raise ExtractionError(
+                    f"the MetaJudge accepted none of the {len(filtered)} aggregated features ({counts}); see "
+                    f"judges.json. TabSchemaConfig.accept (now {cfg.accept}) sets which of accept, "
+                    "conditional and reject are compiled"
+                )
 
-        if future is None and trajectories:  # a caller that skipped discover's check
-            future = self.check_adapter(trajectories, target, dps)
-        try:
-            compiled = compile_extractor(
-                accepted,
-                dps,
-                extractor,
-                validator,
-                target,
-                sandbox=self.sandbox,
-                known_paths=known,
-                outcome_keys=outcome_keys,
-                max_retries=cfg.max_code_retries,
-                min_success=cfg.compile_min_success,
-                max_null_rate=cfg.max_null_rate,
-                max_columns_per_feature=cfg.max_columns_per_feature,
-                max_columns=cfg.max_extractor_columns,
-                repair=cfg.compile_repair,
-                reserved=RESERVED,
-                candidate_ids=candidates,
-                context_text=cfg.context_text,
-                verify=cfg.verify,
-                verify_samples=cfg.verify_samples,
-                future=future,
-                goldens=cfg.goldens,
-                seed=cfg.sample_seed,
-                steps_key=getattr(self.adapter, "steps_key", "steps"),
-                label_of=labels,
-                adapter_name=type(self.adapter).__name__,
+        # --- one extractor for the accepted features
+        mark = len(self._stages)
+        with log.stage("compile") as rec:
+            if future is None and trajectories:  # a caller that skipped discover's check
+                future = self.check_adapter(trajectories, target, dps)
+            extractor, validator = self._stage(CodeExtractor), self._stage(CodeValidator)
+            logger.info(
+                "TabSchema: compiling one extractor for %d features on %d decision points",
+                len(accepted),
+                len(dps),
             )
-        except V.PrefixLeakError as e:  # the report says so, next to every paid answer
-            report.verification = e.record
-            report.notes.append(f"onboarding stopped: {e}")
-            raise
-        store.write_text("extract.py", compiled.code)
-        report.verification = {k: v for k, v in compiled.verification.items() if k != "seconds"}
+            try:
+                compiled = compile_extractor(
+                    accepted,
+                    dps,
+                    extractor,
+                    validator,
+                    target,
+                    sandbox=self.sandbox,
+                    known_paths=known,
+                    outcome_keys=outcome_keys,
+                    max_retries=cfg.max_code_retries,
+                    min_success=cfg.compile_min_success,
+                    max_null_rate=cfg.max_null_rate,
+                    max_columns_per_feature=cfg.max_columns_per_feature,
+                    max_columns=cfg.max_extractor_columns,
+                    repair=cfg.compile_repair,
+                    reserved=RESERVED,
+                    candidate_ids=candidates,
+                    context_text=cfg.context_text,
+                    verify=cfg.verify,
+                    verify_samples=cfg.verify_samples,
+                    future=future,
+                    goldens=cfg.goldens,
+                    seed=cfg.sample_seed,
+                    steps_key=getattr(self.adapter, "steps_key", "steps"),
+                    label_of=labels,
+                    adapter_name=type(self.adapter).__name__,
+                    drop_redundant_text=cfg.drop_redundant_text,
+                )
+            except V.PrefixLeakError as e:  # the report says so, next to every paid answer
+                report.verification = e.record
+                report.notes.append(f"onboarding stopped: {e}")
+                raise
+            store.write_text("extract.py", compiled.code)
+            report.verification = {k: v for k, v in compiled.verification.items() if k != "seconds"}
+            rec["produced"] = {
+                "columns": len(compiled.features),
+                "code attempts": compiled.attempts,
+                "decision points without features": sum(o is None for o in compiled.outputs),
+            }
+            rec["dropped"] = dict(Counter(drop_reason(r) for r in compiled.dropped.values()))
+            rec["events"] = _event_counts(self._events(mark))
         if cfg.audit:
-            self._audit(compiled, dps, target, store, report, frozenset(dp.id for dp in sample), labels)
+            with log.stage("audit") as rec:
+                mark = len(self._stages)
+                self._audit(compiled, dps, target, store, report, frozenset(dp.id for dp in sample), labels)
+                rec["events"] = _event_counts(self._events(mark))
+                a = report.audit
+                rec["produced"] = {"points": a.get("samples", 0), "answered": a.get("answered", 0)}
+                rec["dropped"] = {"judged incorrect": len(a.get("dropped") or {})} if a.get("dropped") else {}
+                if a.get("skipped"):
+                    rec["note"] = a["skipped"]
+                if a.get("errors"):
+                    rec["failures"] = dict(Counter(_error_kind(e) for e in a["errors"]))
         if cfg.usefulness:
-            self._usefulness(compiled, dps, decisions, kind, store, report, outcome_keys)
+            with log.stage("usefulness") as rec:
+                self._usefulness(compiled, dps, decisions, kind, store, report, outcome_keys)
+                u = report.usefulness
+                rec["produced"] = dict(Counter(r.get("verdict") for r in (u.get("features") or {}).values()))
+                if u.get("skipped"):
+                    rec["note"] = u["skipped"]
         compiled.tests = V.restrict_tests(compiled.tests, compiled.features)
         if compiled.tests:
             store.write_json(V.TESTS_FILE, compiled.tests)
@@ -887,6 +1288,7 @@ class TabSchema:
             exclude=analyzed,
             workers=cfg.workers,
             label_of=labels,
+            progress=self._progress("audit", "audited decision points"),
         )
         rec["model"] = auditor.llm.model
         if rec["dropped"] and len(rec["dropped"]) >= len(compiled.llm_columns):
@@ -1154,3 +1556,39 @@ def rows_to_table(
                 }
             )
     return DecisionTable(pd.DataFrame(rows), card.spec)
+
+
+def _secs(t0: float) -> float:
+    return round(time.monotonic() - t0, 2)
+
+
+def _error_kind(error: str) -> str:
+    """The kind of a recorded error (its exception name, or what failed)."""
+    text = str(error)
+    if text.startswith("infeasible after"):
+        return "code never ran"
+    head = text.split(":", 1)[0].strip()
+    return head if head and " " not in head else text[:60]
+
+
+def _event_counts(events: list[dict[str, Any]]) -> dict[str, int]:
+    return dict(Counter(f"{e.get('stage')}: {e.get('event')}" for e in events))
+
+
+def drops_by_reason(report: DiscoveryReport, cfg: TabSchemaConfig) -> dict[str, int]:
+    """Every dropped decision point, proposal, feature and column of a run, counted by reason."""
+    out: Counter = Counter()
+    for a in report.analyzed:
+        if a.get("error"):
+            out[f"analysis: decision point failed ({_error_kind(a['error'])})"] += 1
+        else:
+            out["analysis: proposal flagged by the CodeValidator"] += len(a.get("proposed") or []) - len(
+                a.get("kept") or []
+            )
+    out["FeatureAggregator: rejected"] += len(report.rejected_by_aggregator)
+    for j in report.judged:
+        if j.get("final_decision") not in cfg.accept:
+            out[f"MetaJudge: {j.get('final_decision')}"] += 1
+    for reason in report.dropped.values():
+        out[drop_reason(reason)] += 1
+    return {k: v for k, v in out.most_common() if v}

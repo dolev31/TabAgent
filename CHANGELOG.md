@@ -4,6 +4,42 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+### TabSchema in production
+
+- **Provider errors are retried.** A rate limit (honoring `Retry-After`), a dropped connection, a server error or
+  an empty answer is retried by the stage with exponential backoff (`TabSchemaConfig.llm_retries`, 5;
+  `--llm-retries`); a provider that stays down stops the run with `LLMUnavailable`, resumable. A timeout is
+  retried once, then handled like a truncated answer; the request timeout scales with the output limit
+  (`request_timeout_s`, `--request-timeout`). Every attempt is in `llm_calls.jsonl`. A prompt the provider's
+  filter refuses goes to the fallback model like a filtered answer; a prompt too long for the model is clipped
+  harder (analysis, audit) or split (whole-run stages). Other provider errors (an invalid key, say) stop the
+  run at any stage.
+- **Unusable answers degrade instead of failing the run.** A FeatureAggregator, judge or MetaJudge batch whose
+  answer is unparseable, cut at the output limit, filtered or of the wrong shape is asked again in halves; what
+  still fails is recorded and reported. Runaway answers are bounded (60 proposals per analyzed point, 2,000
+  characters per plan field).
+- **Resume and budget stops are exact.** Truncated and filtered answers are kept in the run directory, and only
+  the answers that caused a failure are dropped from it, so a resumed run never pays twice and produces the
+  card of an uninterrupted run. The budget stops cleanly at every stage, the audit included (it used to skip the
+  audit). Cache entries are locked across processes: two runs on one directory pay once for each answer.
+- **`run.json` and `tabagent runs show RUN_DIR`**: the run's anatomy as it progresses, stage by stage (status,
+  timing, progress with time left, produced, dropped, failed, LLM calls, tokens and cost), and drops by reason;
+  `tabagent runs list`. The CLI exits with status 3 for a resumable stop.
+- **The dry-run estimate is per stage** and renders the FeatureAnalyzer prompts of the sampled points, counts
+  tokens at the model's measured characters per token (2.3 for Claude), and includes the audit and the
+  compile step's repair round (`tabagent.tabschema.estimate`); within 30% of the actual cost on the runs it was
+  calibrated on.
+- **The sandbox fails one trajectory at a time**: a trajectory that hangs in C code, blows up memory or crashes
+  its interpreter fails alone, and a fresh interpreter continues. Prints are capped, NaN and infinities become
+  missing values, and interpreters run four at a time. Compile bounds its memory on wide outputs over many
+  decision points (100,000 decision points: about 65 s).
+- **Duplicate text columns are dropped at compile**: a text column equal to another kept one (the context text
+  included) word for word, number for number and in order on every onboarding decision point, such as a text and
+  the list of its tokens (`drop_redundant_text`).
+- **Config checks.** Every `TabSchemaConfig` field is validated (a typo in `accept` used to compile nothing after
+  paying for the whole run); `TabSchemaConfig.from_dict`, `tabagent onboard --config FILE`, and flags for
+  `accept`, the sample strategy, workers, timeouts, retries, the audit sample and every check.
+
 ### Agent logs
 
 - Every adapter reads files through one reader (`tabagent.adapters.logfiles`), and reports what it skipped
