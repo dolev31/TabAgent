@@ -37,8 +37,8 @@ from pathlib import Path
 from typing import Any
 
 from tabagent.adapters.common import parse_catalog
-from tabagent.adapters.cuga import _clean
-from tabagent.tabschema.trajectory import Candidate
+from tabagent.adapters.cuga import VOLATILE_API_KEYS, _clean
+from tabagent.tabschema.trajectory import Candidate, spec_text
 
 __all__ = ["CugaAppMatcher", "CugaShortlister", "run_so_far"]
 
@@ -118,7 +118,7 @@ class CugaShortlister(_Swap):
     def candidates(apis: Any) -> list[Candidate]:
         """The APIs offered to the shortlister, read as the adapter read them in training (the ``Available
         APIs`` block of the shortlister's prompt is this mapping as JSON)."""
-        return sorted(_clean(parse_catalog(apis)).values(), key=lambda c: c.id)
+        return sorted(_clean(parse_catalog(apis, VOLATILE_API_KEYS)).values(), key=lambda c: c.id)
 
     def shortlist(self, run: dict[str, Any], apis: Any) -> list[dict[str, Any]] | None:
         """``[{"name", "relevance_score", "reasoning"}]`` for CUGA's ``ShortListerOutput.result``, best first;
@@ -167,13 +167,16 @@ class CugaAppMatcher(_Swap):
 
     @staticmethod
     def candidates(apps: list[Any]) -> list[Candidate]:
-        """The apps CUGA offers (``{"name", "description"}`` dicts, or names), as in training."""
+        """The apps CUGA offers (``{"name", "description"}`` dicts, or names), as in training: pass the dicts
+        the app analyzer's prompt lists, so each app's catalog entry (``Candidate.spec``) is the training
+        one."""
         out = {}
         for a in apps:
             name = a.get("name") if isinstance(a, dict) else str(a)
             if name:
                 desc = a.get("description", "") if isinstance(a, dict) else ""
-                out[str(name)] = Candidate(str(name), str(name), str(desc or ""))
+                entry = spec_text(a) if isinstance(a, dict) else ""
+                out[str(name)] = Candidate(str(name), str(name), str(desc or ""), spec=entry)
         return sorted(out.values(), key=lambda c: c.id)
 
     def match(self, run: dict[str, Any], apps: list[Any]) -> list[str] | None:

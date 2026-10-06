@@ -8,7 +8,11 @@ They complement the CodeValidator (an LLM judge, paper App. D.1) with rules that
   first two rules;
 * it follows the CodeExtractor contract (``dict['key']`` access, never ``.get()``; App. D.2);
 * every constant key path it reads from the trajectory exists in the union schema of the onboarding
-  prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for);
+  prefixes (a hallucinated field is the failure the paper's CodeValidator was introduced for), and the
+  per-candidate function (``extract_candidate_features(trajectory_data, candidate)``) reads only the keys a
+  candidate has (``id``, ``name``, ``description``, ``args``, and any path under ``spec``, whose shape
+  depends on the catalog). This is defense in depth: the candidate dict is built from the candidate alone
+  (``trajectory.candidate_dict``), so it holds no label to read;
 * it never reads the trajectory's top-level post-hoc outcome fields (scores, rewards, evaluator results);
 * it never reads the clock (``datetime.now()``, ``date.today()``, ``utcnow()``) or a per-process value
   (``hash()``, ``id()``): a feature must be a function of the prefix alone (the CodeExtractor prompt's
@@ -22,6 +26,8 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 from typing import Any
+
+from tabagent.tabschema.trajectory import CANDIDATE_FUNCTION, CANDIDATE_KEYS
 
 ALLOWED_IMPORTS = {
     "json",
@@ -187,6 +193,42 @@ def _is_clock(receiver: ast.AST, names: set[str]) -> bool:
     return False
 
 
+def candidate_function(tree: ast.AST) -> ast.FunctionDef | None:
+    """The top-level definition of ``extract_candidate_features`` in a parsed extractor, if any."""
+    body = tree.body if isinstance(tree, ast.Module) else []
+    return next((n for n in body if isinstance(n, ast.FunctionDef) and n.name == CANDIDATE_FUNCTION), None)
+
+
+def defines_candidate_function(code: str) -> bool:
+    """Whether extraction ``code`` defines the per-candidate function at the top level (False for code that
+    does not parse)."""
+    try:
+        return candidate_function(ast.parse(code)) is not None
+    except SyntaxError:
+        return False
+
+
+def _candidate_keys(fn: ast.FunctionDef) -> list[Issue]:
+    """Keys the per-candidate function reads from its candidate argument that a candidate does not have."""
+    args = fn.args.posonlyargs + fn.args.args
+    if len(args) < 2:
+        return []
+    name = args[1].arg
+    issues = []
+    for node in ast.walk(fn):
+        if not isinstance(node, ast.Subscript) or isinstance(getattr(node, "parent", None), ast.Subscript):
+            continue
+        root, keys = _subscript_chain(node)
+        if root == name and keys and keys[0] != "[]" and keys[0] not in CANDIDATE_KEYS:
+            issues.append(
+                Issue(
+                    "unknown_field",
+                    f"{name}[{keys[0]!r}]: a candidate has only the keys {', '.join(CANDIDATE_KEYS)}",
+                )
+            )
+    return issues
+
+
 def check_code(
     code: str, known_paths: set[tuple] | None = None, outcome_keys: tuple[str, ...] = ()
 ) -> list[Issue]:
@@ -251,6 +293,9 @@ def check_code(
             issues.append(Issue("outcome_field", ".".join(path)))
         elif known_paths is not None and not _covered(path, known_paths):
             issues.append(Issue("unknown_field", ".".join(path)))
+    fn = candidate_function(tree)
+    if fn is not None:
+        issues += _candidate_keys(fn)
     return issues
 
 

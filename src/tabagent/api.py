@@ -36,6 +36,7 @@ from tabagent.agent import TabAgent
 from tabagent.tabhead import confidence, decode
 from tabagent.table import DecisionTable
 from tabagent.tabschema.card import FeatureCard
+from tabagent.tabschema.checks import defines_candidate_function
 from tabagent.tabschema.compile import ExtractorRunner
 from tabagent.tabschema.llm import DEFAULT_MODEL, LLM, auto_llm
 from tabagent.tabschema.orchestrator import (
@@ -50,7 +51,7 @@ from tabagent.tabschema.orchestrator import (
 from tabagent.tabschema.runstore import RunStore, atomic_write
 from tabagent.tabschema.sampling import sample_decision_points
 from tabagent.tabschema.sandbox import DockerSandbox, SubprocessSandbox
-from tabagent.tabschema.trajectory import Candidate, Trajectory
+from tabagent.tabschema.trajectory import Candidate, Trajectory, candidate_dict, spec_text
 from tabagent.tabschema.warm import POSIX, RefusingSandbox, WarmSandbox, static_refusal
 
 logger = logging.getLogger(__name__)
@@ -115,8 +116,12 @@ def _as_candidates(items) -> list[Candidate]:
     """The decision's candidates as ``Candidate`` objects. A tool schema (OpenAI ``{"type": "function",
     "function": {...}}``, a bare function, the Anthropic Messages API format's ``input_schema``, MCP
     ``inputSchema``) is read as the adapters read a catalog (``parse_catalog``), so its argument hints are
-    the parameter names, as in training."""
+    the parameter names and its catalog entry the schema itself, as in training; a CUGA API entry (it has an
+    ``api_name``) loses the ``canary_string`` CUGA writes anew in every run, as the CUGA adapter drops it. A
+    record's ``spec`` (a dict, or its JSON text) is its catalog entry (``trajectory.candidate_dict`` writes
+    such records), taken as it is."""
     from tabagent.adapters.common import is_tool_schema, tool_candidate
+    from tabagent.adapters.cuga import VOLATILE_API_KEYS
 
     out = []
     for c in items:
@@ -125,7 +130,7 @@ def _as_candidates(items) -> list[Candidate]:
         elif isinstance(c, str):
             out.append(Candidate(c, c))
         elif isinstance(c, dict) and is_tool_schema(c):
-            out.append(tool_candidate(c))
+            out.append(tool_candidate(c, volatile_keys=VOLATILE_API_KEYS if "api_name" in c else ()))
         elif isinstance(c, dict) and ("id" in c or "name" in c):
             args = c.get("arg_hints", c.get("args", ""))
             out.append(
@@ -134,12 +139,13 @@ def _as_candidates(items) -> list[Candidate]:
                     str(c.get("name") or ""),
                     str(c.get("description") or ""),
                     ", ".join(map(str, args)) if isinstance(args, (list, tuple)) else str(args or ""),
+                    spec_text(c.get("spec")),
                 )
             )
         else:
             raise ValueError(
-                "a candidate is an id, a {'id' or 'name', 'description', 'args'} dict, a tool schema or a "
-                f"Candidate, not {str(c)[:120]!r}"
+                "a candidate is an id, a {'id' or 'name', 'description', 'args', 'spec'} dict, a tool schema "
+                f"or a Candidate, not {str(c)[:120]!r}"
             )
     return out
 
@@ -151,8 +157,10 @@ class TabAgentHead:
 
     ``decide(prefix, candidates)`` runs the extractor on the trajectory prefix, builds one row per candidate
     and returns the head's decision; ``decide(run=..., candidates=...)`` first builds the prefix from the live
-    run with the adapter the head was trained with (``live_prefix``). Heads come from :func:`onboard` and are
-    persisted with ``save`` and :meth:`load`.
+    run with the adapter the head was trained with (``live_prefix``). An extractor with a per-candidate
+    function (``extract_candidate_features``) runs once per decision, on the prefix and on every candidate,
+    in one sandbox call, exactly as for the training rows. Heads come from :func:`onboard` and are persisted
+    with ``save`` and :meth:`load`.
 
     Attributes
     ----------
@@ -181,6 +189,10 @@ class TabAgentHead:
     allow_unchecked_extractor: run, still in the sandbox, an extractor that fails those static checks (a
         head saved before they were re-applied at serve time, whose ``extract.py`` imports ``time``, say),
         with a warning. Review the extractor first: the sandbox is not a security boundary.
+    relative_features: whether the recipe search kept the within-decision relative features
+        (``card.with_relative``; then they are in the fitted card); None when it did not try them (a
+        single-class decision, ``TabSchemaConfig(relative_features=False)``, or a head saved before).
+        ``head.json`` records it.
     """
 
     agent: TabAgent
@@ -195,6 +207,7 @@ class TabAgentHead:
     redact: Callable[[dict], dict] | str | None = None
     extractor_tests: dict | None = None
     allow_unchecked_extractor: bool = False
+    relative_features: bool | None = None
 
     def __post_init__(self) -> None:
         if self.trust_extractor and self.sandbox not in (None, "subprocess", "warm"):
@@ -327,19 +340,32 @@ class TabAgentHead:
         no value), and the error when the extractor failed on it."""
         return self._extract_full(prefix)[:2]
 
-    def _extract_full(self, prefix: dict[str, Any]) -> tuple[dict[str, Any], str | None, str | None]:
-        """``_extract``, and the kind of the failure (``ExecResult.kind``, or ``no_extractor``)."""
+    def _extract_full(
+        self, prefix: dict[str, Any], candidates: list[Candidate] | None = None
+    ) -> tuple[dict[str, Any], str | None, str | None, list[dict[str, Any]]]:
+        """The card's extractor columns for ``prefix``, the error and the kind of the failure
+        (``ExecResult.kind``, or ``no_extractor``), and the card's per-candidate columns for each of
+        ``candidates`` (None where the extractor gave no value), from one extractor run."""
         cols = [f.name for f in self.card.features if f.source == "extractor"]
+        per_cols = [f.name for f in self.card.features if f.source == "extractor_candidate"]
+        n = len(candidates or [])
         runner = self._runner()
         if runner is None:
-            if not cols:
-                return {}, None, None
+            if not cols and not per_cols:
+                return {}, None, None, [{} for _ in range(n)]
             error = "this head has no extractor (extract.py) for its extractor features"
-            return dict.fromkeys(cols), error, "no_extractor"
+            return dict.fromkeys(cols), error, "no_extractor", [dict.fromkeys(per_cols) for _ in range(n)]
         error = kind = None
         results: list = []
+        per: list = [None] * n
         try:
-            out = runner.run([prefix], results_out=results)[0]
+            if per_cols and candidates is not None and runner.has_candidate_function:
+                outs, pers = runner.run_items(
+                    [prefix], [[candidate_dict(c) for c in candidates]], results_out=results
+                )
+                out, per = outs[0], pers[0] or per
+            else:
+                out = runner.run([prefix], results_out=results)[0]
         except Exception as e:  # a sandbox that cannot start (no Docker, say): defer, do not crash
             out, error, kind = None, f"{type(e).__name__}: {e}", "unavailable"
         if out is None:
@@ -347,12 +373,19 @@ class TabAgentHead:
             error = _explain(error or _error_line(failed.error if failed else None), prefix)
             kind = kind or (failed.kind if failed else None) or "error"
             logger.warning("TabSchema extractor failed on a live prefix; deferring the decision: %s", error)
-        return {c: (out or {}).get(c) for c in cols}, error, kind
+        per_rows = [{c: (v or {}).get(c) for c in per_cols} for v in per]
+        return {c: (out or {}).get(c) for c in cols}, error, kind, per_rows
 
     def features_for(self, prefix: dict[str, Any]) -> dict[str, Any]:
         """The extractor's features for one trajectory prefix: every extractor column of the card, None where
         the extractor gave no value or failed (as in training)."""
         return self._extract(prefix)[0]
+
+    def candidate_features_for(self, prefix: dict[str, Any], candidates) -> list[dict[str, Any]]:
+        """The per-candidate features of a decision: for each candidate (as ``decide`` takes them), every
+        per-candidate column of the card, None where the extractor gave no value or failed (as in
+        training)."""
+        return self._extract_full(prefix, _as_candidates(candidates))[3]
 
     def decide(
         self,
@@ -411,7 +444,9 @@ class TabAgentHead:
             except (ValueError, KeyError, TypeError) as e:
                 raise RequestError(str(e)) from e
         t1 = time.perf_counter()
-        feats, error, error_kind = self._extract_full(prefix if prefix is not None else {})
+        feats, error, error_kind, per = self._extract_full(
+            prefix if prefix is not None else {}, None if spec.kind == "single" else cands
+        )
         t2 = time.perf_counter()
         tau = defer_below if defer_below is not None else self.gate_threshold
 
@@ -444,8 +479,9 @@ class TabAgentHead:
                 "candidate_name": c.name or c.id,
                 "candidate_description": c.description,
                 "candidate_args": c.arg_hints,
+                **v,
             }
-            for c in cands
+            for c, v in zip(cands, per, strict=True)
         ]
         table = DecisionTable(pd.DataFrame(rows), spec, has_labels=False)
         X = self.agent.features(table)
@@ -507,6 +543,10 @@ class TabAgentHead:
             "adapter": describe_adapter(self.adapter),
             "redact": _object_path(self.redact),
         }
+        if self.extractor_code and defines_candidate_function(self.extractor_code):
+            meta["candidate_function"] = True  # extract.py defines extract_candidate_features
+        if self.relative_features is not None:  # the recipe search's choice (opt-in by validation)
+            meta["relative_features"] = bool(self.relative_features)
         atomic_write(out / "head.json", json.dumps(meta, indent=1))
         if self.report is not None:
             self.report.save(out)
@@ -587,6 +627,7 @@ class TabAgentHead:
             redact=redact,
             extractor_tests=tests,
             allow_unchecked_extractor=allow_unchecked_extractor,
+            relative_features=meta.get("relative_features"),
         )
 
 
@@ -868,7 +909,15 @@ def onboard(
             )
             if len(audit_sample) < cfg.audit_samples:
                 audit_sample += sample[: cfg.audit_samples - len(audit_sample)]
-        data = summarize(sample, dps, decision, cfg.max_prompt_chars, audit_sample)
+
+        def candidates_of(dp):
+            try:
+                return adapter.candidates(dp)
+            except NotImplementedError:  # an adapter without candidates
+                return []
+
+        cands = candidates_of if kind != "single" else None
+        data = summarize(sample, dps, decision, cfg.max_prompt_chars, audit_sample, cands)
         est = estimate(
             data,
             model=name,
@@ -909,7 +958,7 @@ def onboard(
 
     head_kw = {} if iterations is None else {"iterations": iterations}
     logger.info("selecting the training recipe (%s search, nested validation)", search)
-    recipe, _ = auto.select(table, result.card, search=search, **head_kw)
+    recipe, _ = auto.select(table, result.card, search=search, relative=cfg.relative_features, **head_kw)
     agent = auto.build_agent(result.card, recipe, **head_kw)
     from tabagent.report import evaluate
 
@@ -934,6 +983,7 @@ def onboard(
         sandbox=sandbox,
         redact=redact,  # and the redaction function's import path
         extractor_tests=result.extractor.tests,
+        relative_features=recipe.relative,
     )
     if gate_coverage is not None:
         head.calibrate_gate(rep.cv, gate_coverage)

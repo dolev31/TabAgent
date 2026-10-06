@@ -8,12 +8,13 @@ import pytest
 from tabagent import LeakageError, TabAgent, TabHead, TabSynth, cross_validate
 from tabagent.evaluation import assign_folds
 from tabagent.tabschema import Feature, FeatureCard
+from tabagent.tabschema.card import with_relative
 
 from conftest import make_card, make_table
 
 
-def agent():
-    return TabAgent(make_card(), head=TabHead("ranking", preset="paper", iterations=60))
+def agent(card=None):
+    return TabAgent(card or make_card(), head=TabHead("ranking", preset="paper", iterations=60))
 
 
 def test_scrambling_test_labels_does_not_change_test_scores():
@@ -29,10 +30,14 @@ def test_scrambling_test_labels_does_not_change_test_scores():
         assert np.array_equal(oof[test], base[test]), f"fold {f} scores depend on its own labels"
 
 
-def test_scoring_is_not_transductive():
+@pytest.mark.parametrize("relative", [False, True])
+def test_scoring_is_not_transductive(relative):
+    """A decision scores the same alone or with others, its within-decision rank and gap features included
+    (they read the decision's own rows only)."""
     table = make_table(40)
     train, test = table.subset(table.groups[:30]), table.subset(table.groups[30:])
-    fitted = agent().fit(train)
+    card = with_relative(make_card(), of=["lex", "prior", "sim"]) if relative else make_card()
+    fitted = agent(card).fit(train)
     together = fitted.score(test.drop_labels())
     one_by_one = np.concatenate([fitted.score(test.subset([g]).drop_labels()) for g in test.groups])
     assert np.allclose(together, one_by_one, atol=1e-12)

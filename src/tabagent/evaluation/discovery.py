@@ -70,6 +70,8 @@ class _FoldDiscovery:
         self.runs: dict[frozenset, tuple[Any, Any]] = {}  # training groups -> (TabSchema, DiscoveryResult)
         self.recipes: dict[frozenset, Any] = {}
         self.features: dict[tuple[frozenset, str], dict | None] = {}
+        # (training groups, decision) -> {candidate id: per-candidate features, or None}
+        self.candidate_features: dict[tuple[frozenset, str], dict[str, dict | None]] = {}
         self.spent, self.priced = 0.0, True
         self._lock = threading.Lock()
 
@@ -126,17 +128,34 @@ class _FoldDiscovery:
         """``table`` (a slice of the skeleton rows) with the fold extractor's columns, filled as
         ``rows_to_table`` fills them, under the fold card's spec."""
         from tabagent.tabschema.compile import ExtractorRunner
+        from tabagent.tabschema.orchestrator import CANDIDATE, extract_rows
 
         schema, result = self.runs[key]
         ids = list(dict.fromkeys(table.df[self.decision_col]))
         todo = [d for d in ids if (key, d) not in self.features]
         if todo:
             runner = ExtractorRunner(result.extractor.code, self.trust_extractor, schema.sandbox)
-            for d, f in zip(todo, runner.run([self.dps[d].prefix for d in todo]), strict=True):
+            points = [self.dps[d] for d in todo]
+            feats, per = extract_rows(runner, result.card, points, self.adapter)
+            for i, (d, f) in enumerate(zip(todo, feats, strict=True)):
                 self.features[(key, d)] = f
+                if per is not None:  # by candidate id, as the rows name them
+                    self.candidate_features[(key, d)] = per[i] or {}
         cols = [f.name for f in result.card.features if f.source == "extractor" and f.name not in table.df]
         feats = [self.features[(key, d)] or {} for d in table.df[self.decision_col]]
         extra = pd.DataFrame({c: [f.get(c) for f in feats] for c in cols}, index=table.df.index)
+        per_cols = [
+            f.name
+            for f in result.card.features
+            if f.source == "extractor_candidate" and f.name not in table.df
+        ]
+        if per_cols:
+            rows = [
+                self.candidate_features.get((key, d), {}).get(c) or {}
+                for d, c in zip(table.df[self.decision_col], table.df[CANDIDATE], strict=True)
+            ]
+            for c in per_cols:
+                extra[c] = [r.get(c) for r in rows]
         return DecisionTable(pd.concat([table.df, extra], axis=1), result.card.spec, table.has_labels)
 
     def agent(self, key: frozenset, train: DecisionTable, seed: int):
@@ -149,7 +168,9 @@ class _FoldDiscovery:
             head = TabHead(card.spec.kind, preset="paper", seed=seed, **self.head_kw)
             return TabAgent(card, head=head, seed=seed)
         if key not in self.recipes:  # selected once per fold, on the training rows only
-            self.recipes[key] = auto.select(train, card, search=self.search, **self.head_kw)[0]
+            self.recipes[key] = auto.select(
+                train, card, search=self.search, relative=self.config.relative_features, **self.head_kw
+            )[0]
         return auto.build_agent(card, self.recipes[key], seed=seed, **self.head_kw)
 
 

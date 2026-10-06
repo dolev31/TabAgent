@@ -12,7 +12,10 @@ The estimate follows the pipeline stage by stage and builds what it can from the
   of 40 and 25, as the run sends them;
 * the **compile** step writes one extractor against the schema merged over the onboarding decision points
   (exact) for the compiled features, and the CodeValidator reviews it with sample outputs; one **repair**
-  round is counted when the CodeValidator is likely to flag features;
+  round (one more CodeExtractor and CodeValidator call) is counted, since it is asked whenever an accepted
+  feature has no column, is flagged or indexes candidates by position, which most real runs have;
+* for a decision with candidates, the CodeExtractor and CodeValidator prompts carry the release's section on
+  the per-candidate function, with three of the decision's candidates (measured on the data);
 * the **OutputAuditor** prompts hold the audited points' prefixes, clipped as the run clips them (exact),
   and up to 48 features each.
 
@@ -37,11 +40,17 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from tabagent.tabschema import prompts
-from tabagent.tabschema.agents import MAX_PROPOSALS, _dump, analyzer_prompt, fit_for_prompt
+from tabagent.tabschema.agents import (
+    MAX_PROPOSALS,
+    _dump,
+    analyzer_prompt,
+    candidate_examples,
+    fit_for_prompt,
+)
 from tabagent.tabschema.audit import AUDIT_MAX_CHARS, AUDIT_MAX_COLUMNS
 from tabagent.tabschema.judges import BATCH as JUDGE_BATCH
 from tabagent.tabschema.llm import chars_per_token
-from tabagent.tabschema.trajectory import merge_examples, union_schema
+from tabagent.tabschema.trajectory import candidate_dict, merge_examples, union_schema
 
 AGGREGATOR_BATCH = 40
 #: Decision points the compile step's merged schema is estimated on at most (it is a union: more add little).
@@ -62,10 +71,10 @@ class Profile:
         ("reject", 0.26),
     )
     extractor_calls_per_point: float = 2.3  # code attempts per analyzed point, retries included
-    compile_extractor_calls: float = 2.0  # code attempts of the compile step, its repair round included
-    compile_validator_calls: float = (
-        1.5  # CodeValidator reviews of the compile step, its repair round included
-    )
+    compile_extractor_calls: float = 2.0  # code attempts of the compile step, its retries included
+    compile_validator_calls: float = 1.0  # CodeValidator reviews of the compile step's code
+    compile_repair_calls: float = 1.0  # the repair round: one more CodeExtractor and CodeValidator call
+    candidate_outputs_chars: int = 2_400  # the per-candidate outputs a CodeValidator prompt shows
     spec_chars: int = 650  # one feature plan as the prompts list it
     meta_row_chars: int = 2_900  # one MetaJudge table row
     code_chars: int = 10_000  # the code of one analyzed point's extractor
@@ -93,6 +102,7 @@ class DataSummary:
     merged_schema_chars: int  # the schema merged over the decision points (the compile step's)
     audit_prefix_chars: list[int] = field(default_factory=list)  # each audited point's clipped prefix
     decision_points: int = 0
+    candidate_chars: int = 0  # the decision's example candidates as the prompts show them (0: no candidates)
 
 
 @dataclass
@@ -150,12 +160,21 @@ def summarize(
     target: str,
     max_chars: int = 400_000,
     audit_sample: list | None = None,
+    candidates_of: Any = None,
 ) -> DataSummary:
     """Measure the data-dependent prompt sizes: the FeatureAnalyzer prompts of the analyzed ``sample``
     (rendered as the run renders them), each analyzed point's schema, the schema merged over (a sample of) the
-    ``decision_points``, and the clipped prefixes of the ``audit_sample``."""
+    ``decision_points``, the clipped prefixes of the ``audit_sample``, and the example candidates the
+    CodeExtractor and CodeValidator prompts show (``candidates_of``: the adapter's candidates, for a decision
+    that has them)."""
     step = max(1, len(decision_points) // SCHEMA_SAMPLE)
     merged = merge_examples([dp.prefix for dp in decision_points[::step]])
+    shown = 0
+    for dp in decision_points[:50] if candidates_of is not None else []:
+        cands = [candidate_dict(c) for c in candidates_of(dp) or ()]
+        if cands:
+            shown = len(_dump(candidate_examples(cands)))
+            break
     return DataSummary(
         analyzer_chars=[len(analyzer_prompt(dp, target, max_chars)) for dp in sample],
         schema_chars=[_schema_len(dp.prefix) for dp in sample],
@@ -164,6 +183,7 @@ def summarize(
             len(_dump(fit_for_prompt(dp.prefix, AUDIT_MAX_CHARS))) for dp in audit_sample or []
         ],
         decision_points=len(decision_points),
+        candidate_chars=shown,
     )
 
 
@@ -208,13 +228,20 @@ def estimate(
     # per analyzed point: the first attempt, then retries carrying the failed code and its error
     calls_per_point = min(pr.extractor_calls_per_point, max_code_retries + 1)
     retries = max(0.0, calls_per_point - 1)
-    ext_base = len(text("code_extractor")) + per_point_specs + pr.proposals_per_point * 60
+    extractor_prompt = len(text("code_extractor")) + len(text("tabagent_extractor"))  # and its addition
+    validator_prompt = len(text("code_validator"))
+    if data.candidate_chars:  # the sections on the per-candidate function, with the example candidates
+        extractor_prompt += len(text("tabagent_extractor_candidates")) + data.candidate_chars
+        validator_prompt += (
+            len(text("tabagent_validator_candidates")) + data.candidate_chars + pr.candidate_outputs_chars
+        )
+    ext_base = extractor_prompt + per_point_specs + pr.proposals_per_point * 60
     ext_in = sum(
         calls_per_point * (ext_base + s) + retries * (pr.code_chars + pr.error_chars)
         for s in data.schema_chars
     )
     val_in = sum(
-        len(text("code_validator"))
+        validator_prompt
         + per_point_specs
         + s
         + pr.code_chars
@@ -223,22 +250,26 @@ def estimate(
     )
     # the compile step: one extractor for the compiled features, against the merged schema
     comp_specs = compiled * pr.spec_chars
-    comp_retries = max(0.0, pr.compile_extractor_calls - 1)
-    comp_ext_in = pr.compile_extractor_calls * (
-        len(text("code_extractor")) + comp_specs + compiled * 60 + data.merged_schema_chars
+    repair_calls = pr.compile_repair_calls if compile_repair else 0.0
+    comp_ext_calls = pr.compile_extractor_calls + repair_calls
+    comp_retries = max(
+        0.0, comp_ext_calls - 1
+    )  # each later call carries the code and the error or objections
+    comp_ext_in = comp_ext_calls * (
+        extractor_prompt + comp_specs + compiled * 60 + data.merged_schema_chars
     ) + comp_retries * (pr.compiled_code_chars + pr.error_chars)
-    comp_val_calls = pr.compile_validator_calls if compile_repair else 1.0
+    comp_val_calls = pr.compile_validator_calls + repair_calls
     comp_val_in = comp_val_calls * (
-        len(text("code_validator"))
+        validator_prompt
         + comp_specs
         + data.merged_schema_chars
         + pr.compiled_code_chars
         + 3 * min(columns, 150) * pr.output_value_chars
     )
     stages["extractor"] = (
-        n * calls_per_point + pr.compile_extractor_calls,
+        n * calls_per_point + comp_ext_calls,
         ext_in + comp_ext_in,
-        (n * calls_per_point + pr.compile_extractor_calls) * pr.extractor_out,
+        (n * calls_per_point + comp_ext_calls) * pr.extractor_out,
     )
     stages["validator"] = (
         n + comp_val_calls,

@@ -53,6 +53,7 @@ card with an embedding-similarity feature also downloads the e5-small-v2 encoder
 | Fig. 3, TabSTAR | `experiments.figures.head_ablation --heads tabstar` | GPU | hours | TabSTAR weights | public |
 | Table 15 and Fig. 4 (cost formulas and the reported points) | `experiments.efficiency.cost`, `experiments.efficiency.pareto --paper` | CPU | seconds | none | public |
 | per-decision latency on public data | `experiments.efficiency.latency` | CPU | 5 min | 8.2 MB | public |
+| the release's within-decision relative features on public data ([Components](components.md)) | `experiments.relative_features` | CPU | 6 min | 604 MB + 3.5 MB (shared) | public |
 | every result on the CUGA agent's AppWorld trajectories: AppWorld tool shortlisting and application selection (Table 1, Tables 5–10, 12–14, 19; Figs. 5–7), the in-loop hot swap (Tables 3, 23), Table 16, Figs. 8a, 9–14, Tables 17, 21 and 22 (AppWorld rows), Tables 18, 24 and 25 | none | | | | not released |
 | OAK and BPO rows of Table 1 | none (the benchmarks are public; loaders are not included yet) | | | | public |
 

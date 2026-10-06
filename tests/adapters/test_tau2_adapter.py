@@ -85,6 +85,8 @@ def test_tool_defs_solo_tickets_and_policy(tmp_path):
         "tool_name": "",
     }
     assert len(adapter.candidates(dp)) == len(openai_tools())  # the file's tool_defs
+    by_name = {t["function"]["name"]: t for t in openai_tools()}
+    assert all(json.loads(c.spec) == by_name[c.id] for c in adapter.candidates(dp))  # with their entries
 
 
 def test_calls_to_tools_the_agent_lacks_are_not_candidates(tmp_path):

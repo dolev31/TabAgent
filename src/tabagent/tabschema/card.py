@@ -11,6 +11,11 @@ A card declares, for one decision:
   - ``fitted:<name>``, a dependency statistic fitted on the real training rows of a fold
     (``fitted.FITTED``), such as candidate priors and co-usage rates;
   - ``extractor``, a column produced by the TabSchema-compiled extractor (``extract.py``);
+  - ``extractor_candidate``, a column its per-candidate function (``extract_candidate_features``) produces
+    for each candidate of a decision (family ``schema``);
+  - ``relative_rank`` and ``relative_gap`` (``args: {"of": <an earlier feature>}``), the within-decision
+    position of another feature's value: its percentile rank among the decision's candidates, and its gap to
+    the decision's largest value (:func:`with_relative`);
 
 * the free-text columns TabSynth may paraphrase, and provenance (who or what authored the card).
 
@@ -36,6 +41,15 @@ from tabagent.tabschema.fitted import FITTED, FittedFeature
 Family = Literal["schema", "state", "dependency"]
 FeatureType = Literal["text", "num", "cat"]
 CARD_VERSION = 1
+#: Sources of a feature's position within its decision (``args: {"of": <an earlier feature>}``): the
+#: percentile rank of its value among the decision's candidates (``rank(pct=True, method="average")``), and
+#: the value minus the decision's largest value. A pointwise head scores each row alone; these tell it how a
+#: candidate compares with the others offered with it.
+RELATIVE_SOURCES = ("relative_rank", "relative_gap")
+#: The dependency features a TabSchema card may hold (``TabSchemaConfig.dependency_features``);
+#: ``with_relative`` adds relative features for them, besides every numeric per-candidate extractor feature.
+DEPENDENCY_FEATURES = ("candidate_prior", "context_candidate_lex", "context_candidate_sim", "co_usage")
+RELATIVE_SUFFIX = {"relative_rank": "_rank_in_decision", "relative_gap": "_gap_to_best"}
 
 
 @dataclass
@@ -48,7 +62,9 @@ class Feature:
     family: ``schema``, ``state`` or ``dependency`` (paper Fig. 1).
     type: ``text``, ``num`` or ``cat``; declared, never inferred per fold.
     source: ``column`` (the column ``name`` itself), a stateless primitive, ``python:<module>:<fn>``,
-        ``fitted:<name>`` (fitted on training rows) or ``extractor`` (produced by TabSchema's extractor).
+        ``fitted:<name>`` (fitted on training rows), ``extractor`` (produced by TabSchema's extractor),
+        ``extractor_candidate`` (produced by its per-candidate function, per candidate row), or
+        ``relative_rank`` / ``relative_gap`` (another feature's position within its decision).
     args: arguments of the source.
     description, provenance: free-form documentation.
     """
@@ -109,9 +125,16 @@ class FeatureCard:
         clash = set(names) & set(self.spec.outcome_cols)
         if clash:
             raise LeakageError(f"features cannot reuse outcome columns {sorted(clash)}")
-        for f in self.features:
+        for i, f in enumerate(self.features):
             if f.fitted and f.source[len("fitted:") :] not in FITTED:
                 raise KeyError(f"{f.name}: unknown fitted source {f.source!r}")
+            if f.source in RELATIVE_SOURCES:
+                of = (f.args or {}).get("of")
+                if of not in names[:i]:
+                    raise ValueError(
+                        f"{f.name}: a {f.source} feature reads the feature named in args['of'], which must "
+                        f"come earlier in the card; {of!r} does not"
+                    )
 
     # ------------------------------------------------------------------ properties
     @property
@@ -135,8 +158,13 @@ class FeatureCard:
 
     def candidate_text_columns(self) -> list[str]:
         """Features describing the candidate in words (text or categorical features of the ``schema`` family),
-        for example its id, name and description."""
-        return [f.name for f in self.features if f.family == "schema" and f.type in ("text", "cat")]
+        for example its id, name and description. The extractor's per-candidate features are not among them:
+        the LLM computed them, they are not the candidate's own text."""
+        return [
+            f.name
+            for f in self.features
+            if f.family == "schema" and f.type in ("text", "cat") and f.source != "extractor_candidate"
+        ]
 
     def clone(self) -> FeatureCard:
         """An unfitted deep copy."""
@@ -167,7 +195,9 @@ class FeatureCard:
         for f in self.features:
             if f.fitted:
                 col = self._fitted[f.name].transform(df, self.spec)
-            elif f.source == "extractor":
+            elif f.source in RELATIVE_SOURCES:  # from the referenced feature's values, within each decision
+                col = relative_values(out[f.args["of"]], table.decision_ids.to_numpy(), f.source)
+            elif f.source in ("extractor", "extractor_candidate"):
                 if f.name not in df.columns:
                     raise KeyError(f"{f.name}: run the card's extractor to produce this column first")
                 col = df[f.name]
@@ -262,3 +292,101 @@ class FeatureCard:
         if bundled.is_file():
             return cls.from_dict(yaml.safe_load(bundled.read_text()), trust_code)
         raise FileNotFoundError(f"no card at {path_or_name!r} and no bundled card of that name")
+
+
+# --------------------------------------------------------------------------- relative features
+def relative_values(values: Any, decision_ids: Any, source: str) -> np.ndarray:
+    """A feature's values (booleans as 0/1) relative to the others of each decision: the percentile rank
+    (``relative_rank``; ties share the average rank, a decision's only candidate gets 1.0) or the gap to the
+    decision's largest value (``relative_gap``; 0 for the largest). A missing value stays missing and is left
+    out of its decision's ranks and maximum."""
+    arr = np.asarray(values)
+    if arr.dtype.kind in "biuf":
+        s = pd.Series(arr.astype(float))
+    else:  # object values: booleans as 0/1, anything that is not a number missing
+        raw = [float(v) if isinstance(v, (bool, np.bool_)) else v for v in arr.astype(object)]
+        s = pd.to_numeric(pd.Series(raw, dtype=object), errors="coerce").astype(float)
+    groups = s.groupby(np.asarray(decision_ids), sort=False)
+    if source == "relative_rank":
+        return groups.rank(pct=True, method="average").to_numpy()
+    if source == "relative_gap":
+        return (s - groups.transform("max")).to_numpy()
+    raise ValueError(f"unknown relative source {source!r}; use one of {RELATIVE_SOURCES}")
+
+
+def relative_bases(card: FeatureCard) -> list[str]:
+    """The features of a ranking or multi-label card that :func:`with_relative` adds relative features for:
+    every numeric per-candidate extractor feature, and the context-candidate similarities, the candidate prior
+    and co-usage (``DEPENDENCY_FEATURES``) when the card has them."""
+    if card.spec.kind not in ("ranking", "multilabel"):
+        return []
+    return [
+        f.name
+        for f in card.features
+        if (f.source == "extractor_candidate" and f.type == "num") or f.name in DEPENDENCY_FEATURES
+    ]
+
+
+def has_relative(card: FeatureCard) -> bool:
+    """Whether the card has relative features (``RELATIVE_SOURCES``)."""
+    return any(f.source in RELATIVE_SOURCES for f in card.features)
+
+
+def _replace_features(card: FeatureCard, features: list[Feature]) -> FeatureCard:
+    return FeatureCard(
+        card.name,
+        card.spec,
+        features,
+        [c for c in card.synth_text if c in {f.name for f in features}],
+        card.synth_k,
+        copy.deepcopy(card.provenance),
+        extractor=copy.deepcopy(card.extractor),
+        card_version=card.card_version,
+    )
+
+
+def with_relative(card: FeatureCard, of: list[str] | tuple[str, ...] | None = None) -> FeatureCard:
+    """A copy of ``card`` with, for each feature in ``of`` (default :func:`relative_bases`), its percentile
+    rank within the decision (``<name>_rank_in_decision``) and its gap to the decision's best
+    (``<name>_gap_to_best``), appended after every other feature: family ``dependency``, type ``num``,
+    ``added_by: tabagent``. A relative feature the card already has, or whose name another feature uses, is
+    not added. An unfitted copy; the card itself is unchanged."""
+    names = {f.name for f in card.features}
+    have = {(f.source, (f.args or {}).get("of")) for f in card.features if f.source in RELATIVE_SOURCES}
+    added = []
+    for base in relative_bases(card) if of is None else of:
+        if base not in names:
+            raise KeyError(f"{base}: no such feature in card {card.name!r}")
+        for source in RELATIVE_SOURCES:
+            name = base + RELATIVE_SUFFIX[source]
+            if (source, base) in have or name in names:
+                continue
+            what = "percentile rank among" if source == "relative_rank" else "gap to the largest value of"
+            added.append(
+                Feature(
+                    name,
+                    "dependency",
+                    "num",
+                    source,
+                    {"of": base},
+                    description=f"{base}: its {what} the decision's candidates",
+                    provenance={"added_by": "tabagent"},
+                )
+            )
+            names.add(name)
+    return _replace_features(card, [*card.features, *added])
+
+
+def without_relative(card: FeatureCard) -> FeatureCard:
+    """A copy of ``card`` without its relative features (``with_relative``'s inverse)."""
+    return _replace_features(card, [f for f in card.features if f.source not in RELATIVE_SOURCES])
+
+
+def without_features(card: FeatureCard, names: set[str] | frozenset[str]) -> FeatureCard:
+    """A copy of ``card`` without the features in ``names`` and the relative features that read one of them;
+    its compiled extractor (and that code's hash) is kept."""
+    gone = set(names)
+    gone |= {
+        f.name for f in card.features if f.source in RELATIVE_SOURCES and (f.args or {}).get("of") in gone
+    }
+    return _replace_features(card, [f for f in card.features if f.name not in gone])

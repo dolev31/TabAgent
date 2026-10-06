@@ -9,7 +9,9 @@ Features use only what precedes the decision (App. D.2, FeatureAnalyzer and Code
 is enforced structurally: the ``prefix`` a decision point exposes is a copy of the trajectory truncated
 before the decision step, holding only whitelisted task fields (``task_keys``; never outcome fields such as
 scores, evaluator results or final answers). Extraction code never receives the decision step, later steps,
-or outcomes.
+or outcomes. The per-candidate function of an extractor receives the prefix and one candidate as the
+decision offers it (``candidate_dict``: id, name, description, argument hints and its catalog entry), never
+its label.
 """
 
 from __future__ import annotations
@@ -27,12 +29,60 @@ from typing import Any
 
 @dataclass(frozen=True)
 class Candidate:
-    """One legal choice at a decision: a tool, skill, API, application, model or arm."""
+    """One legal choice at a decision: a tool, skill, API, application, model or arm.
+
+    ``spec`` is the candidate's catalog entry as the decision offers it (a tool's JSON schema, a CUGA API's
+    method, path, parameters and response schemas), as JSON text (:func:`spec_text`), so a candidate stays
+    hashable; "" when the catalog has none."""
 
     id: str
     name: str = ""
     description: str = ""
     arg_hints: str = ""
+    spec: str = ""
+
+
+#: The optional second function of a compiled extractor: the features of one candidate of the decision, in
+#: the context of the prefix (``extract_candidate_features(trajectory_data, candidate)``), one row of a
+#: ranking or multi-label decision table each.
+CANDIDATE_FUNCTION = "extract_candidate_features"
+#: The keys of the candidate dict that function receives: the candidate as the decision offers it, at training
+#: and at serving alike. It never holds whether the candidate was chosen.
+CANDIDATE_KEYS = ("id", "name", "description", "args", "spec")
+
+
+def spec_text(entry: Any, volatile: Iterable[str] = ()) -> str:
+    """A catalog entry as ``Candidate.spec``: canonical JSON (sorted keys, no spaces); a string is read as
+    JSON first. ``volatile`` names top-level keys of the entry that change from run to run without changing
+    the candidate (CUGA writes a ``canary_string`` into each API entry), which are left out. "" for no entry
+    (None, "", or text that is not JSON)."""
+    if isinstance(entry, str):
+        if not entry.strip():
+            return ""
+        try:
+            entry = json.loads(entry)
+        except ValueError:
+            return ""
+    if entry is None:
+        return ""
+    drop = set(volatile)
+    if drop and isinstance(entry, dict):
+        entry = {k: v for k, v in entry.items() if k not in drop}
+    return json.dumps(entry, sort_keys=True, ensure_ascii=False, separators=(",", ":"), default=str)
+
+
+def candidate_dict(c: Candidate) -> dict[str, Any]:
+    """The candidate as ``extract_candidate_features`` receives it: its id, name (the id when it has none),
+    description and argument hints, the values of its decision-table row, and its catalog entry (``spec``,
+    a dict, or None when the catalog has none); see ``CANDIDATE_KEYS``. It is built from these fields alone,
+    so it cannot hold a label. ``decide`` and a served head read it back to the same candidate dict."""
+    return {
+        "id": c.id,
+        "name": c.name or c.id,
+        "description": c.description,
+        "args": c.arg_hints,
+        "spec": json.loads(c.spec) if c.spec else None,
+    }
 
 
 class _Lazy:

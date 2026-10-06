@@ -140,3 +140,89 @@ def test_sequences_keep_digits_and_order_and_ignore_punctuation():
     assert _sequence("a b") != _sequence("b a")
     assert _sequence('{"find": 1}') == ("find", "1")
     assert _sequence(None) == () and _sequence(float("nan")) == () and _sequence(True) == ()
+
+
+# --------------------------------------------------------------------------- one form per text feature
+def test_the_derived_forms_of_one_feature_collapse_into_its_text(tmp_path):
+    """Four forms of one text as the columns of ONE planned feature (fabricated values): the token list
+    repeats the text word for word; the bag of words restates its words in a shorter derived form. The text
+    is kept (the head represents text itself), and so are the n-grams, a longer plain text."""
+    proposals = [spec("query", "text"), spec("plan_text", "text")]
+    llm = FakeLLM(
+        analyzer=lambda p, n: json.dumps({"potential_features": proposals}),
+        extractor=lambda p, n: tagged("import json\n" + FORMS),
+        aggregator=lambda p, n: json.dumps({"filtered_features": proposals}),
+    )
+    ext = discover(tmp_path, llm).extractor
+    assert ext.dropped["query_tokens"].startswith("redundant with query_text")
+    assert (
+        ext.dropped["query_bag_of_words"] == "a derived form of query_text; the head represents text itself"
+    )
+    assert {"query_text", "query_unigrams_and_bigrams", "plan_text"} <= set(ext.features)
+    drops = json.loads((tmp_path / "runs" / "r1" / "run.json").read_text())["drops_by_reason"]
+    assert drops["derived text form (tokens, bag of words or n-grams of a kept text column)"] == 1
+
+
+def _derived_run(columns: dict[str, list], feature: dict[str, str] | None = None) -> dict[str, str]:
+    from tabagent.tabschema.compile import _drop_derived_text
+
+    c = compiled(columns)
+    for col in columns:
+        c.specs[col] = {"feature_name": (feature or {}).get(col, "query")}
+    _drop_derived_text(c)
+    return c.dropped
+
+
+def test_derived_forms_only_within_one_feature_and_only_on_every_row():
+    text = [f"Find my friends in city{i}." for i in range(50)]
+    words = [json.dumps(t.lower().strip(".").split()) for t in text]
+    bag = [json.dumps({w: 1 for w in t.lower().strip(".").split()}) for t in text]
+    grams = [
+        " ".join(
+            [*(w := t.lower().strip(".").split()), *(a + "_" + b for a, b in zip(w, w[1:], strict=False))]
+        )
+        for t in text
+    ]
+    dropped = _derived_run(
+        {"query_text": text, "query_bag": bag, "query_ngrams": grams, "query_tokens": words}
+    )
+    assert set(dropped) == {"query_bag", "query_tokens"}  # the n-grams are longer: kept
+    assert all(r.startswith("a derived form of query_text") for r in dropped.values())
+    # another feature's forms are never compared (#43 alone handles columns across features)
+    assert not _derived_run({"a_text": text, "b_bag": bag}, {"a_text": "a", "b_bag": "b"})
+    # a first sentence, a different word on one row, or new words: kept
+    first = [t.split(" in ")[0] for t in text]
+    assert not _derived_run({"query_text": text, "query_first": first})
+    odd = list(bag)
+    odd[17] = json.dumps({"elsewhere": 1})
+    assert not _derived_run({"query_text": text, "query_bag": odd})
+    assert _sequence(None) == ()
+
+
+def test_the_longer_and_the_ordered_form_are_never_dropped():
+    """Whatever the names and the lengths: the plain text over its sorted, de-duplicated words, and an ordered
+    sequence over its set."""
+    text = [f"find my friends in city{i} and my family" for i in range(50)]
+    sorted_words = [" ".join(sorted(set(t.split()))) for t in text]
+    for a, b in (("query_text", "query_bag"), ("query_bag", "query_text"), ("a_text", "z_bag")):
+        dropped = _derived_run({a: text, b: sorted_words})
+        assert set(dropped) == {b} and dropped[b].startswith(f"a derived form of {a}")
+    # the same words in another order that is not sorted: both kept
+    shuffled = [" ".join(reversed(t.split())) for t in text]
+    assert not _derived_run({"query_text": text, "query_reversed": shuffled})
+    calls = [["search", "book", f"pay{i}"] for i in range(50)]  # an order of its own, no repeats
+    seq = [json.dumps(c) for c in calls]
+    as_set = [json.dumps(sorted(set(c))) for c in calls]
+    as_dict = [json.dumps(dict.fromkeys(c, 1)) for c in calls]
+    as_text = [" ".join(sorted(set(c))) for c in calls]
+    for a, b in (("api_sequence", "api_set"), ("api_set", "api_sequence"), ("a_set", "z_sequence")):
+        sequence, other = (a, b) if "sequence" in a else (b, a)
+        for values in (as_set, as_dict):
+            dropped = _derived_run({sequence: seq, other: values})
+            assert set(dropped) == {other} and dropped[other].startswith(f"a derived form of {sequence}")
+    # an ordered sequence next to text that is only its sorted words: the sequence is kept
+    assert "api_sequence" not in _derived_run({"api_sequence": seq, "api_text": as_text})
+    # repeats are an order of their own too: kept, and the set of them dropped
+    repeats = [json.dumps(["search", "search", f"pay{i}"]) for i in range(50)]
+    unique = [json.dumps(sorted({"search", f"pay{i}"})) for i in range(50)]
+    assert set(_derived_run({"api_calls": repeats, "api_set": unique})) == {"api_set"}

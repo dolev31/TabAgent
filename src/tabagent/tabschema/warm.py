@@ -36,6 +36,10 @@ exit), and on their own within a second when the parent process dies, even mid-r
 from the parent (``multiprocessing``, a pre-forking server) drops the workers it inherited, without touching
 their locks or streams, and starts its own.
 
+A request may carry the decision's candidates: the worker then calls the code's per-candidate function on
+each, as ``SubprocessSandbox`` does (``sandbox.CANDIDATE_CALLS``), under the request's one time limit, which
+grows with the candidates (``sandbox.item_timeout``).
+
 This isolates accidents, not adversaries: see ``SECURITY.md``. A malicious extractor shares its worker with
 later requests, so it could observe later prefixes and forge their answers; review the extractor, or use
 ``SubprocessSandbox`` or ``DockerSandbox`` for code you have not reviewed.
@@ -56,13 +60,14 @@ import signal
 import subprocess
 import sys
 import tempfile
+import textwrap
 import threading
 import time
 import weakref
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
-from tabagent.tabschema.sandbox import ExecResult
+from tabagent.tabschema.sandbox import CANDIDATE_CALLS, MAX_CANDIDATE_ERRORS, ExecResult, item_timeout
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +145,7 @@ def _tabagent_worker():
         state["fired"] = True
         raise TimeoutError(f"timed out after {state['limit']:.3g}s on this trajectory")
 
+    # --- the per-candidate calls ---
     base = dict(builtins.__dict__)
     send({"ready": True, "pid": os.getpid()})
     while True:
@@ -153,20 +159,35 @@ def _tabagent_worker():
         if cpu_hard is not None:
             setlimit(resource.RLIMIT_CPU, min(int(cpu_used()) + 1 + cpu_s, cpu_hard), cpu_hard)
         ns = {"__name__": "__main__", "__builtins__": dict(base), "trajectory": req["trajectory"]}
+        candidates = req.get("candidates")
         try:
             if limit:
                 signal.signal(signal.SIGALRM, expire)  # again each time: the code may have replaced it
                 signal.setitimer(signal.ITIMER_REAL, limit)
             try:
                 exec(code, ns)
+                feats = ns.get("features")
+                if not isinstance(feats, dict):
+                    raise TypeError("the code must leave a dict named `features` in its global scope")
+                dumps(feats)
+                out = {"id": req["id"], "ok": True, "features": feats}
+                if candidates is not None:
+                    per, errors = _tabagent_candidate_calls(
+                        ns,
+                        req["trajectory"],
+                        candidates,
+                        dumps,
+                        traceback.format_exc,
+                        lambda: state["fired"],
+                        MAX_ERRORS,
+                    )
+                    if per is not None:
+                        out["candidates"] = per
+                    if errors:
+                        out["candidate_errors"] = errors
             finally:
                 if limit:
                     signal.setitimer(signal.ITIMER_REAL, 0)
-            feats = ns.get("features")
-            if not isinstance(feats, dict):
-                raise TypeError("the code must leave a dict named `features` in its global scope")
-            dumps(feats)
-            out = {"id": req["id"], "ok": True, "features": feats}
         except BaseException:
             kind = "timeout" if state["fired"] else "error"
             out = {"id": req["id"], "ok": False, "error": traceback.format_exc(limit=8), "kind": kind}
@@ -177,7 +198,9 @@ def _tabagent_worker():
 
 
 _tabagent_worker()
-"""
+""".replace("    # --- the per-candidate calls ---", textwrap.indent(CANDIDATE_CALLS, "    ")).replace(
+    "MAX_ERRORS", str(MAX_CANDIDATE_ERRORS)
+)
 
 _EOF = object()
 _TAIL = 2000  # characters of a request's stderr kept for its error message
@@ -242,10 +265,18 @@ class RefusingSandbox:
     def __init__(self, reason: str):
         self.broken = reason
 
-    def run(self, code: str, trajectory: dict[str, Any], timeout_s: float | None = None) -> ExecResult:
+    def run(
+        self,
+        code: str,
+        trajectory: dict[str, Any],
+        timeout_s: float | None = None,
+        candidates: list | None = None,
+    ) -> ExecResult:
         return ExecResult(False, error=self.broken, kind="broken")
 
-    def run_batch(self, code: str, trajectories: list[dict[str, Any]]) -> list[ExecResult]:
+    def run_batch(
+        self, code: str, trajectories: list[dict[str, Any]], candidates: list | None = None
+    ) -> list[ExecResult]:
         return [self.run(code, t) for t in trajectories]
 
     def warm(self, code: str) -> int:
@@ -434,13 +465,17 @@ class _Worker:
                 os.killpg(self.pid, signal.SIGKILL)
             return False
 
-    def call(self, trajectory_json: str, timeout: float) -> tuple[ExecResult, bool]:
-        """Run the code on one prefix (already JSON). Returns the result and whether the worker is still
-        usable (False after a timeout kill or a crash). Raises ``_NotSent`` when it died while idle."""
+    def call(
+        self, trajectory_json: str, timeout: float, candidates_json: str | None = None
+    ) -> tuple[ExecResult, bool]:
+        """Run the code on one prefix (already JSON), and its per-candidate function on the candidates (JSON)
+        when given. Returns the result and whether the worker is still usable (False after a timeout kill or a
+        crash). Raises ``_NotSent`` when it died while idle."""
         self.requests += 1
         rid = self.requests
         self._tail = bytearray()  # this request's stderr only
-        line = f'{{"id": {rid}, "timeout": {timeout!r}, "trajectory": {trajectory_json}}}\n'.encode()
+        more = "" if candidates_json is None else f', "candidates": {candidates_json}'
+        line = f'{{"id": {rid}, "timeout": {timeout!r}, "trajectory": {trajectory_json}{more}}}\n'.encode()
         rec = self._exchange(line, lambda r: r.get("id") == rid, timeout + _grace(timeout))
         if rec is None:
             self.kill()
@@ -454,7 +489,9 @@ class _Worker:
             return ExecResult(False, error=self.exit_error(), kind="crash"), False
         self.retire_requested = bool(rec.get("retire"))
         kind = None if rec["ok"] else rec.get("kind", "error")
-        return ExecResult(rec["ok"], rec.get("features"), rec.get("error"), kind), True
+        per = rec.get("candidates") if rec["ok"] else None
+        errors = list(rec.get("candidate_errors") or [])
+        return ExecResult(rec["ok"], rec.get("features"), rec.get("error"), kind, per, errors), True
 
     def exit_error(self) -> str:
         """Why the worker is gone: its exit status and the tail of its stderr for the current request."""
@@ -595,7 +632,9 @@ class WarmSandbox:
         (``static_refusal``) before any interpreter runs it.
 
     ``run(code, trajectory)`` and ``run_batch(code, trajectories)`` behave as ``SubprocessSandbox``'s and
-    return ``ExecResult``s; they never raise for the code's sake. Each worker holds one extractor: a call
+    return ``ExecResult``s; they never raise for the code's sake. With ``candidates``, the request's time
+    limit grows with them (``sandbox.item_timeout``), up to ``max_timeout_s`` when that is set (a serving
+    deadline). Each worker holds one extractor: a call
     with other code replaces idle workers with workers for that code, so one pool should serve one
     extractor. ``stats()`` reports the pool's state and counters, and ``close()`` stops it. POSIX only.
     """
@@ -623,6 +662,7 @@ class WarmSandbox:
         self.start_timeout_s = _checked_timeout(start_timeout_s, "start_timeout_s")
         self.min_ready = max(1, min(min_ready, self.size))
         self.check_code = check_code
+        self.max_timeout_s: float | None = None  # caps a request's time limit grown by its candidates
         self._pid = os.getpid()
         self._cond = threading.Condition()
         self._idle: list[_Worker] = []
@@ -646,9 +686,18 @@ class WarmSandbox:
         _POOLS.add(self)
 
     # ------------------------------------------------------------------ public API
-    def run(self, code: str, trajectory: dict[str, Any], timeout_s: float | None = None) -> ExecResult:
-        """Run ``code`` on one trajectory in a warm worker; ``timeout_s`` overrides the pool's timeout."""
+    def run(
+        self,
+        code: str,
+        trajectory: dict[str, Any],
+        timeout_s: float | None = None,
+        candidates: list | None = None,
+    ) -> ExecResult:
+        """Run ``code`` on one trajectory in a warm worker, and its per-candidate function on ``candidates``
+        (candidate dicts) when given; ``timeout_s`` overrides the pool's timeout (for the prefix alone)."""
         timeout = self.timeout_s if timeout_s is None else _checked_timeout(timeout_s)
+        if candidates is not None:
+            timeout = item_timeout(timeout, len(candidates), self.max_timeout_s)
         deadline = time.monotonic() + timeout
         self._check_fork()
         refused = self._refusal(code)
@@ -656,6 +705,7 @@ class WarmSandbox:
             return refused
         try:
             payload = json.dumps(trajectory, default=str)
+            cands = None if candidates is None else json.dumps(candidates, default=str)
         except (TypeError, ValueError) as e:  # as SubprocessSandbox: the payload cannot be sent
             return ExecResult(False, error=f"{type(e).__name__}: {e}", kind="error")
         for attempt in range(2):  # a second worker when the first one had died while idle
@@ -676,7 +726,7 @@ class WarmSandbox:
                 )
             remaining = max(0.001, deadline - time.monotonic())
             try:
-                result, healthy = worker.call(payload, remaining)
+                result, healthy = worker.call(payload, remaining, cands)
             except _NotSent:
                 self._release(worker, healthy=False, failed=True)
                 if attempt == 0:
@@ -692,13 +742,22 @@ class WarmSandbox:
             return result
         raise AssertionError("unreachable")  # pragma: no cover
 
-    def run_batch(self, code: str, trajectories: list[dict[str, Any]]) -> list[ExecResult]:
+    def run_batch(
+        self, code: str, trajectories: list[dict[str, Any]], candidates: list | None = None
+    ) -> list[ExecResult]:
         """Run ``code`` once per trajectory, spread over the pool's workers; one result per trajectory, in
-        order."""
+        order. ``candidates``, aligned with ``trajectories``, as in ``SubprocessSandbox.run_batch``."""
+        if candidates is not None and len(candidates) != len(trajectories):
+            raise ValueError("candidates must be aligned with the trajectories")
+        cands = candidates if candidates is not None else [None] * len(trajectories)
         if len(trajectories) <= 1:
-            return [self.run(code, t) for t in trajectories]
+            return [self.run(code, t, candidates=c) for t, c in zip(trajectories, cands, strict=True)]
         with ThreadPoolExecutor(min(self.size, len(trajectories))) as ex:
-            return list(ex.map(lambda t: self.run(code, t), trajectories))
+            return list(
+                ex.map(
+                    lambda tc: self.run(code, tc[0], candidates=tc[1]), zip(trajectories, cands, strict=True)
+                )
+            )
 
     def warm(self, code: str) -> int:
         """Start workers for ``code`` until the pool has ``size`` of them, and keep it that way from now on:

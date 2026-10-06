@@ -14,7 +14,16 @@ component:
    onboarding decision point;
 6. the **card**: extractor features (state), candidate name/description/argument hints (schema,
    Sec. 3.3), and dependency statistics (priors, context-candidate similarity) that the card fits on the
-   training rows of each fold (Sec. 4.3).
+   training rows of each fold (Sec. 4.3). For a ranking or multi-label decision the recipe search may add,
+   for each numeric per-candidate feature and dependency statistic, its rank and its gap to the best within
+   the decision (``card.with_relative``), which a pointwise head cannot see otherwise; the discovered card
+   never holds them.
+
+For a ranking or multi-label decision, the extractor may also define a per-candidate function,
+``extract_candidate_features(trajectory_data, candidate)``, whose features describe one candidate in the
+context of the prefix (the release's addition; ``compile``): the CodeExtractor and CodeValidator prompts get a
+TabAgent section on it, and its columns enter the card as schema features computed per (decision, candidate)
+row (``source: extractor_candidate``).
 
 The release adds three checks the paper does not have, between compiling and the card: the compile step's
 **verification** of the values (determinism, outcome and future invariance, robustness; ``verify``) with
@@ -74,6 +83,7 @@ from tabagent.tabschema.agents import (
     FeatureAnalyzer,
     FeatureSpec,
     LLMFormatError,
+    candidate_samples,
     extract_with_retries,
     forget_cause,
     normalize_name,
@@ -81,13 +91,15 @@ from tabagent.tabschema.agents import (
     shutdown_interrupted,
 )
 from tabagent.tabschema.audit import OutputAuditor, run_audit
-from tabagent.tabschema.card import Feature, FeatureCard
+from tabagent.tabschema.card import DEPENDENCY_FEATURES, Feature, FeatureCard
 from tabagent.tabschema.compile import (
+    CONTEXT_TEXT_COLUMN,
     CompiledExtractor,
     ExtractionError,
     ExtractorRunner,
+    appended_texts,
+    candidate_lists,
     compile_extractor,
-    context_texts,
 )
 from tabagent.tabschema.judges import DECISIONS, Judge, MetaJudge, judge_table, run_judges
 from tabagent.tabschema.llm import LLM, BudgetExceeded, CostMeter, LLMUnavailable, auto_llm, status_code
@@ -96,9 +108,11 @@ from tabagent.tabschema.runstore import RunStore, atomic_write
 from tabagent.tabschema.sampling import STRATEGIES, coverage, sample_decision_points
 from tabagent.tabschema.sandbox import SubprocessSandbox
 from tabagent.tabschema.trajectory import (
+    CANDIDATE_FUNCTION,
     DecisionPoint,
     GenericJsonAdapter,
     Trajectory,
+    candidate_dict,
     union_paths,
 )
 from tabagent.tabschema.usefulness import (
@@ -165,7 +179,9 @@ class TabSchemaConfig:
         context text included) word for word on every onboarding decision point: the same lowercased tokens,
         numbers and order, so a text and the list of its tokens collapse into one. Overlap, containment or
         the same words in another order never drop a column. Of duplicates a categorical form is kept over a
-        text one.
+        text one. Within the columns of one planned feature, a column that restates another in a derived form
+        on every row (its tokens, bag of words or n-grams as a JSON list or dict, or the same words in another
+        order) is dropped too: the head represents text itself.
     dependency_features: dependency statistics added to the card. ``co_usage`` is added when an extractor
         column lists earlier candidates (``co_usage_context``).
     pair_embeddings: add the e5 context-candidate similarity; None adds it when the embed extra is installed.
@@ -183,6 +199,19 @@ class TabSchemaConfig:
     context_text: append to the extractor a fixed, non-LLM function that returns the decision's context as
         text (``context_text``), so every card has a context text for the context-candidate similarity
         features, TabSynth and the BM25 baseline, even when the LLM's features are all flags and counts.
+    last_step_text: append to the extractor a fixed, non-LLM function that returns the text of the prefix's
+        last step (``last_step_text``): the step that handed control to the decision, which the context text
+        can dilute among long payloads. It is a context text too (TabSynth, the context-candidate
+        similarities).
+    positional_guard: for a decision with candidates, ask the CodeExtractor to compute in its per-candidate
+        function the features it wrote as columns that index the candidates by position
+        (``compile.positional_columns``, decided from the columns' values), and drop those columns once it
+        does.
+    relative_features: let the recipe search (``auto.select``) try, for a ranking or multi-label decision,
+        each numeric per-candidate feature's and dependency statistic's rank and gap to the best within the
+        decision (``card.with_relative``) as a challenger, kept only when it scores strictly better in the
+        inner validation. The discovered card never holds them, so the usefulness estimate and a
+        ``TabAgent`` built on the card directly do not use them; the saved head records the choice.
 
     The release's checks beyond the paper (see ``docs/onboarding.md``, "How the generated code is verified"):
 
@@ -246,6 +275,9 @@ class TabSchemaConfig:
     stage_models: dict[str, str] = field(default_factory=dict)
     fallback_model: str | None = None
     context_text: bool = True
+    last_step_text: bool = True
+    positional_guard: bool = True
+    relative_features: bool = True
     verify: bool = True
     verify_adapter: bool = True
     verify_samples: int = V.DEFAULT_SAMPLES
@@ -297,7 +329,6 @@ STAGE_ROLES = (
     "meta_judge",
     "auditor",
 )
-DEPENDENCY_FEATURES = ("candidate_prior", "context_candidate_lex", "context_candidate_sim", "co_usage")
 
 
 def _timeout(cfg: TabSchemaConfig) -> dict[str, float]:
@@ -351,6 +382,9 @@ def _validate(cfg: TabSchemaConfig) -> None:
         "compile_repair",
         "drop_redundant_text",
         "context_text",
+        "last_step_text",
+        "positional_guard",
+        "relative_features",
         "verify",
         "verify_adapter",
         "audit",
@@ -448,6 +482,8 @@ class DiscoveryReport:
     verification: dict[str, Any] = field(default_factory=dict)
     audit: dict[str, Any] = field(default_factory=dict)
     usefulness: dict[str, Any] = field(default_factory=dict)
+    per_candidate: list[str] = field(default_factory=list)
+    not_produced: dict[str, str] = field(default_factory=dict)
 
     def to_markdown(self) -> str:
         """The report as Markdown (written to ``discovery.md``)."""
@@ -478,13 +514,53 @@ class DiscoveryReport:
                 f"| {j['feature_name']} | {j.get('relevance', '')} | {j.get('generality', '')} | "
                 f"{j.get('impact', '')} | {j.get('final_decision', '')} | {j.get('meta_score', '')} |"
             )
-        lines += ["", "## Compiled extractor features", ""] + [
-            f"* `{k}` ({v})" for k, v in self.compiled.items()
-        ]
+        lines += _compiled_md(self.compiled, self.per_candidate, self.not_produced)
         lines += _verification_md(self.verification) + _audit_md(self.audit) + _usefulness_md(self.usefulness)
         if self.dropped:
             lines += ["", "## Dropped", ""] + [f"* `{k}`: {v}" for k, v in self.dropped.items()]
         return "\n".join(lines) + "\n"
+
+
+def not_produced_counts(not_produced: dict[str, str]) -> dict[str, int]:
+    """Accepted features without a column, counted by reason: merged into another feature, declined, or not
+    produced."""
+    out = Counter(
+        "merged into another feature"
+        if r.startswith("merged into")
+        else "declined"
+        if r.startswith("declined")
+        else "not produced"
+        for r in not_produced.values()
+    )
+    return dict(sorted(out.items()))
+
+
+def _compiled_md(
+    compiled: dict[str, str], per_candidate: list[str], not_produced: dict[str, str]
+) -> list[str]:
+    """The report's section on the compiled columns: per decision, per candidate, and the accepted features
+    that have none."""
+    per = set(per_candidate)
+    decision = [f"* `{k}` ({v})" for k, v in compiled.items() if k not in per]
+    candidate = [f"* `{k}` ({v})" for k, v in compiled.items() if k in per]
+    out = ["", "## Compiled extractor features", ""]
+    out += [
+        f"### Per-decision columns ({len(decision)}, `extract_features_for_classification`)",
+        "",
+        *decision,
+    ]
+    if candidate:
+        out += [
+            "",
+            f"### Per-candidate columns ({len(candidate)}, `extract_candidate_features`)",
+            "",
+            *candidate,
+        ]
+    if not_produced:
+        counts = "; ".join(f"{k}: {n}" for k, n in not_produced_counts(not_produced).items())
+        out += ["", f"### Accepted features without a column ({len(not_produced)}: {counts})", ""]
+        out += [f"* `{k}`: {v}" for k, v in not_produced.items()]
+    return out
 
 
 def _verification_md(v: dict[str, Any]) -> list[str]:
@@ -616,14 +692,27 @@ def _usefulness_md(u: dict[str, Any]) -> list[str]:
 
 
 def compile_record(compiled: CompiledExtractor) -> dict[str, Any]:
-    """The compile step as ``compile.json``: the attempts and why each failed one failed, every kept column
-    (type and the planned feature it implements), every column's quality statistics, every dropped column or
-    feature with the reason, and the notes."""
+    """The compile step as ``compile.json``: the attempts and why each failed one failed, the kept columns per
+    decision and per candidate, every kept column (type and the planned feature it implements), the accepted
+    features without a column with the reason (``not_produced``: merged into another feature, declined, not
+    produced), every column's quality statistics, every dropped column or feature with the reason, and the
+    notes."""
     return {
         "attempts": compiled.attempts,
         "attempt_errors": compiled.attempt_errors,
+        "per_decision": compiled.context_columns,
+        "per_candidate": compiled.candidate_columns,
+        "not_produced": {
+            "count": len(compiled.not_produced),
+            "by_reason": not_produced_counts(compiled.not_produced),
+            "features": dict(compiled.not_produced),
+        },
         "kept": {
-            col: {"type": t, "feature": (compiled.specs.get(col) or {}).get("feature_name")}
+            col: {
+                "type": t,
+                "feature": (compiled.specs.get(col) or {}).get("feature_name"),
+                **({"per_candidate": True} if col in compiled.per_candidate else {}),
+            }
             for col, t in compiled.features.items()
         },
         "dropped": dict(compiled.dropped),
@@ -724,6 +813,22 @@ class TabSchema:
         self._stages.append(st)
         return st
 
+    def _candidates(self, dp: DecisionPoint, kind: str) -> list:
+        """The adapter's candidates of ``dp``, [] for a single-class decision or an adapter that has none
+        (it raises ``NotImplementedError``). Any other error of the adapter is logged and raised: it must not
+        quietly turn the per-candidate features off."""
+        if kind == "single":
+            return []
+        try:
+            return list(self.adapter.candidates(dp) or ())
+        except NotImplementedError:  # an adapter without candidates
+            return []
+        except Exception as e:
+            logger.error(
+                "TabSchema: the adapter's candidates of %s failed: %s: %s", dp.id, type(e).__name__, e
+            )
+            raise
+
     def _progress(self, stage: str, what: str):
         """A callback ``(done, total, failed)`` that records a stage's progress and logs it."""
         log = getattr(self, "log", None)
@@ -810,7 +915,7 @@ class TabSchema:
             if future["notes"]:
                 report.notes += future["notes"]
             compiled, decisions = self._run(
-                dps, target, store, report, candidate_ids(self.adapter, dps), good, kind, future
+                dps, target, store, report, candidate_ids(self.adapter, dps, kind=kind), good, kind, future
             )
             report.cost = self.meter.summary()
             with log.stage("card") as rec:
@@ -874,6 +979,7 @@ class TabSchema:
         validator: CodeValidator,
         known: set,
         outcome_keys: tuple[str, ...],
+        kind: str = "ranking",
     ) -> dict[str, Any]:
         """One decision point's analysis: proposals, feasible code, the CodeValidator's verdicts. A failure
         that is this point's own (an unusable answer, a content filter, code that never runs) loses the point
@@ -885,16 +991,31 @@ class TabSchema:
             specs = analyzer(dp, target)
             rec["proposed"] = [s.feature_name for s in specs]
             executor = CodeExecutor(self.sandbox, known, outcome_keys)
+            cands = [candidate_dict(c) for c in self._candidates(dp, kind)]
             attempt, history = extract_with_retries(
-                extractor, executor, specs, [dp.prefix], dp.prefix, target, cfg.max_code_retries
+                extractor,
+                executor,
+                specs,
+                [dp.prefix],
+                dp.prefix,
+                target,
+                cfg.max_code_retries,
+                candidates=[cands] if cands else None,
             )
             rec["attempts"] = len(history)
             if not attempt.ok:
                 rec["error"] = f"infeasible after {len(history)} attempts: {attempt.error[:300]}"
                 rec["_forget"] = [(extractor, [p for h in history for p in h.prompts])]
                 return {**rec, "specs": []}
+            if attempt.candidate_error:
+                rec["candidate_error"] = attempt.candidate_error[:300]
+            more = {}
+            if cands:  # the per-candidate function's outputs, judged next to the prefix's
+                more = {"candidates": cands, "candidate_outputs": candidate_samples(attempt.results, [cands])}
             try:
-                verdicts = validator(specs, attempt.code, dp.prefix, [attempt.results[0].features], target)
+                verdicts = validator(
+                    specs, attempt.code, dp.prefix, [attempt.results[0].features], target, **more
+                )
             except LLMFormatError as e:  # the deterministic checks passed; keep the proposals unjudged
                 verdicts, rec["validator_error"] = {}, str(e)[:300]
             kept = [s for s in specs if verdicts.get(s.key, VALID) not in REJECTING]
@@ -965,7 +1086,15 @@ class TabSchema:
             try:
                 futures = [
                     pool.submit(
-                        self._analyze_point, dp, target, analyzer, extractor, validator, known, outcome_keys
+                        self._analyze_point,
+                        dp,
+                        target,
+                        analyzer,
+                        extractor,
+                        validator,
+                        known,
+                        outcome_keys,
+                        kind,
                     )
                     for dp in sample
                 ]
@@ -1177,6 +1306,9 @@ class TabSchema:
                     label_of=labels,
                     adapter_name=type(self.adapter).__name__,
                     drop_redundant_text=cfg.drop_redundant_text,
+                    candidates_of=(lambda dp: self._candidates(dp, kind)) if candidates else None,
+                    last_step_text=cfg.last_step_text,
+                    positional_guard=cfg.positional_guard,
                 )
             except V.PrefixLeakError as e:  # the report says so, next to every paid answer
                 report.verification = e.record
@@ -1194,7 +1326,8 @@ class TabSchema:
         if cfg.audit:
             with log.stage("audit") as rec:
                 mark = len(self._stages)
-                self._audit(compiled, dps, target, store, report, frozenset(dp.id for dp in sample), labels)
+                analyzed = frozenset(dp.id for dp in sample)
+                self._audit(compiled, dps, target, store, report, analyzed, labels, kind)
                 rec["events"] = _event_counts(self._events(mark))
                 a = report.audit
                 rec["produced"] = {"points": a.get("samples", 0), "answered": a.get("answered", 0)}
@@ -1215,6 +1348,8 @@ class TabSchema:
             store.write_json(V.TESTS_FILE, compiled.tests)
         store.write_json("compile.json", compile_record(compiled))
         report.compiled = dict(compiled.features)
+        report.per_candidate = compiled.candidate_columns
+        report.not_produced = dict(compiled.not_produced)
         report.dropped.update(compiled.dropped)
         report.notes += compiled.notes
         return compiled, decisions
@@ -1264,16 +1399,18 @@ class TabSchema:
         report: DiscoveryReport,
         analyzed: frozenset[str],
         labels: Any = None,
+        kind: str = "ranking",
     ) -> None:
         """Run the OutputAuditor on a sample of decision points and drop the features it judges incorrect too
         often; writes ``audit.json``. The audit only ever removes features: when it would remove them all, it
         removes none and says so."""
         cfg = self.config
         auditor = self._stage(OutputAuditor)
-        columns = {c: compiled.specs[c] for c in compiled.llm_columns}
+        columns = {c: compiled.specs[c] for c in compiled.llm_columns if c not in compiled.per_candidate}
+        per = {c: compiled.specs[c] for c in compiled.candidate_columns}
         logger.info(
             "TabSchema: auditing the values of %d features on %d decision points",
-            len(columns),
+            len(columns) + len(per),
             cfg.audit_samples,
         )
         rec = run_audit(
@@ -1289,6 +1426,15 @@ class TabSchema:
             workers=cfg.workers,
             label_of=labels,
             progress=self._progress("audit", "audited decision points"),
+            **(
+                {
+                    "candidate_columns": per,
+                    "candidate_outputs": compiled.candidate_outputs,
+                    "candidates_of": lambda dp: [candidate_dict(c) for c in self._candidates(dp, kind)],
+                }
+                if per
+                else {}
+            ),
         )
         rec["model"] = auditor.llm.model
         if rec["dropped"] and len(rec["dropped"]) >= len(compiled.llm_columns):
@@ -1333,13 +1479,23 @@ class TabSchema:
 
         def features_of(points: list[DecisionPoint]) -> list[dict]:
             feats = [dict(compiled.outputs[idx[dp.id]] or {}) for dp in points]
-            for (
-                col
-            ) in appended:  # the appended context text is library code: computed here, as in the sandbox
-                texts = context_texts([dp.prefix for dp in points], col, outcome_keys)
+            for col in appended:  # the appended texts are library code: computed here, as in the sandbox
+                which = compiled.specs[col].get("appended", CONTEXT_TEXT_COLUMN)
+                steps = getattr(self.adapter, "steps_key", "steps")
+                texts = appended_texts([dp.prefix for dp in points], col, which, outcome_keys, steps)
                 for f, text in zip(feats, texts, strict=True):
                     f[col] = text
             return feats
+
+        def candidates_of(points: list[DecisionPoint]) -> list | None:
+            if not compiled.candidate_columns:
+                return None
+            out = []
+            for dp in points:
+                values = compiled.candidate_outputs[idx[dp.id]]
+                ids = [c.id for c in self._candidates(dp, kind)]
+                out.append(None if values is None else dict(zip(ids, values, strict=True)))
+            return out
 
         def card_for(dropped: frozenset[str]) -> FeatureCard:
             return self._card(
@@ -1347,11 +1503,15 @@ class TabSchema:
             )
 
         try:
-            table = rows_to_table(card_for(frozenset()), sample, features_of(sample), self.adapter)
+            table = rows_to_table(
+                card_for(frozenset()), sample, features_of(sample), self.adapter, candidates_of(sample)
+            )
             if len(table) > cfg.usefulness_max_rows and len(sample) > MIN_DECISIONS:  # bound the runtime
                 n = max(MIN_DECISIONS, int(len(sample) * cfg.usefulness_max_rows / len(table)))
                 sample = sample_decision_points(sample, n, cfg.sample_seed, strategy="tasks")
-                table = rows_to_table(card_for(frozenset()), sample, features_of(sample), self.adapter)
+                table = rows_to_table(
+                    card_for(frozenset()), sample, features_of(sample), self.adapter, candidates_of(sample)
+                )
             logger.info(
                 "TabSchema: estimating the usefulness of %d features on %d decision points (%d rows)",
                 len(compiled.features),
@@ -1418,9 +1578,22 @@ class TabSchema:
         cfg = self.config
         meta = {normalize_name(d["feature_name"]): d for d in decisions}
         feats: list[Feature] = []
+        per_candidate: list[Feature] = []
         for col, typ in compiled.features.items():
             plan = compiled.specs.get(col, {})
             prov = {"plan": plan, "meta_judge": meta.get(normalize_name(plan.get("feature_name", "")), {})}
+            if col in compiled.per_candidate:  # computed per (decision, candidate) row: a schema feature
+                per_candidate.append(
+                    Feature(
+                        col,
+                        "schema",
+                        typ,
+                        "extractor_candidate",
+                        description=plan.get("description", ""),
+                        provenance=prov,
+                    )
+                )
+                continue
             feats.append(
                 Feature(
                     col, "state", typ, "extractor", description=plan.get("description", ""), provenance=prov
@@ -1434,6 +1607,7 @@ class TabSchema:
                 Feature("candidate_name", "schema", "cat"),
                 Feature("candidate_description", "schema", "text"),
                 Feature("candidate_args", "schema", "text"),
+                *per_candidate,
             ]
             context = [f.name for f in feats if f.source == "extractor" and f.type == "text"]
             cand_text = ["candidate_name", "candidate_description"]
@@ -1475,7 +1649,7 @@ class TabSchema:
                         {"context": compiled.co_usage_context, "key": CANDIDATE},
                     )
                 )
-        return FeatureCard(
+        card = FeatureCard(
             name,
             spec,
             feats,
@@ -1494,8 +1668,10 @@ class TabSchema:
                 "path": "extract.py",
                 "sha256": compiled.sha256,
                 "entrypoint": "extract_features_for_classification",
+                **({"candidate_entrypoint": CANDIDATE_FUNCTION} if per_candidate else {}),
             },
         )
+        return card  # the relative features are the recipe search's challenger (auto.select), never here
 
     def build_table(
         self,
@@ -1509,25 +1685,61 @@ class TabSchema:
         used; Sec. 4.1). The extractor runs in the sandbox unless ``trust_extractor``."""
         dps = [dp for t in trajectories if t.success for dp in self.adapter.decision_points(t, target)]
         runner = ExtractorRunner(result.extractor.code, trust_extractor, self.sandbox)
-        return rows_to_table(result.card, dps, runner.run([dp.prefix for dp in dps]), self.adapter)
+        feats, per = extract_rows(runner, result.card, dps, self.adapter)
+        return rows_to_table(result.card, dps, feats, self.adapter, per)
 
 
-def candidate_ids(adapter, dps: list[DecisionPoint], probe: int = 200) -> frozenset[str]:
+def candidate_ids(
+    adapter, dps: list[DecisionPoint], probe: int = 200, kind: str = "single"
+) -> frozenset[str]:
     """The candidate ids of the first ``probe`` decision points (empty when the adapter gives none), which
-    tell the compile step which extractor column lists earlier candidates (the co-usage context)."""
+    tell the compile step which extractor column lists earlier candidates (the co-usage context). For a
+    ranking or multi-label decision only an adapter without candidates (``NotImplementedError``) gives none;
+    any other error of the adapter is logged and raised, as it must not quietly turn the per-candidate
+    features off."""
     try:
         return frozenset(c.id for dp in dps[:probe] for c in adapter.candidates(dp))
-    except Exception:  # an adapter without candidates (a single-class decision, say)
+    except NotImplementedError:  # an adapter without candidates
         return frozenset()
+    except Exception as e:
+        if kind == "single":  # a single-class decision need not have candidates
+            return frozenset()
+        logger.error("TabSchema: the adapter's candidates failed: %s: %s", type(e).__name__, e)
+        raise
+
+
+def extract_rows(
+    runner: ExtractorRunner, card: FeatureCard, dps: list[DecisionPoint], adapter
+) -> tuple[list[dict | None], list[dict[str, dict | None]] | None]:
+    """The extractor's features for ``dps``, as :func:`rows_to_table` takes them: per decision point, and,
+    when the card has per-candidate features, per candidate of each, by candidate id (one sandbox call per
+    decision)."""
+    prefixes = [dp.prefix for dp in dps]
+    if not any(f.source == "extractor_candidate" for f in card.features) or not runner.has_candidate_function:
+        return runner.run(prefixes), None
+    candidates = candidate_lists([adapter.candidates(dp) for dp in dps])
+    feats, per = runner.run_items(prefixes, candidates)
+    by_id = [
+        None if values is None else {c["id"]: v for c, v in zip(cands, values, strict=True)}
+        for cands, values in zip(candidates, per, strict=True)
+    ]
+    return feats, by_id
 
 
 def rows_to_table(
-    card: FeatureCard, dps: list[DecisionPoint], feats: list[dict | None], adapter
+    card: FeatureCard,
+    dps: list[DecisionPoint],
+    feats: list[dict | None],
+    adapter,
+    candidate_feats: list[dict[str, dict | None] | None] | None = None,
 ) -> DecisionTable:
-    """Assemble the decision table from decision points, their extracted features and the adapter's labels."""
+    """Assemble the decision table from decision points, their extracted features and the adapter's labels.
+    ``candidate_feats`` holds the per-candidate features of each decision point by candidate id (None where
+    there are none); they fill the card's per-candidate columns of each candidate's row."""
     cols = [f.name for f in card.features if f.source == "extractor"]
+    per_cols = [f.name for f in card.features if f.source == "extractor_candidate"]
     rows = []
-    for dp, f in zip(dps, feats, strict=True):
+    for i, (dp, f) in enumerate(zip(dps, feats, strict=True)):
         base = {
             GROUP: str(dp.group or dp.trajectory_id),
             DECISION: dp.id,
@@ -1544,17 +1756,20 @@ def rows_to_table(
             rows.append({**base, "label": label})
             continue
         chosen = adapter.labels(dp)
-        for c in adapter.candidates(dp):
-            rows.append(
-                {
-                    **base,
-                    CANDIDATE: c.id,
-                    "candidate_name": c.name or c.id,
-                    "candidate_description": c.description,
-                    "candidate_args": c.arg_hints,
-                    LABEL: int(c.id in chosen),
-                }
-            )
+        cands = adapter.candidates(dp)
+        per = (candidate_feats[i] if candidate_feats is not None else None) or {}
+        for c in cands:
+            row = {
+                **base,
+                CANDIDATE: c.id,
+                "candidate_name": c.name or c.id,
+                "candidate_description": c.description,
+                "candidate_args": c.arg_hints,
+            }
+            if per_cols:
+                row.update({col: (per.get(c.id) or {}).get(col) for col in per_cols})
+            row[LABEL] = int(c.id in chosen)
+            rows.append(row)
     return DecisionTable(pd.DataFrame(rows), card.spec)
 
 

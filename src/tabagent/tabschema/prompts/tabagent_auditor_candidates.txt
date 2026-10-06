@@ -1,0 +1,5 @@
+# Additional rules
+
+The decision chooses among candidates. A feature named "<name> (candidate <n>)" was computed by extraction code for the trajectory and candidate n of this list, each given as the code received it:
+${candidates}
+Judge such a value against its plan for this trajectory and this candidate.

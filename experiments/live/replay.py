@@ -41,7 +41,7 @@ from tabagent.adapters import Tau2Adapter, adapter_from_description, parse_catal
 from tabagent.api import TabAgentHead
 from tabagent.integrations.openai_tools import ToolFilter
 from tabagent.tabschema.compile import ExtractorRunner
-from tabagent.tabschema.orchestrator import rows_to_table
+from tabagent.tabschema.orchestrator import extract_rows, rows_to_table
 
 from .common import load_split, scaffold_states, split_tasks
 
@@ -139,8 +139,9 @@ def replay(
         states = scaffold_states(adapter, traj, target)
         if not states:
             continue
-        train_feats = runner.run([dp.prefix for dp, _ in states])  # as build_table extracts them
-        for (dp, live), tfeat in zip(states, train_feats, strict=True):
+        # as build_table extracts them
+        train_feats, train_per = extract_rows(runner, head.card, [dp for dp, _ in states], adapter)
+        for at, ((dp, live), tfeat) in enumerate(zip(states, train_feats, strict=True)):
             tools = live.get("tools") or []
             cands = list(parse_catalog(tools).values())
             ids = [c.id for c in cands]
@@ -161,7 +162,7 @@ def replay(
             t0 = time.perf_counter()
             out = head.decide(run=live, candidates=cands)
             rec["ms_decide"] = 1e3 * (time.perf_counter() - t0)
-            table = rows_to_table(head.card, [dp], [tfeat], adapter)
+            table = rows_to_table(head.card, [dp], [tfeat], adapter, train_per and [train_per[at]])
             train_scores = dict(zip(table.df["candidate"], head.agent.score(table), strict=True))
             rec["scores_equal"] = _same(out["scores"], {c: float(s) for c, s in train_scores.items()})
             rec["max_score_diff"] = max(abs(out["scores"][c] - train_scores[c]) for c in ids)

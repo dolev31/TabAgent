@@ -57,7 +57,7 @@ def test_discovery_runs_on_the_training_fold_only(logs, tmp_path, monkeypatch):
         assert trained_on in [s & groups for s in seen]  # failed runs of training tasks may come along
         assert not any(s & held_out for s in seen if s & groups == trained_on)
     assert set(res.discoveries) == {0, 1, 2} and res.seeds == [0, 1]
-    assert {"user_intent", "plan_note"} <= set(res.discoveries[0].card.feature_names)
+    assert {"user_intent", "last_step_text"} <= set(res.discoveries[0].card.feature_names)  # see test_onboard
     assert res.summary(["p@r"]).loc["p@r", "value"] > 0.9
     assert res.cost_usd is None  # the scripted model has no price
     for d in res.discoveries.values():  # the usefulness estimate saw the fold's training decisions only

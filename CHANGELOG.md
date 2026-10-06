@@ -4,6 +4,63 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+### Per-candidate features
+
+- **An extractor may define `extract_candidate_features(trajectory_data, candidate)`** next to the paper's
+  entry point, for ranking and multi-label decisions: features of one (decision, candidate) row, such as the
+  request's words in the candidate's description. `candidate` is `{"id", "name", "description", "args",
+  "spec"}`, built from the candidate alone, so never a label. The CodeExtractor, CodeValidator and
+  OutputAuditor prompts get an "Additional rules" section on it (appended; the paper's prompts are
+  unchanged), and its columns go through the same checks, gates, verification, golden tests, audit and
+  usefulness estimate, over the (decision, candidate) rows. They enter the card as `schema` features with
+  `source: extractor_candidate`. The sandbox, the warm workers and the in-process runner run both functions in
+  one call per decision, the prefix parsed once; a decision's time limit grows with its candidates
+  (`timeout_s * (1 + candidates / 50)`), and a candidate whose call fails loses only its own values.
+  `decide`, `tabagent serve`, the CUGA hot swap and the tool filter score candidates exactly as training did.
+  `head.json` records `"candidate_function": true`. Extractors without the function, and saved heads, behave
+  as before. The section is on by default and has not yet been validated by onboarding with an LLM on public
+  data.
+- **Candidates carry their catalog entry.** `Candidate.spec` holds the entry the decision offered (a tool's
+  JSON schema; a CUGA API's path, method, parameters and response schemas), and the per-candidate function
+  reads it as `candidate["spec"]`. The CUGA adapter (its runs and its `catalog=`), the hot swap, and `decide`
+  or the service given raw CUGA API entries (recognized by their `api_name`) leave out the `canary_string`
+  CUGA writes anew in every run, at an entry's top level only (`parse_catalog(volatile_keys=...)`); other
+  catalogs are kept whole. The adapters, the CUGA hot swap, the tool filter, `decide` and the service read it the same way; a
+  `RemoteHead` now sends `Candidate` objects as records the service reads back to the same candidates. A saved
+  head's golden tests record three candidates per snapshot with their catalog entries: check them before you
+  upload a head to the Hub.
+- **Within-decision relative features.** `card.with_relative` gives a ranking or multi-label card's numeric
+  per-candidate features, context-candidate similarities, candidate prior and co-usage their percentile rank
+  among the decision's candidates and their gap to its best (card sources `relative_rank` and
+  `relative_gap`; `without_relative` removes them), computed from the decision's own rows. They are opt-in by
+  validation: a discovered card never holds them; the recipe search (`auto.select(relative=True)`, from
+  `TabSchemaConfig.relative_features`, `--no-relative-features` to skip) fits the winner without them and
+  adds them only when the winner with them scores strictly better (`Recipe.relative`), and `head.json`
+  records the choice (`relative_features`). On public data the effect is neutral: P@R +0.004 [−0.002, +0.010] on τ²-bench GPT-4.1
+  tool shortlisting and −0.011 [−0.036, +0.016] on SkillsBench skill selection (paired bootstrap 95%
+  intervals, `experiments/relative_features.py`). Cards without them behave as before.
+- **Positional columns are moved to the per-candidate function.** When the decision has candidates, prefix
+  columns that index them by position (`candidate_3_overlap`) are reported, and the repair round asks for the
+  feature in the per-candidate function. An indexed enumeration (no history word in its names) is positional
+  when one of its columns' texts name the candidates in order, or, with a word for a candidate in its names,
+  when its size follows the candidates' count across decisions of different sizes (columns emitted only where
+  set included); a constant count, or the first few of a longer enumeration, needs the texts. The columns are
+  dropped once the per-candidate function computes the feature, and kept with a compile note otherwise
+  (`TabSchemaConfig.positional_guard`, `--no-positional-guard`). On by default; not yet validated by
+  onboarding with an LLM on public data.
+- **One form per text feature.** The CodeExtractor is asked to emit a tokenized, bag-of-words or n-gram feature
+  once, as the plain text, under the feature's name (unless another feature already emits that text), and
+  compile drops a column that restates another column of the same feature in a shorter derived form on every
+  row (`drop_redundant_text`); the longer form, plain text, and an ordered sequence next to a set are kept.
+- **Accepted features without a column are asked for.** The compile step's repair round also gives the
+  CodeExtractor the plans of the accepted features its code does not produce, to add each one or to list it in
+  `NOT_EXTRACTED` as merged into another feature or declined, with the reason. `compile.json` and the report
+  count them by reason and list the per-decision and per-candidate columns separately.
+- **`last_step_text`**: a second fixed function appended to every extractor, the text of the prefix's last step
+  (`TabSchemaConfig.last_step_text`, `--no-last-step-text`): the step that handed control to the decision,
+  which the clipped context text can dilute among long payloads. On by default; not yet measured on public
+  data in this repository.
+
 ### TabSchema in production
 
 - **Provider errors are retried.** A rate limit (honoring `Retry-After`), a dropped connection, a server error or
@@ -58,8 +115,8 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 - From 256 MB of logs, runs are read again from their files when needed instead of being held in memory.
   Every read checks a fingerprint of exactly the bytes the run came from, so a touched file or an appended
   JSON Lines file is fine, and a changed run stops with `LogChangedError`. `lazy=` on `load` and
-  `onboard`, and `--no-lazy` on the CLI, choose. Loading a 1.6 GB folder of agent logs peaks at 0.8 GB instead of
-  2.7 GB. The decision points of one run share their steps, so memory grows linearly with run length:
+  `onboard`, and `--no-lazy` on the CLI, choose. Loading a 1.6 GB folder of agent logs peaks at 0.8 GB instead
+  of 2.7 GB. The decision points of one run share their steps, so memory grows linearly with run length:
   1,500 turns took 598 MB and now take 20 MB.
 - `redact=` keeps lazy runs lazy (`Trajectory.with_raw`).
 - Adapter fixes:

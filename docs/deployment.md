@@ -487,8 +487,8 @@ if names is not None:
     res = AppMatch(thoughts="", relevant_apps=names)
 ```
 
-On CUGA's AppWorld runs, the prefix and candidates the helpers build from the tracker equal the
-training ones for every shortlisting and app-selection decision. After a swap, CUGA records the
+On CUGA's AppWorld runs, the prefix and candidates the helpers build from the tracker equal the training
+ones for every shortlisting and app-selection decision. After a swap, CUGA records the
 shortlister's step without the LLM's prompts, so later decisions in the same run see steps unlike the training
 ones; measure the swapped agent on held-out tasks before relying on it. With a served head
 (`tabagent serve`), CUGA needs only the core package.

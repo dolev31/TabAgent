@@ -51,9 +51,9 @@ _CATBOOST_FIT = threading.Lock()
 #: texts, reduced by truncated SVD to ``LSA_DIMS`` dense dimensions. ``TabHead(text_repr="auto")`` uses it
 #: for cards with more than ``LSA_AUTO_TEXT_COLUMNS`` text columns (an extractor can return a text in several
 #: forms), where per-column TF-IDF blocks would make the head's matrix tens of thousands of columns wide;
-#: cards with fewer text columns, the paper's among them, keep TF-IDF. In one internal API-shortlisting run with many text
-#: columns (no interval) LSA ranked better than TF-IDF, with 64
-#: dimensions per column instead of 400 and in less than half the time.
+#: cards with fewer text columns, the paper's among them, keep TF-IDF. LSA keeps 64 dimensions per column
+#: instead of 400; in one internal API-shortlisting run with many text columns (no interval) it improved
+#: ranking in less than half the time.
 LSA_AUTO_TEXT_COLUMNS, LSA_DIMS, LSA_TERMS = 6, 64, 4000
 TEXT_REPRS = ("auto", "tfidf", "lsa")
 

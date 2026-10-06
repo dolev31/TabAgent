@@ -297,3 +297,21 @@ def test_the_dry_run_breaks_the_estimate_down_by_stage_and_counts_the_audit():
         config=TabSchemaConfig(audit=False, prices=kw["prices"]),
     )
     assert "auditor" not in quiet.stages and quiet.est_cost_usd < full.est_cost_usd
+
+
+def test_the_candidate_sections_and_the_repair_round_are_counted():
+    """A decision with candidates adds the per-candidate sections (and three example candidates) to the
+    CodeExtractor and CodeValidator prompts; the compile step's repair round is one more call of each, unless
+    ``compile_repair=False``."""
+    plain = DataSummary([20_000] * 4, [3_000] * 4, 4_000, [], 200)
+    with_cands = DataSummary([20_000] * 4, [3_000] * 4, 4_000, [], 200, candidate_chars=1_500)
+    base, more = estimate(plain, model=CLAUDE), estimate(with_cands, model=CLAUDE)
+    for stage in ("extractor", "validator"):
+        assert more.stages[stage].input_tokens > base.stages[stage].input_tokens, stage
+        assert more.stages[stage].calls == base.stages[stage].calls, stage
+    lean = estimate(plain, model=CLAUDE, compile_repair=False)
+    for stage in ("extractor", "validator"):
+        assert lean.stages[stage].calls == pytest.approx(base.stages[stage].calls - P.compile_repair_calls)
+    dps = [dp for t in runs()[:2] for dp in adapter().decision_points(t, TARGET)]
+    data = summarize(dps[:1], dps, TARGET, candidates_of=adapter().candidates)
+    assert data.candidate_chars > 0 and summarize(dps[:1], dps, TARGET).candidate_chars == 0

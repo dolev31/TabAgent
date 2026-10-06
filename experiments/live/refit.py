@@ -29,7 +29,7 @@ from tabagent.api import TabAgentHead
 from tabagent.report import evaluate
 from tabagent.tabschema.card import FeatureCard
 from tabagent.tabschema.compile import ExtractorRunner
-from tabagent.tabschema.orchestrator import rows_to_table
+from tabagent.tabschema.orchestrator import extract_rows, rows_to_table
 
 from .common import split_tasks
 
@@ -65,9 +65,11 @@ def main(argv: list[str] | None = None) -> int:
     card = FeatureCard.load(run / "card.yaml")
     code = (run / "extract.py").read_text()
     t0 = time.time()
-    feats = ExtractorRunner(code, trust_extractor=False).run([dp.prefix for dp in dps])  # as build_table
+    feats, per = extract_rows(
+        ExtractorRunner(code, trust_extractor=False), card, dps, adapter
+    )  # as build_table
     print(f"extracted in {time.time() - t0:.1f}s; failures {sum(f is None for f in feats)}", flush=True)
-    table = rows_to_table(card, dps, feats, adapter)
+    table = rows_to_table(card, dps, feats, adapter, per)
     if args.select:
         recipe, grid = auto.select(table, card, search="fast")
         print(grid.to_string(), flush=True)

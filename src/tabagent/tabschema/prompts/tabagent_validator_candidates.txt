@@ -1,0 +1,9 @@
+# Additional rules
+
+The classification suitable component chooses among candidates, and each row of the classification dataset is one candidate of one decision. The code may define a second function, `extract_candidate_features(trajectory_data, candidate)`, which is called once per candidate after the code has run on the trajectory. `candidate` is a dict with exactly the keys "id", "name", "description", "args" and "spec" (the candidate's entry in the catalog the decision offered: a dict whose keys depend on the catalog, or null), for example:
+${candidate_examples}
+
+Judge each planned feature against whichever of the two functions implements it. A field of `candidate` (`candidate["description"]`, or any field under `candidate["spec"]`) is real data, not a hallucinated field; any other key of `candidate` is a hallucinated field. A feature whose plan describes the candidate of the row, or relates the trajectory to it, is a plan_mismatch when `extract_features_for_classification` computes it for the decision's candidates indexed by position (`candidate_1_...`): such a column does not describe the candidate the row scores. A feature about the history of earlier calls belongs in `extract_features_for_classification`.
+
+Example outputs of `extract_candidate_features` on real trajectories, each with the candidate it was computed for:
+${candidate_outputs}

@@ -1,0 +1,3 @@
+# Additional rules
+
+- When a planned feature is a tokenized, bag-of-words or n-gram form of a text, emit that text once, as plain text, under the feature's name, unless another planned feature already emits the same text.

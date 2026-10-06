@@ -9,6 +9,7 @@ FeatureAggregator merges the proposals of many trajectories and drops unobtainab
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import logging
@@ -44,8 +45,14 @@ from tabagent.tabschema.llm import (
     status_code,
 )
 from tabagent.tabschema.runstore import RunStore
-from tabagent.tabschema.sandbox import ExecResult, SubprocessSandbox
-from tabagent.tabschema.trajectory import DecisionPoint, clip_for_prompt, get_json_schema, union_schema
+from tabagent.tabschema.sandbox import MAX_CANDIDATE_ERRORS, ExecResult, SubprocessSandbox
+from tabagent.tabschema.trajectory import (
+    DecisionPoint,
+    clip_for_prompt,
+    clip_strings,
+    get_json_schema,
+    union_schema,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -708,22 +715,61 @@ RETRY INSTRUCTIONS (Attempt #{retry_count + 1}):
 """
 
 
+#: Candidates of the decision an extractor or validator prompt shows, the characters each of their values
+#: keeps there, and the characters of JSON a candidate's catalog entry (``spec``) keeps there.
+EXAMPLE_CANDIDATES, CANDIDATE_VALUE_CHARS, SPEC_PROMPT_CHARS = 3, 300, 2_000
+
+
+def shown_candidate(c: dict, value_chars: int = CANDIDATE_VALUE_CHARS) -> dict:
+    """A candidate dict as a prompt shows it: long values clipped, and its catalog entry (``spec``) fit to
+    ``SPEC_PROMPT_CHARS`` characters of JSON (:func:`fit_for_prompt`: long strings clipped, then the middle
+    of long lists left out)."""
+    out = {}
+    for k, v in c.items():
+        if k == "spec" and v is not None:
+            out[k] = fit_for_prompt(copy.deepcopy(v), SPEC_PROMPT_CHARS)
+        else:
+            out[k] = clip_strings(v, value_chars)
+    return out
+
+
+def candidate_examples(candidates: list[dict] | None) -> list[dict] | None:
+    """The decision's first ``EXAMPLE_CANDIDATES`` candidate dicts as the prompts show them
+    (:func:`shown_candidate`; None without candidates)."""
+    if not candidates:
+        return None
+    return [shown_candidate(c) for c in candidates[:EXAMPLE_CANDIDATES]]
+
+
 class CodeExtractor(Stage):
-    """Writes extraction code for a list of feature plans against a trajectory schema."""
+    """Writes extraction code for a list of feature plans against a trajectory schema. The paper's prompt is
+    followed by the release's additions (``prompts.ADDITIONS``): always the one-form-per-text-feature rule,
+    and, for a decision with ``candidates`` (example candidate dicts), the per-candidate function."""
 
     role = "extractor"
 
     def __call__(
-        self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
+        self,
+        specs: list[FeatureSpec],
+        schema_example: dict,
+        target: str,
+        retry_block: str = "",
+        candidates: list[dict] | None = None,
     ) -> str:
-        return self.write(specs, schema_example, target, retry_block)[0]
+        return self.write(specs, schema_example, target, retry_block, candidates)[0]
 
     def prompt(
-        self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
+        self,
+        specs: list[FeatureSpec],
+        schema_example: dict,
+        target: str,
+        retry_block: str = "",
+        candidates: list[dict] | None = None,
     ) -> str:
-        """The CodeExtractor prompt for the feature plans ``specs``."""
+        """The CodeExtractor prompt for the feature plans ``specs`` (``candidates``: example candidates of a
+        decision that has them)."""
         spec_dicts = [{k: v for k, v in s.to_dict().items() if k in SPEC_FIELDS} for s in specs]
-        return prompts.render(
+        paper = prompts.render(
             "code_extractor",
             potential_features=_dump(spec_dicts),
             trajectory_schema=union_schema([schema_example]),
@@ -731,13 +777,26 @@ class CodeExtractor(Stage):
             target_name=target,
             retry_block=retry_block,
         )
+        examples = candidate_examples(candidates)
+        return prompts.append(
+            paper,
+            prompts.render("tabagent_extractor"),
+            prompts.render("tabagent_extractor_candidates", candidate_examples=_dump(examples))
+            if examples
+            else "",
+        )
 
     def write(
-        self, specs: list[FeatureSpec], schema_example: dict, target: str, retry_block: str = ""
+        self,
+        specs: list[FeatureSpec],
+        schema_example: dict,
+        target: str,
+        retry_block: str = "",
+        candidates: list[dict] | None = None,
     ) -> tuple[str, list[str]]:
         """The code, and the prompts asked for it (the prompt, and the request for tags when the first answer
         had none)."""
-        prompt = self.prompt(specs, schema_example, target, retry_block)
+        prompt = self.prompt(specs, schema_example, target, retry_block, candidates)
         text = self.call(prompt)
         try:
             return extract_code(text), [prompt]
@@ -761,6 +820,9 @@ class ExtractionAttempt:
     issues: list[str] = field(default_factory=list)
     error: str = ""
     prompts: list[str] = field(default_factory=list, repr=False)  # the CodeExtractor prompts of this attempt
+    #: Why the per-candidate function failed too often (the attempt is ``ok`` when the code ran on enough
+    #: prefixes: its prefix features stand, and a retry asks for a fix of the per-candidate function).
+    candidate_error: str = ""
 
 
 class CodeExecutor:
@@ -780,8 +842,13 @@ class CodeExecutor:
             max_failure_rate,
         )
 
-    def run(self, code: str, prefixes: list[dict]) -> ExtractionAttempt:
-        """Check ``code`` statically, then run it on every prefix; fail above ``max_failure_rate``."""
+    def run(
+        self, code: str, prefixes: list[dict], candidates: list[list[dict] | None] | None = None
+    ) -> ExtractionAttempt:
+        """Check ``code`` statically, then run it on every prefix; fail above ``max_failure_rate``. With
+        ``candidates`` (aligned with ``prefixes``) and code that defines the per-candidate function, it runs
+        on each prefix's candidates too; when it fails on more than ``max_failure_rate`` of the (prefix,
+        candidate) pairs, the attempt keeps its prefix features and says why in ``candidate_error``."""
         fatal = {"syntax", "import", "call", "dunder", "internals", "uses_get", "unknown_field"}
         fatal |= {"outcome_field", "clock"}
         issues = [i for i in checks.check_code(code, self.known_paths, self.outcome_keys) if i.kind in fatal]
@@ -790,13 +857,26 @@ class CodeExecutor:
             return ExtractionAttempt(code, False, issues=[str(i) for i in issues], error=msg)
         from tabagent.tabschema.compile import with_flatten  # compile imports this module
 
-        results = self.sandbox.run_batch(with_flatten(code), prefixes)
+        if candidates is not None and not checks.defines_candidate_function(code):
+            candidates = None
+        if candidates is None:
+            results = self.sandbox.run_batch(with_flatten(code), prefixes)
+        else:
+            results = self.sandbox.run_batch(with_flatten(code), prefixes, candidates=candidates)
         out_issues: list[str] = []
         for n, r in enumerate(results):  # an output that is not a flat dict of JSON scalars is a failure
             bad = [str(i) for i in checks.check_output(r.features)] if r.ok else []
             if bad:
                 out_issues += bad
                 results[n] = ExecResult(False, error="\n".join(bad))
+            elif r.ok and r.candidates is not None:
+                for k, v in enumerate(r.candidates):
+                    wrong = [str(i) for i in checks.check_output(v)] if v is not None else []
+                    if wrong:
+                        out_issues += [f"extract_candidate_features: {w}" for w in wrong]
+                        r.candidates[k] = None
+                        if len(r.candidate_errors) < MAX_CANDIDATE_ERRORS:
+                            r.candidate_errors.append("\n".join(wrong))
         failed = [r for r in results if not r.ok]
         rate = len(failed) / max(1, len(results))
         if rate > self.max_failure_rate:
@@ -806,7 +886,33 @@ class CodeExecutor:
                     str(r.error) for r in failed[:3]
                 )
             return ExtractionAttempt(code, False, results, sorted(set(out_issues)), error)
-        return ExtractionAttempt(code, True, results, sorted(set(out_issues)))
+        attempt = ExtractionAttempt(code, True, results, sorted(set(out_issues)))
+        if candidates is not None:
+            attempt.candidate_error = candidate_failures(results, candidates, self.max_failure_rate)
+        return attempt
+
+
+def candidate_failures(
+    results: list[ExecResult], candidates: list[list[dict] | None], max_failure_rate: float
+) -> str:
+    """Why the per-candidate function failed on more than ``max_failure_rate`` of the (prefix, candidate)
+    pairs of the prefixes it ran on, with its first distinct errors, for the retry prompt; "" otherwise."""
+    pairs = failed = 0
+    errors: list[str] = []
+    for r, cands in zip(results, candidates, strict=True):
+        if not r.ok or not cands:
+            continue
+        pairs += len(cands)
+        per = r.candidates if r.candidates is not None else [None] * len(cands)
+        failed += sum(v is None for v in per)
+        errors += [e for e in r.candidate_errors if e not in errors]
+    if not pairs or failed / pairs <= max_failure_rate:
+        return ""
+    first = "\n---\n".join(errors[:3]) or "no features were returned"
+    return (
+        f"extract_candidate_features failed on {failed} of {pairs} candidates (the prefix features are "
+        f"fine). First errors:\n{first}"
+    )
 
 
 def extract_with_retries(
@@ -817,19 +923,30 @@ def extract_with_retries(
     schema_example: dict,
     target: str,
     max_retries: int = 3,
+    candidates: list[list[dict] | None] | None = None,
 ) -> tuple[ExtractionAttempt, list[ExtractionAttempt]]:
     """Generate, check and execute extraction code; on failure retry up to ``max_retries`` times with the
-    error and the failed code in the prompt (App. D.1). Returns the final attempt and the history."""
+    error and the failed code in the prompt (App. D.1). Returns the final attempt and the history.
+
+    ``candidates`` (aligned with ``prefixes``) are the decision's candidate dicts: the prompt shows three of
+    them, and the per-candidate function runs on them. An attempt whose per-candidate function fails too often
+    (``candidate_error``) is retried like a failed one; when no later attempt does better, the last such
+    attempt is returned, its prefix features intact."""
     history: list[ExtractionAttempt] = []
     errors: list[str] = []
     retry_block = ""
     write = getattr(extractor, "write", None)
+    examples = None
+    if candidates is not None:
+        examples = next((c for c in candidates if c), None)
+    more = {} if examples is None else {"candidates": examples}
+    fallback: ExtractionAttempt | None = None
     for n in range(max_retries + 1):
         try:
             if write is not None:
-                code, asked = write(specs, schema_example, target, retry_block)
+                code, asked = write(specs, schema_example, target, retry_block, **more)
             else:
-                code, asked = extractor(specs, schema_example, target, retry_block), []
+                code, asked = extractor(specs, schema_example, target, retry_block, **more), []
         except LLMContentFiltered:  # the same prompt to the same model would be stopped again
             raise
         except (
@@ -838,15 +955,26 @@ def extract_with_retries(
             asked = [p for _, ps in getattr(e, "forget", None) or [] for p in ps]
             attempt = ExtractionAttempt("", False, error=str(e), prompts=asked)
         else:
-            attempt = executor.run(code, prefixes)
+            attempt = (
+                executor.run(code, prefixes)
+                if candidates is None
+                else executor.run(code, prefixes, candidates)
+            )
             attempt.prompts = asked
         history.append(attempt)
-        if attempt.ok:
+        if attempt.ok and not attempt.candidate_error:
+            if fallback is not None:
+                fallback.results = []
             return attempt, history
-        attempt.results = []  # a failed attempt is kept for its error; its per-row results are not needed
-        errors.append(attempt.error)
+        if attempt.ok:  # the prefix features stand; the per-candidate function is asked to be fixed
+            if fallback is not None:
+                fallback.results = []
+            fallback = attempt
+        else:
+            attempt.results = []  # a failed attempt is kept for its error; its per-row results are not needed
+        errors.append(attempt.error or attempt.candidate_error)
         retry_block = generate_retry_prompt(n + 1, previous_errors(errors), attempt.code)
-    return history[-1], history
+    return (fallback or history[-1]), history
 
 
 def previous_errors(errors: list[str], limit: int = 6000) -> str:
@@ -893,19 +1021,54 @@ def sample_output(features: Any) -> Any:
     return out
 
 
+#: Per-candidate outputs a CodeValidator prompt shows at most.
+SAMPLE_CANDIDATE_OUTPUTS = 6
+
+
+def candidate_samples(results: list[ExecResult], candidates: list[list[dict] | None]) -> list[dict]:
+    """Per-candidate outputs for the CodeValidator: up to two candidates of each of the first prefixes the
+    function ran on, each output with the candidate it was computed for (``SAMPLE_CANDIDATE_OUTPUTS`` in
+    all)."""
+    out: list[dict] = []
+    for r, cands in zip(results, candidates, strict=False):
+        if not r.ok or not r.candidates or not cands:
+            continue
+        done = [(c, v) for c, v in zip(cands, r.candidates, strict=False) if v is not None][:2]
+        out += [{"candidate": shown_candidate(c), "features": sample_output(v)} for c, v in done]
+        if len(out) >= SAMPLE_CANDIDATE_OUTPUTS:
+            break
+    return out[:SAMPLE_CANDIDATE_OUTPUTS]
+
+
 class CodeValidator(Stage):
     """Checks that executed extraction code reads only real fields and follows each feature's plan; returns
-    a verdict per feature (``valid``, ``hallucinated_field``, ``plan_mismatch``)."""
+    a verdict per feature (``valid``, ``hallucinated_field``, ``plan_mismatch``). For a decision with
+    ``candidates`` (example candidate dicts), the release's addition (``tabagent_validator_candidates``) shows
+    them and the per-candidate function's ``candidate_outputs``."""
 
     role = "validator"
 
     def __call__(
-        self, specs: list[FeatureSpec], code: str, schema_example: dict, outputs: list[dict], target: str
+        self,
+        specs: list[FeatureSpec],
+        code: str,
+        schema_example: dict,
+        outputs: list[dict],
+        target: str,
+        candidates: list[dict] | None = None,
+        candidate_outputs: list[dict] | None = None,
     ) -> dict[str, str]:
-        return self.judge(specs, code, schema_example, outputs, target)[0]
+        return self.judge(specs, code, schema_example, outputs, target, candidates, candidate_outputs)[0]
 
     def judge(
-        self, specs: list[FeatureSpec], code: str, schema_example: dict, outputs: list[dict], target: str
+        self,
+        specs: list[FeatureSpec],
+        code: str,
+        schema_example: dict,
+        outputs: list[dict],
+        target: str,
+        candidates: list[dict] | None = None,
+        candidate_outputs: list[dict] | None = None,
     ) -> tuple[dict[str, str], dict[str, str]]:
         """The verdict per feature and the validator's evidence for it (the code or schema detail)."""
         spec_dicts = [{k: v for k, v in s.to_dict().items() if k in SPEC_FIELDS} for s in specs]
@@ -917,6 +1080,16 @@ class CodeValidator(Stage):
             code=code,
             sample_output=_dump([sample_output(o) for o in outputs[:3]]),
         )
+        examples = candidate_examples(candidates)
+        if examples:
+            prompt = prompts.append(
+                prompt,
+                prompts.render(
+                    "tabagent_validator_candidates",
+                    candidate_examples=_dump(examples),
+                    candidate_outputs=_dump(candidate_outputs or []),
+                ),
+            )
         out = self.ask_json(prompt)
         items = self.items(out, ("features", "verdicts"), prompt)
         verdicts: dict[str, str] = {}

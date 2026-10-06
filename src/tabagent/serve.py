@@ -89,7 +89,10 @@ def _sha(text: str) -> str:
 def head_manifest(head) -> dict[str, Any]:
     """What identifies a served head: its ``id`` (12 hex digits of the model hash, else of the extractor
     hash), decision, card, kind, the extractor's SHA-256, a SHA-256 over the model files' manifest hashes,
-    when the model artifact was written and by which tabagent version (None when unknown)."""
+    when the model artifact was written and by which tabagent version (None when unknown); and
+    ``candidate_function: true`` when its extractor defines the per-candidate function."""
+    from tabagent.tabschema.checks import defines_candidate_function
+
     agent = getattr(head, "agent", None)
     manifest = getattr(agent, "manifest_", None) or {}
     files = manifest.get("sha256") or {}
@@ -100,7 +103,7 @@ def head_manifest(head) -> dict[str, Any]:
     extractor_sha = extractor.get("sha256") or (_sha(code) if code else None)
     spec = getattr(card, "spec", None)
     name = getattr(card, "name", None)
-    return {
+    out = {
         "id": (model_sha or extractor_sha or _sha(f"{name}/{getattr(head, 'target', '')}"))[:12],
         "target": getattr(head, "target", None),
         "card": name,
@@ -110,6 +113,9 @@ def head_manifest(head) -> dict[str, Any]:
         "created_at": manifest.get("created"),
         "artifact_tabagent_version": manifest.get("tabagent_version"),
     }
+    if code and defines_candidate_function(code):  # the extractor scores every candidate too
+        out["candidate_function"] = True
+    return out
 
 
 def error_class(error: str | None, kind: str | None = None) -> str | None:
@@ -247,6 +253,8 @@ class Service:
         box = getattr(head, "extractor_sandbox", None) if getattr(head, "extractor_code", None) else None
         if box is not None and self.request_timeout is not None and hasattr(box, "timeout_s"):
             box.timeout_s = min(box.timeout_s, self.request_timeout)  # the extractor's share of the deadline
+            if hasattr(box, "max_timeout_s"):  # nor do a decision's candidates stretch it past the deadline
+                box.max_timeout_s = self.request_timeout
         self.sandbox = box
         self.pool = box if isinstance(box, WarmSandbox) else None
         # past the deadline the answer is deferred: the timeout, a warm worker's kill grace, and scoring
@@ -745,7 +753,8 @@ class RemoteHead:
     ``decide`` takes the arguments of ``TabAgentHead.decide`` and returns the service's answer, so an agent
     whose environment cannot host the head (``ToolFilter("http://...")``, say) uses it like a local one. Send
     ``run=`` (the service builds the prefix with the head's recorded adapter) and JSON candidates (tool
-    schemas, ids or ``{"id", "description", "args"}`` records). When the service cannot be reached, times
+    schemas, ids, ``{"id", "description", "args", "spec"}`` records, or ``Candidate`` objects, which are
+    sent as such records, their catalog entries included). When the service cannot be reached, times
     out or fails (status 5xx), the decision is ``deferred`` with the reason in ``error``, as when a local
     extractor fails, in the service's own shape for a decision it could not make (every candidate id in input
     order, empty ``scores``); a request the service rejects (status 4xx) raises ``ValueError``.
@@ -764,6 +773,10 @@ class RemoteHead:
         run: Optional[dict] = None,  # noqa: UP045
     ) -> dict[str, Any]:
         """The service's ``POST /decide`` answer (see ``TabAgentHead.decide``)."""
+        from tabagent.tabschema.trajectory import Candidate, candidate_dict
+
+        if candidates is not None:  # a Candidate travels as the dict decide reads back to the same candidate
+            candidates = [candidate_dict(c) if isinstance(c, Candidate) else c for c in candidates]
         body = {"prefix": prefix, "run": run, "candidates": candidates, "k": k, "defer_below": defer_below}
         data = json.dumps({key: v for key, v in body.items() if v is not None}, default=str).encode()
         request = urllib.request.Request(

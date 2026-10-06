@@ -235,6 +235,9 @@ def tabschema_config(args, model: str):
         "usefulness": args.no_usefulness,
         "compile_repair": args.no_compile_repair,
         "context_text": args.no_context_text,
+        "last_step_text": args.no_last_step_text,
+        "positional_guard": args.no_positional_guard,
+        "relative_features": args.no_relative_features,
     }
     fields.update({k: False for k, off in switches.items() if off})
     if args.prune_harmful:
@@ -666,6 +669,22 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-context-text",
         action="store_true",
         help="do not append the fixed context-text function to the extractor",
+    )
+    p.add_argument(
+        "--no-last-step-text",
+        action="store_true",
+        help="do not append the fixed last-step-text function to the extractor",
+    )
+    p.add_argument(
+        "--no-positional-guard",
+        action="store_true",
+        help="keep prefix columns that index the candidates by position, and do not ask the CodeExtractor to "
+        "compute their features per candidate",
+    )
+    p.add_argument(
+        "--no-relative-features",
+        action="store_true",
+        help="leave each candidate feature's rank and gap within its decision out of the card",
     )
     p.add_argument(
         "--prune-harmful",

@@ -15,6 +15,11 @@ The extended operators of App. H ("Extended operators", used on the τ²-bench p
 replaces names, identifiers, codes, contact details and amounts with other well-formed values before
 paraphrasing, and ``allocation="inverse_sqrt_frequency"`` gives each decision variants in proportion to
 ``1/sqrt(f)``, where ``f`` is the training frequency of its rarest relevant candidate.
+
+A variant is never mixed with real rows: copied variants keep their real row's within-decision rank and gap
+features (``card.with_relative``), and recomputed ones are ranked among the variant's own rows of their
+decision, when the source rows hold the whole decision; a decision only partly among the source rows
+(``where``, ``max_source_rows``) keeps the real rows' values, computed on the whole decision.
 """
 
 from __future__ import annotations
@@ -263,6 +268,15 @@ class TabSynth:
 
         real_keys = set(map(tuple, X.astype(str).itertuples(index=False, name=None)))
         raw_src = table.df.iloc[src_idx] if self.recompute else None
+        relative, partial = [], np.zeros(len(src_idx), dtype=bool)
+        if self.recompute:  # within-decision features of a decision only partly paraphrased: the real ones
+            from tabagent.tabschema.card import RELATIVE_SOURCES
+
+            relative = [f.name for f in card.features if f.source in RELATIVE_SOURCES]
+            if relative:
+                ids = table.decision_ids.to_numpy()
+                whole, chosen = pd.Series(ids).value_counts(), pd.Series(ids[src_idx]).value_counts()
+                partial = np.array([chosen[d] < whole[d] for d in ids[src_idx]], dtype=bool)
         parts, labels, dropped = [], [], 0
         for j in range(int(n_variants.max(initial=0))):
             active = n_variants > j
@@ -290,6 +304,8 @@ class TabSynth:
                 raw = raw_src.assign(**new_text)
                 var = card.transform(table.with_df(raw.reset_index(drop=True)))
                 var.index = src.index
+                if partial.any():  # ranked among the variant's rows only when they are the whole decision
+                    var.loc[partial, relative] = src.loc[partial, relative].to_numpy()
             else:
                 var = src.assign(**new_text)
             keys = var.astype(str).itertuples(index=False, name=None)

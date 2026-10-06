@@ -154,7 +154,7 @@ The CUGA adapter builds the two components the paper replaces. `--decision Short
 of the app being shortlisted; `--decision TaskAnalyzerAgent` selects the apps a task needs, a multi-label
 decision that `onboard` recognizes by itself (`--kind` is only needed to override it). Its labels are the apps
 the successful run called; `CugaAdapter(app_labels="offered")` uses the apps the analyzer chose instead, as
-the paper's legacy data did (on CUGA AppWorld runs the two agree on nearly all). Point `onboard` at the
+the paper's legacy data did (on the successful runs checked, the two almost always agree). Point `onboard` at the
 folder of a CUGA evaluation (one JSON file per task; `results.json` and `metadata.json` are skipped), or at a
 folder of such folders or of links to them. The APIs a run called are read from its generated code as Python
 (`call_api(app_name, api_name)`, keyword arguments in any order, an app or API given as a name the code
@@ -443,7 +443,7 @@ During discovery:
   counts or one entry per entity, becomes one column per key: compile keeps at most
   `TabSchemaConfig.max_columns_per_feature` (64) columns of one planned feature and
   `max_extractor_columns` (512) in all, those that vary most across decision points, and the report says
-  what was trimmed. On CUGA's shortlister, word-count features had expanded into thousands of columns.
+  what was trimmed. Without the caps, word-count features can expand into tens of thousands of columns.
 * **Duplicate text columns.** A compiled text or categorical column that duplicates another kept one word for
   word on every onboarding decision point (the same lowercased `\w+` tokens, numbers and order; case,
   punctuation, brackets and quotes aside) is dropped as `redundant with <column>`: a text and the list of its
@@ -455,8 +455,9 @@ During discovery:
 * **Repairing flagged features.** When the CodeValidator flags accepted features in the compiled code (a field
   the trajectories lack, or code that does not follow the plan), the CodeExtractor is asked once more with
   the validator's objections in the paper's retry prompt; the new code is kept only if it runs and fewer
-  features are flagged (`TabSchemaConfig(compile_repair=False)` turns this off). On CUGA's app selection, the
-  best-rated feature had been dropped because its code counted generic words as app names.
+  features are flagged (`TabSchemaConfig(compile_repair=False)` turns this off). In one internal
+  app-selection run, the best-rated feature had been dropped because its code counted generic words as app
+  names.
 * **Bounded prompts for wide extractors.** The CodeValidator sees at most 150 keys of each sample output, and
   the output audit judges at most 48 columns per decision point, spread over the planned features (set
   values first), so a wide extractor neither fills a prompt nor truncates an answer.
@@ -537,7 +538,8 @@ the field (`TabSchemaConfig.accept: unknown value(s) ['accepted']`); `TabSchemaC
 keys with the closest field. On the command line, `--config FILE` (JSON or YAML) sets any field, and the flags
 override it: `--n-analyze`, `--accept accept,conditional`, `--sample-strategy`, `--workers`, `--timeout`,
 `--llm-retries`, `--audit-samples`, `--max-cost`, `--no-audit`, `--no-verify-extractor`, `--no-verify-adapter`,
-`--no-usefulness`, `--no-compile-repair`, `--no-context-text`, `--prune-harmful`.
+`--no-usefulness`, `--no-compile-repair`, `--no-context-text`, `--no-last-step-text`, `--no-positional-guard`,
+`--no-relative-features`, `--prune-harmful`.
 
 
 ## How the generated code is verified
@@ -582,8 +584,13 @@ keys in a `decision_input_keys` attribute, which the check leaves unchanged in t
 others; both say so in a warning and in the report. Columns that read outcome fields are
 dropped rather than tolerated by stripping those fields before extraction: adapters already keep outcomes out
 of prefixes, and a column that reads unknown top-level fields would change with any field a live run carries.
-The appended `context_text` ignores outcome fields. The checks of the extractor make three sandbox runs: one on
-the sample, one over every decision point (an interpreter per 50), and one for the variants and edge cases.
+The appended `context_text` and `last_step_text` ignore outcome fields. The checks of the extractor make three
+sandbox runs: one on the sample, one over every decision point (an interpreter per 50), and one for the variants
+and edge cases. An extractor with a per-candidate function
+([Per-candidate features](components.md#per-candidate-features)) is checked on each decision's candidates too:
+determinism with the decision points and each one's candidates shuffled (a value that depends on the candidates
+scored before it is dropped), outcome invariance per (decision, candidate), and robustness on three candidates
+per edge prefix.
 
 **2. The OutputAuditor** (`audit=True`, `audit_samples=12`, `audit_max_incorrect=0.25`). An LLM stage (role
 `auditor`; `stage_models={"auditor": ...}` routes it) reads 12 coverage-sampled decision points that the
@@ -667,7 +674,10 @@ Strings are clipped to 2,000 characters, and a snapshot that cannot be brought u
 steps, then the largest lists, then shorter strings) is not recorded.
 Everything else the checks report (examples of differing values, error lines, the auditor's reasons and the
 dropped reasons) is masked the same way. Masking is a safety net, not a guarantee: **a saved head contains
-snippets of its onboarding trajectories**, so share it as you would share them, or set `goldens=0`.
+snippets of its onboarding trajectories**, so share it as you would share them, or set `goldens=0`. For a
+decision whose extractor defines the per-candidate function, each snapshot also records three of the
+decision's candidates with their catalog entries (`candidate["spec"]`): check what your catalog holds before
+you upload a head to the Hub.
 
 **What the checks cost.** One onboarding on public τ²-bench logs (the GPT-4.1 agent's runs, `ToolShortlist`,
 604 decision points, 14 LLM-written features; Claude Opus 5.5, with GPT-6 Sol writing the code) cost $2.92 in
@@ -681,7 +691,12 @@ flight-change flag fired on "exchange" (it contains "change") on 1 of 12.
 ## Review the extractor
 
 The saved head contains `extract.py`, the code TabSchema compiled, and its golden tests
-(`extractor_tests.json`; `tabagent verify-head` re-runs them). Read the code before serving with
+(`extractor_tests.json`; `tabagent verify-head` re-runs them). For a ranking or multi-label decision it may
+define `extract_candidate_features(trajectory_data, candidate)` next to the paper's entry point (`head.json`
+then records `"candidate_function": true`); `head.candidate_features_for(prefix, candidates)` shows what it
+computes for a live decision. `compile.json` in the run directory lists the kept columns per decision and per
+candidate, and the accepted features that got no column, with the reason (merged into another feature,
+declined by the CodeExtractor, or not produced). Read the code before serving with
 `--trust-extractor` (in-process); without that flag it runs in the sandbox, by default in warm worker
 processes that start once and then add well under a millisecond per decision (see
 [Deployment](deployment.md#the-warm-extractor-pool)). All modes give the same features: in-process, the code

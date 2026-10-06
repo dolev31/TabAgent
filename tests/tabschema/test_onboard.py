@@ -59,7 +59,10 @@ def test_onboard_end_to_end(logs, tmp_path):
     assert "TabAgent" in head.report.results.index and any("recipe" in n for n in head.report.notes)
     cost = next(n for n in head.report.notes if "LLM cost" in n)
     assert "cost unknown (no price for scripted" in cost and "input" in cost and "$0.00" not in cost
-    assert {"user_intent", "plan_note"} <= set(head.card.feature_names)
+    # in the toy runs the plan note is the last step: the appended last_step_text is kept over the LLM's
+    # plan_note, which repeats it word for word
+    assert {"user_intent", "last_step_text"} <= set(head.card.feature_names)
+    assert head.discovery.dropped["plan_note"].startswith("redundant with last_step_text")
 
     prefix = {
         "intent": "find a flight to rome and book it",

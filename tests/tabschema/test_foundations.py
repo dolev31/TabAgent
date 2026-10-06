@@ -261,6 +261,30 @@ PAPER_PROMPT_SHA256 = {
 }
 
 
+#: The release's sections appended after a rendered prompt (``prompts.ADDITIONS``), never inside one: the
+#: one-form-per-text-feature rule and the per-candidate function for the CodeExtractor, and the per-candidate
+#: sections of the CodeValidator and OutputAuditor prompts.
+ADDITION_SHA256 = {
+    "tabagent_extractor": "1817fe8672deb87f3897bd370c0522ab5a96ca0213305c1acba256be18ea5fe4",
+    "tabagent_extractor_candidates": "6704402bd985bfd8f62f38210e99e56d4378e8e4f504e9a9e8353335b48dce38",
+    "tabagent_validator_candidates": "a3198960e95f94d8b1a28879995f882777ba918aec5afae172b51845fbc7fa5a",
+    "tabagent_auditor_candidates": "c6a5d9fa4380d9b2565fa5618b3499cfcf2f6ab7ad0d1d19218f342de54d8562",
+}
+
+
+def test_prompt_additions_are_pinned_and_render():
+    assert {n: prompts.sha256(n) for n in prompts.ADDITIONS} == ADDITION_SHA256
+    fields = {
+        "tabagent_extractor": {},
+        "tabagent_extractor_candidates": {"candidate_examples": "[]"},
+        "tabagent_validator_candidates": {"candidate_examples": "[]", "candidate_outputs": "[]"},
+        "tabagent_auditor_candidates": {"candidates": "[]"},
+    }
+    for name, f in fields.items():
+        assert "${" not in prompts.render(name, **f), name
+    assert prompts.append("a\n", "b", "", "c\n") == "a\n\nb\n\nc\n"
+
+
 def test_prompts_are_pinned():
     assert {n: prompts.sha256(n) for n in prompts.PROMPTS} == PAPER_PROMPT_SHA256
     assert set(prompts.RELEASE_PROMPTS) == {

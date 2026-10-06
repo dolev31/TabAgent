@@ -31,7 +31,15 @@ from tabagent.agent import TabAgent
 from tabagent.evaluation.cv import cross_validate
 from tabagent.tabhead import TabHead, resolve_text_repr
 from tabagent.table import DecisionSpec, DecisionTable
-from tabagent.tabschema.card import Feature, FeatureCard
+from tabagent.tabschema.card import (
+    Feature,
+    FeatureCard,
+    has_relative,
+    relative_bases,
+    with_relative,
+    without_features,
+    without_relative,
+)
 from tabagent.tabsynth import TabSynth
 
 PRIMARY_METRIC = {"ranking": "p@r", "multilabel": "ml_f1", "policy": "route@1", "single": "accuracy"}
@@ -114,23 +122,13 @@ def infer_card(
     )
 
 
-def _without(card: FeatureCard, names: set[str]) -> FeatureCard:
-    """``card`` without the features in ``names``; its compiled extractor (and that code's hash) is kept."""
-    return FeatureCard(
-        card.name,
-        card.spec,
-        [f for f in card.features if f.name not in names],
-        card.synth_text,
-        card.synth_k,
-        dict(card.provenance),
-        extractor=card.extractor,
-    )
-
-
 @dataclass
 class Recipe:
     """One training recipe: TabSynth variants per row (0 = off), the candidate prior on or off, the CatBoost
-    preset, and the context text (``CONTEXT``) on or off; ``scores`` holds its inner-validation scores."""
+    preset, the context text (``CONTEXT``) on or off, and the within-decision relative features (each
+    feature's rank and gap within its decision, ``card.with_relative``) on (added to the card when it has
+    none) or off (removed when it has them); None keeps the card as it is (relative features not searched).
+    ``scores`` holds its inner-validation scores."""
 
     synth_k: int = 0
     prior: bool = True
@@ -138,25 +136,17 @@ class Recipe:
     scores: dict = field(default_factory=dict)
     context: bool = True
     text_repr: str = "auto"
+    relative: bool | None = None
 
     def label(self) -> str:
-        """A short description, for example ``synth=k2 prior=on paper`` (``context=off`` when off,
-        ``text=lsa`` or ``text=tfidf`` when the text representation was chosen)."""
+        """A short description, for example ``synth=k2 prior=on paper`` (``relative=on`` or ``relative=off``
+        when the relative features were searched, ``context=off`` when off, ``text=lsa`` or ``text=tfidf``
+        when the text representation was chosen)."""
         synth = f"k{self.synth_k}" if self.synth_k else "off"
+        relative = "" if self.relative is None else f" relative={'on' if self.relative else 'off'}"
         context = "" if self.context else " context=off"
         text = "" if self.text_repr == "auto" else f" text={self.text_repr}"
-        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}{context}{text}"
-
-
-def _without_context(card: FeatureCard) -> FeatureCard:
-    drop = set(CONTEXT)
-    return dataclasses.replace(
-        card,
-        features=[f for f in card.features if f.name not in drop],
-        synth_text=[c for c in card.synth_text if c not in drop],
-        provenance=dict(card.provenance),
-        _fitted=None,
-    )
+        return f"synth={synth} prior={'on' if self.prior else 'off'} {self.preset}{relative}{context}{text}"
 
 
 def can_drop_context(card: FeatureCard) -> bool:
@@ -170,24 +160,38 @@ def can_drop_context(card: FeatureCard) -> bool:
 def build_agent(card: FeatureCard, recipe: Recipe, seed: int = 0, **head_overrides) -> TabAgent:
     """The ``TabAgent`` of ``recipe`` on ``card`` (``head_overrides`` go to the CatBoost head)."""
     has_prior = any(f.name == PRIOR for f in card.features)
-    c = card if (recipe.prior or not has_prior) else _without(card, {PRIOR})
+    c = card if (recipe.prior or not has_prior) else without_features(card, {PRIOR})
+    if recipe.relative is True and not has_relative(c):
+        c = with_relative(c)
+    elif recipe.relative is False:
+        c = without_relative(c)
     if not recipe.context and can_drop_context(c):
-        c = _without_context(c)
+        c = without_features(c, set(CONTEXT))
     synth = TabSynth(k=recipe.synth_k) if recipe.synth_k and c.synth_text else None
     head_overrides = {"text_repr": recipe.text_repr, **head_overrides}
     head = TabHead(c.spec.kind, preset=recipe.preset, seed=seed, **head_overrides)
     return TabAgent(c, head=head, synth=synth, seed=seed)
 
 
-def recipes(card: FeatureCard, search: str = "fast") -> list[Recipe]:
+def searches_relative(card: FeatureCard, relative: bool = False) -> bool:
+    """Whether the recipe search tries the within-decision relative features on ``card``: it has them, or
+    ``relative`` asks for them and the card is a ranking or multi-label card with a feature to rank
+    (``card.relative_bases``)."""
+    return has_relative(card) or (relative and bool(relative_bases(card)))
+
+
+def recipes(card: FeatureCard, search: str = "fast", relative: bool = False) -> list[Recipe]:
     """The recipe grid: TabSynth off / k=2 / k=4 (when the card has text to paraphrase), prior on / off (when
-    it has one), and the ``paper`` preset (``fast``) or both presets (``full``)."""
+    it has one), and the ``paper`` preset (``fast``) or both presets (``full``). The relative features are
+    off in every recipe when they are searched (:func:`searches_relative`); :func:`select` tries them once on
+    the winner."""
     if search not in ("fast", "full"):
         raise ValueError(f"search must be 'fast' or 'full', got {search!r}")
     synth = [0, 2, 4] if card.synth_text else [0]
     prior = [True, False] if any(f.name == PRIOR for f in card.features) else [True]
     presets = ["paper"] if search == "fast" else ["paper", "catboost-default"]
-    return [Recipe(k, p, s) for s, p, k in itertools.product(presets, prior, synth)]
+    rel = False if searches_relative(card, relative) else None  # off; "on" is tried once on the winner
+    return [Recipe(k, p, s, relative=rel) for s, p, k in itertools.product(presets, prior, synth)]
 
 
 def select(
@@ -198,6 +202,7 @@ def select(
     inner_folds: int = 3,
     seed: int = 0,
     time_budget: float | None = None,
+    relative: bool = False,
     **head_overrides,
 ) -> tuple[Recipe, pd.DataFrame]:
     """Nested selection of the training recipe on ``table`` (training data only).
@@ -205,12 +210,15 @@ def select(
     Every recipe of :func:`recipes` is scored by ``inner_folds``-fold grouped cross-validation with one
     seed on the card's primary metric; the best wins, ties going to the simpler (earlier) recipe. When the
     card has context-text features and other state features (:func:`can_drop_context`), the winner is scored
-    once more without the context text, which replaces it only when strictly better. With ``time_budget``
+    once more without the context text, which replaces it only when strictly better. With ``relative`` (and
+    for a card that already has them), the within-decision relative features (``card.with_relative``) are a
+    challenger: off in the grid, the winner is scored once with them, which they join only when strictly
+    better (ties, and too few groups to search, keep them off). With ``time_budget``
     (seconds), recipes left when it runs out are skipped. Returns the winner and a table of every recipe's
     inner score.
     """
     metric = PRIMARY_METRIC[card.spec.kind]
-    grid = recipes(card, search)
+    grid = recipes(card, search, relative)
     n_groups = len(table.groups)
     if len(grid) == 1 or n_groups < 2 * inner_folds:
         return grid[0], pd.DataFrame([{"recipe": grid[0].label(), metric: np.nan, "note": "no search"}])
@@ -239,6 +247,10 @@ def select(
         lean = dataclasses.replace(best, scores={}, context=False)
         if score(lean) and lean.scores[metric] > best.scores[metric]:
             best = lean
+    if best.relative is False:  # the relative features on, once: kept only when strictly better
+        rich = dataclasses.replace(best, scores={}, relative=True)
+        if score(rich) and rich.scores[metric] > best.scores[metric]:
+            best = rich
     n_text = sum(f.type == "text" for f in build_agent(card, best, seed).card.features)
     if n_text and "text_repr" not in head_overrides:  # the other text representation, once
         default = resolve_text_repr("auto", n_text)

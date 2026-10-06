@@ -20,7 +20,7 @@ with ``kind="multilabel"``, which ``onboard`` and ``scan`` pick by themselves): 
 listed in its prompt's input (``applications``, else the apps seen across the loaded runs) and the labels
 are the apps the successful run then called (the paper's G(t), the candidates the run used).
 ``app_labels="offered"`` labels the apps the analyzer itself chose instead, as the paper's legacy AppWorld
-data did; on the successful CUGA AppWorld runs checked, the two agree on nearly all.
+data did; on the successful runs checked, the two almost always agree.
 
 Other components work with ``candidates_fn`` and ``labels_fn``.
 
@@ -52,6 +52,7 @@ from tabagent.tabschema.trajectory import (
     parse_json,
     read_outcome,
     read_usage,
+    spec_text,
     step_name,
     steps_of,
 )
@@ -101,6 +102,11 @@ def _prefixed(app: str, api: str) -> str:
     return api if not app or api.startswith(f"{app}_") else f"{app}_{api}"
 
 
+#: Top-level keys of a CUGA API entry that CUGA writes anew in every run; left out of ``Candidate.spec`` so
+#: that a live entry equals the training one.
+VOLATILE_API_KEYS = ("canary_string",)
+
+
 def _prompts(step: Any) -> list[dict]:
     """A step's recorded prompts (``{"role", "value"}`` objects); anything malformed counts as none."""
     prompts = step.get("prompts") if isinstance(step, dict) else None
@@ -129,7 +135,7 @@ def available_apis(step: dict[str, Any]) -> dict[str, Candidate]:
         if m:
             data = parse_json(m.group(1))
             if isinstance(data, (dict, list)):
-                return _clean(parse_catalog(data))
+                return _clean(parse_catalog(data, VOLATILE_API_KEYS))
     return {}
 
 
@@ -154,8 +160,8 @@ def _literal_list(text: str, start: int) -> list | None:
 def available_apps(step: dict[str, Any]) -> dict[str, Candidate]:
     """The apps an app-analyzer step could choose: the ``applications`` (or ``available_apps``) list of the
     input in its prompt, which CUGA writes as a Python literal after ``Human:``, as candidates with their
-    descriptions. The instructions before the input show example lists under the same names; the last list is
-    the input."""
+    descriptions and their entries (``Candidate.spec``). The instructions before the input show example lists
+    under the same names; the last list is the input."""
     for p in reversed(_prompts(step)):
         text = _value(p)
         human = text.rfind("Human:")
@@ -171,7 +177,8 @@ def available_apps(step: dict[str, Any]) -> dict[str, Candidate]:
                 name = a.get("name") if isinstance(a, dict) else a
                 if isinstance(name, str) and name.strip():
                     desc = a.get("description", "") if isinstance(a, dict) else ""
-                    out[name.strip()] = Candidate(name.strip(), name.strip(), str(desc or ""))
+                    entry = spec_text(a) if isinstance(a, dict) else ""
+                    out[name.strip()] = Candidate(name.strip(), name.strip(), str(desc or ""), spec=entry)
             if out:
                 return out
     return {}
@@ -431,7 +438,7 @@ class CugaAdapter(GenericJsonAdapter):
             task_keys=task_keys,
         )
         self.target = SHORTLISTER
-        self.catalog = _clean(parse_catalog(catalog))
+        self.catalog = _clean(parse_catalog(catalog, VOLATILE_API_KEYS))
         self.app_labels = app_labels
 
     def _reset(self) -> None:

@@ -28,13 +28,22 @@ step runs it, sandboxed as everywhere else, and checks four properties (:func:`v
    onboarding steps have). The report says which features raise or go missing. Nothing is dropped for
    raising: raising is the extractor's contract, and a head defers a decision whose extraction fails.
 
+An extractor's per-candidate function (``extract_candidate_features``) is checked the same way, on each
+decision point's candidates: determinism with the decision points and each one's candidates shuffled (a value
+that depends on the candidates computed before it changes), outcome invariance, and robustness on up to
+``CANDIDATES_PER_CASE`` candidates per edge prefix. Future invariance needs no extractor run: the function
+reads the prefix and a candidate as the decision offers it (never its label), so a prefix the adapter
+rebuilds unchanged gives unchanged values.
+
 The samples come from the coverage sampler (``sampling``): new tasks first, then uncovered sources, positions
 in the run (first, middle, last decision), prefix lengths and labels, so recurring decisions are checked at
 every position, not only at a run's first decision.
 
 :func:`make_tests` records a small set of golden tests: snapshots of onboarding prefixes with the features the
 extractor computes on them, plus the determinism and outcome-invariance checks. ``extractor_tests.json`` holds
-them next to ``extract.py``, and a saved head carries the file. :func:`verify_head` (``tabagent verify-head
+them next to ``extract.py``, and a saved head carries the file; a golden of an extractor with per-candidate
+features also holds the features of ``CANDIDATES_PER_CASE`` of its decision's candidates (chosen from the
+seed and the decision point, never by label). :func:`verify_head` (``tabagent verify-head
 PATH``) checks the head's artifact and runs the tests again in the sandbox, for CI and deployment gates. The
 snapshots are trajectory text: they come from the trajectories after ``redact=``, strings that look like
 credentials, e-mail addresses or home-directory paths are masked (:func:`mask_secrets`), and each snapshot
@@ -77,6 +86,9 @@ DEFAULT_GOLDENS = 8
 SHORTEST, MAX_FIELDS = 3, 6
 #: A golden prefix: strings longer than this are clipped, and the whole snapshot fits this many characters.
 GOLDEN_STRING_CHARS, GOLDEN_MAX_CHARS = 2_000, 20_000
+#: Candidates per decision point of a golden test and of a robustness case (an extractor with a per-candidate
+#: function), chosen by :func:`pick_candidates`.
+CANDIDATES_PER_CASE = 3
 #: The text appended to every string of a run's changed future.
 FUTURE_MARK = " [changed after the decision]"
 #: Keys that say what kind of raw step (or message) a step is: the changed future keeps their values, with the
@@ -239,6 +251,25 @@ def first_difference(a: Any, b: Any, path: str = "prefix") -> str | None:
                 return d
         return None if len(a) == len(b) else f"{path} (length {len(a)} -> {len(b)})"
     return None if canonical(a) == canonical(b) else path
+
+
+def pick_candidates(candidates: list[dict], seed: int, key: str, n: int = CANDIDATES_PER_CASE) -> list[dict]:
+    """``n`` of a decision's candidate dicts, chosen from ``seed`` and ``key`` (the decision point's id)
+    alone, never by label, in their decision order: the same ones on every run."""
+    rank = sorted(
+        range(len(candidates)),
+        key=lambda i: hashlib.sha256(f"{seed}:{key}:{candidates[i].get('id')}:{i}".encode()).hexdigest(),
+    )
+    return [candidates[i] for i in sorted(rank[:n])]
+
+
+def _shuffled(candidates: list[dict], rng: np.random.Generator) -> tuple[list[dict], list[int]]:
+    """``candidates`` in a random order, and the position of each original candidate in it."""
+    order = [int(i) for i in rng.permutation(len(candidates))]
+    where = [0] * len(candidates)
+    for pos, i in enumerate(order):
+        where[i] = pos
+    return [candidates[i] for i in order], where
 
 
 # --------------------------------------------------------------------------- the changed future
@@ -544,12 +575,14 @@ class _Box:
         self.batches = 0
         self.prefixes = 0
 
-    def run(self, code: str, prefixes: list[dict]) -> list[ExecResult]:
+    def run(self, code: str, prefixes: list[dict], candidates: list | None = None) -> list[ExecResult]:
         if not prefixes:
             return []
         self.batches += 1
         self.prefixes += len(prefixes)
-        return self.sandbox.run_batch(code, prefixes)
+        if candidates is None:
+            return self.sandbox.run_batch(code, prefixes)
+        return self.sandbox.run_batch(code, prefixes, candidates=candidates)
 
 
 def _changed(
@@ -570,6 +603,13 @@ def _changed(
     return out
 
 
+def _per_candidate(r: ExecResult | None, n: int) -> list[dict | None]:
+    """The per-candidate features of a result (None for each candidate where the run failed)."""
+    if r is None or not r.ok or r.candidates is None:
+        return [None] * n
+    return list(r.candidates)
+
+
 def verify_extractor(
     code: str,
     columns: list[str],
@@ -584,6 +624,9 @@ def verify_extractor(
     seed: int = DEFAULT_SEED,
     steps_key: str = "steps",
     label_of: Callable[[DecisionPoint], Iterable[Any]] | None = None,
+    candidates: list[list[dict]] | None = None,
+    candidate_columns: list[str] | None = None,
+    candidate_outputs: list[list[dict | None] | None] | None = None,
 ) -> dict[str, Any]:
     """Run the determinism, outcome-invariance, future-invariance and robustness checks (see the module
     docstring).
@@ -594,39 +637,84 @@ def verify_extractor(
     :class:`FutureCheck`. ``samples`` decision points are coverage-sampled (``label_of``: the adapter's
     labels) for the other checks. Returns a JSON-able record, masked: ``dropped`` maps each column that failed
     a check to the reason, and ``future["leaks"]`` lists the decision points whose prefix changed with the
-    run's future."""
+    run's future.
+
+    ``candidate_columns`` are the per-candidate function's columns, checked on the decision points'
+    ``candidates`` (candidate dicts, aligned with ``decision_points``) against ``candidate_outputs`` (the
+    compile step's values, per decision point and candidate): every run then carries the decision point's
+    candidates (shuffled in the determinism run), and each check compares the per-candidate values too."""
     t0 = time.monotonic()
     box = _Box(sandbox)
+    per = bool(candidate_columns)
+    cand_cols = list(candidate_columns or [])
+    all_cands = (candidates or [[] for _ in decision_points]) if per else None
     sample = sample_decision_points(decision_points, samples, seed, label_of, "coverage")
     index = {dp.id: i for i, dp in enumerate(decision_points)}
     prefixes = [dp.prefix for dp in sample]
+    cands_of = [all_cands[index[dp.id]] for dp in sample] if per else None
     out: dict[str, Any] = {"sample": len(sample), "dropped": {}, "notes": []}
     dropped: dict[str, str] = out["dropped"]
     keys = list(dict.fromkeys(str(k) for k in outcome_keys if k != steps_key))
     outcome = [with_outcomes(p, keys, ok) for p in prefixes for ok in (True, False)] if keys else []
     cases = _edge_cases(decision_points, sample, steps_key)
-    order = np.random.default_rng(seed).permutation(len(decision_points))
+    case_cands = pick_candidates(next((c for c in all_cands if c), []), seed, "robustness") if per else []
+    rng = np.random.default_rng(seed)
+    order = rng.permutation(len(decision_points))
+    # every decision point again, shuffled, each with its candidates shuffled, in other interpreters
+    where: list[list[int]] = []
+    shuffled_cands = None
+    if per:
+        shuffled_cands = []
+        for i in order:
+            c, w = _shuffled(all_cands[int(i)], rng)
+            shuffled_cands.append(c)
+            where.append(w)
     # the sample, alone; every decision point again, shuffled, in other interpreters; then the variants
-    base = box.run(code, prefixes)
-    shuffled = box.run(code, [decision_points[i].prefix for i in order])
+    base = box.run(code, prefixes, cands_of)
+    shuffled = box.run(code, [decision_points[i].prefix for i in order], shuffled_cands)
     again: list[ExecResult | None] = [None] * len(decision_points)
-    for i, r in zip(order, shuffled, strict=True):
+    again_c: list[list[dict | None]] = [[] for _ in decision_points]
+    for k, (i, r) in enumerate(zip(order, shuffled, strict=True)):
         again[int(i)] = r
-    rest = box.run(code, outcome + [p for _, p in cases])
+        if per:
+            values = _per_candidate(r, len(where[k]))
+            again_c[int(i)] = [values[pos] for pos in where[k]]
+    more = None
+    if per:
+        more = [c for c in cands_of for _ in (True, False)] if keys else []
+        more += [case_cands for _ in cases]
+    rest = box.run(code, outcome + [p for _, p in cases], more)
     outcome_res, case_res = rest[: len(outcome)], rest[len(outcome) :]
     ok_base = [r.features if r.ok else None for r in base]
     ok_again = [r.features if r and r.ok else None for r in again]
+    base_c = [_per_candidate(r, len(c)) for r, c in zip(base, cands_of, strict=True)] if per else []
 
-    # 1. determinism, on every decision point
+    # 1. determinism, on every decision point (and candidate)
     unstable = _changed(columns, [(ok_base[k], ok_again[index[dp.id]]) for k, dp in enumerate(sample)])
     if outputs is not None:
         for c, rec in _changed(output_columns or columns, zip(outputs, ok_again, strict=True)).items():
+            unstable.setdefault(c, {"n": 0, "example": rec["example"]})["n"] += rec["n"]
+    if per:
+        pairs_c = [
+            (a, b)
+            for k, dp in enumerate(sample)
+            for a, b in zip(base_c[k], again_c[index[dp.id]], strict=True)
+        ]
+        if candidate_outputs is not None:
+            pairs_c += [
+                (a, b)
+                for values, other in zip(candidate_outputs, again_c, strict=True)
+                if values is not None
+                for a, b in zip(values, other, strict=True)
+            ]
+        for c, rec in _changed(cand_cols, pairs_c).items():
             unstable.setdefault(c, {"n": 0, "example": rec["example"]})["n"] += rec["n"]
     flaky = sum(
         r.ok != (again[index[dp.id]] and again[index[dp.id]].ok) for r, dp in zip(base, sample, strict=True)
     )
     out["determinism"] = {
         "prefixes": len(decision_points),
+        **({"candidates": sum(len(c) for c in all_cands)} if per else {}),
         "shuffled": True,
         "unstable": unstable,
         "raised_in_one_run": int(flaky),
@@ -642,13 +730,17 @@ def verify_extractor(
 
     # 2. outcome invariance
     if keys:
-        pairs, crashed = [], []
+        pairs, pairs_c, crashed = [], [], []
         for i, b in enumerate(ok_base):
             for r in outcome_res[2 * i : 2 * i + 2]:
                 if b is not None and not r.ok:
                     crashed.append(_last_line(r.error))
                 pairs.append((b, r.features if r.ok else None))
+                if per:
+                    pairs_c += list(zip(base_c[i], _per_candidate(r, len(base_c[i])), strict=True))
         changed = _changed([c for c in columns if c not in dropped], pairs)
+        if per:
+            changed.update(_changed([c for c in cand_cols if c not in dropped], pairs_c))
         out["outcome"] = {"keys": keys, "prefixes": len(outcome), "changed": changed, "raised": len(crashed)}
         for c, rec in changed.items():
             dropped[c] = (
@@ -664,11 +756,11 @@ def verify_extractor(
     else:
         out["outcome"] = {"skipped": "the adapter names no outcome fields"}
 
-    # 3. future invariance, through the adapter
+    # 3. future invariance, through the adapter (both functions read the prefix alone)
     out["future"] = dict(future) if isinstance(future, dict) else _future(sample, future, out["notes"])
 
     # 4. robustness (reported, never dropped)
-    out["robustness"] = _robustness(columns, cases, case_res)
+    out["robustness"] = _robustness(columns, cases, case_res, cand_cols, len(case_cands))
     out["batches"] = box.batches
     out["prefixes_run"] = box.prefixes
     out["seconds"] = round(time.monotonic() - t0, 2)
@@ -728,25 +820,36 @@ def _edge_cases(
 
 
 def _robustness(
-    columns: list[str], cases: list[tuple[str, dict]], results: list[ExecResult]
+    columns: list[str],
+    cases: list[tuple[str, dict]],
+    results: list[ExecResult],
+    candidate_columns: list[str] | None = None,
+    n_candidates: int = 0,
 ) -> dict[str, Any]:
-    """Which features raise or go missing on each edge case."""
+    """Which features raise or go missing on each edge case (the per-candidate ones on ``n_candidates``
+    candidates per case: missing when the call failed on any of them)."""
     records, failing = [], Counter()
     for (label, _), r in zip(cases, results, strict=True):
         if not r.ok:
             records.append({"case": label, "raised": _last_line(r.error)})
             failing.update(columns)
+            failing.update(candidate_columns or ())
             continue
         missing = [c for c in columns if c not in r.features]
+        rec = {
+            "case": label,
+            "raised": None,
+            "missing": missing,
+            "null": [c for c in columns if c in r.features and r.features[c] is None],
+        }
+        if candidate_columns:
+            per = _per_candidate(r, n_candidates)
+            gone = [c for c in candidate_columns if any(v is None or c not in v for v in per)]
+            missing += gone
+            if r.candidate_errors:
+                rec["candidate_raised"] = _last_line(r.candidate_errors[0])
         failing.update(missing)
-        records.append(
-            {
-                "case": label,
-                "raised": None,
-                "missing": missing,
-                "null": [c for c in columns if c in r.features and r.features[c] is None],
-            }
-        )
+        records.append(rec)
     return {"cases": records, "failing": dict(sorted(failing.items(), key=lambda kv: (-kv[1], kv[0])))}
 
 
@@ -808,17 +911,26 @@ def make_tests(
     steps_key: str = "steps",
     verification: dict | None = None,
     label_of: Callable[[DecisionPoint], Iterable[Any]] | None = None,
+    candidates: list[list[dict]] | None = None,
+    candidate_columns: list[str] | None = None,
 ) -> dict[str, Any]:
     """The extractor's tests: up to ``n`` coverage-sampled snapshots (:func:`snapshot`) with the features
     ``code`` computes on them (``columns`` only), the checks :func:`verify_tests` re-runs, and the
     compile-time ``verification`` record (masked, without timings). With ``n`` 0 the file holds no trajectory
     text. ``golden_stats`` says how many goldens were requested and recorded, and how many snapshots were too
     large or made the code raise (masking can remove what the code reads): :func:`verify_tests` fails a file
-    with fewer goldens than requested because snapshots raised."""
+    with fewer goldens than requested because snapshots raised.
+
+    With ``candidate_columns`` (the per-candidate function's), each golden also holds the features of
+    ``CANDIDATES_PER_CASE`` of its decision point's ``candidates`` (aligned with ``decision_points``; chosen
+    by :func:`pick_candidates`), each with the candidate dict."""
     goldens: list[dict] = []
     stats: dict[str, Any] = {"requested": n, "recorded": 0, "snapshots": 0, "too_large": 0, "raised": 0}
+    per = bool(candidate_columns)
+    index = {dp.id: i for i, dp in enumerate(decision_points)}
     if n > 0:
         snaps: list[dict] = []
+        snap_cands: list[list[dict]] = []
         seen: set[str] = set()
         for dp in sample_decision_points(decision_points, 2 * n, seed, label_of, "coverage"):
             s = snapshot(dp.prefix, steps_key)
@@ -827,17 +939,29 @@ def make_tests(
             elif canonical(s) not in seen:
                 seen.add(canonical(s))
                 snaps.append(s)
-        results = _Box(sandbox).run(code, snaps)
-        goldens = [
-            {"prefix": s, "features": {c: r.features[c] for c in columns if c in r.features}}
-            for s, r in zip(snaps, results, strict=True)
-            if r.ok
-        ][:n]
+                if per:
+                    cands = (candidates or [])[index[dp.id]] if candidates else []
+                    snap_cands.append(mask_secrets(pick_candidates(cands, seed, dp.id)))
+        results = _Box(sandbox).run(code, snaps, snap_cands if per else None)
+        for i, (s, r) in enumerate(zip(snaps, results, strict=True)):
+            if not r.ok:
+                continue
+            golden = {"prefix": s, "features": {c: r.features[c] for c in columns if c in r.features}}
+            if per:
+                golden["candidates"] = [
+                    {
+                        "candidate": cand,
+                        "features": {c: v[c] for c in candidate_columns if c in v} if v is not None else None,
+                    }
+                    for cand, v in zip(snap_cands[i], _per_candidate(r, len(snap_cands[i])), strict=True)
+                ]
+            goldens.append(golden)
+        goldens = goldens[:n]
         failed = [r for r in results if not r.ok]
         stats.update(snapshots=len(snaps), raised=len(failed), recorded=len(goldens))
         if failed:
             stats["first_error"] = _last_line(failed[0].error)
-    return {
+    out = {
         "format": TESTS_FORMAT,
         "about": (
             "Tests of extract.py: snapshots of onboarding decision-point prefixes and the features the "
@@ -856,17 +980,35 @@ def make_tests(
             {k: v for k, v in (verification or {}).items() if k != "seconds"}, by_key=False
         ),
     }
+    if per:
+        out["candidate_columns"] = list(candidate_columns)
+    return out
 
 
 def restrict_tests(tests: dict | None, columns: Iterable[str]) -> dict | None:
     """``tests`` for the columns that are kept (after drops later in discovery)."""
     if tests is None:
         return None
-    keep = [c for c in tests["columns"] if c in set(columns)]
+    columns = set(columns)
+    keep = [c for c in tests["columns"] if c in columns]
     out = {**tests, "columns": keep}
     out["goldens"] = [
         {**g, "features": {c: v for c, v in g["features"].items() if c in keep}} for g in tests["goldens"]
     ]
+    if "candidate_columns" in tests:
+        per = [c for c in tests["candidate_columns"] if c in columns]
+        out["candidate_columns"] = per
+        for g in out["goldens"]:
+            if "candidates" in g:
+                g["candidates"] = [
+                    {
+                        **x,
+                        "features": None
+                        if x["features"] is None
+                        else {c: v for c, v in x["features"].items() if c in per},
+                    }
+                    for x in g["candidates"]
+                ]
     return out
 
 
@@ -889,6 +1031,19 @@ def check_tests_file(tests: Any) -> dict:
         problems.append("'goldens' is not a list of {prefix, features} objects")
     if not isinstance(tests.get("outcome_keys", []), list):
         problems.append("'outcome_keys' is not a list")
+    per = tests.get("candidate_columns", [])
+    if not isinstance(per, list) or not all(isinstance(c, str) for c in per):
+        problems.append("'candidate_columns' is not a list of names")
+    for g in goldens if isinstance(goldens, list) else []:
+        cands = g.get("candidates", []) if isinstance(g, dict) else []
+        if not isinstance(cands, list) or not all(
+            isinstance(x, dict)
+            and isinstance(x.get("candidate"), dict)
+            and (x.get("features") is None or isinstance(x.get("features"), dict))
+            for x in cands
+        ):
+            problems.append("a golden's 'candidates' is not a list of {candidate, features} objects")
+            break
     if not isinstance(tests.get("extractor_sha256", ""), str):
         problems.append("'extractor_sha256' is not a string")
     stats = tests.get("golden_stats", {})
@@ -974,8 +1129,12 @@ def verify_tests(
     prefixes = [g["prefix"] for g in goldens]
     keys = list(tests.get("outcome_keys") or [])
     variants = [with_outcomes(p, keys, ok) for p in prefixes for ok in (True, False)]
-    first = box.run(code, prefixes)
-    rest = box.run(code, prefixes[::-1] + variants)  # the second run, reversed, in other interpreters
+    per = list(tests.get("candidate_columns") or [])
+    cands = [[x["candidate"] for x in g.get("candidates") or []] for g in goldens] if per else None
+    first = box.run(code, prefixes, cands)
+    # the second run, reversed, in other interpreters
+    more = None if cands is None else cands[::-1] + [c for c in cands for _ in (True, False)]
+    rest = box.run(code, prefixes[::-1] + variants, more)
     second, outcome_res = rest[: len(prefixes)][::-1], rest[len(prefixes) :]
     errors, mismatches = [], []
     for i, (g, r) in enumerate(zip(goldens, first, strict=True)):
@@ -986,11 +1145,23 @@ def verify_tests(
             want, got = _get(g["features"], c), _get(r.features, c)
             if (want is _MISSING) != (got is _MISSING) or (want is not _MISSING and not same(want, got)):
                 mismatches.append(f"golden {i}, {c}: expected {_show(want)}, got {_show(got)}")
+        if per:
+            recorded = g.get("candidates") or []
+            for j, (x, v) in enumerate(zip(recorded, _per_candidate(r, len(recorded)), strict=True)):
+                for c in per if x["features"] is not None or v is not None else ():
+                    want, got = _get(x["features"], c), _get(v, c)
+                    if (want is _MISSING) != (got is _MISSING) or (
+                        want is not _MISSING and not same(want, got)
+                    ):
+                        mismatches.append(
+                            f"golden {i}, candidate {j}, {c}: expected {_show(want)}, got {_show(got)}"
+                        )
     bad = errors + mismatches
+    n_cols = len(columns) + len(per)
     rep.add(
         "goldens",
         not bad,
-        f"{len(goldens)} golden prefixes reproduce their {len(columns)} recorded features"
+        f"{len(goldens)} golden prefixes reproduce their {n_cols} recorded features"
         if not bad
         else f"{len(bad)} difference(s); " + "; ".join(bad[:5]),
     )
@@ -1002,6 +1173,13 @@ def verify_tests(
             strict=True,
         ),
     )
+    if per:
+        pairs = [
+            (a, b)
+            for r1, r2, c in zip(first, second, cands, strict=True)
+            for a, b in zip(_per_candidate(r1, len(c)), _per_candidate(r2, len(c)), strict=True)
+        ]
+        unstable.update(_changed(per, pairs))
     rep.add(
         "determinism",
         not unstable,
@@ -1017,6 +1195,16 @@ def verify_tests(
             for r in outcome_res[2 * i : 2 * i + 2]
         ]
         changed = _changed([c for c in columns if c not in unstable], pairs)
+        if per:
+            pairs_c = [
+                (a, b)
+                for i in range(len(prefixes))
+                for r in outcome_res[2 * i : 2 * i + 2]
+                for a, b in zip(
+                    _per_candidate(first[i], len(cands[i])), _per_candidate(r, len(cands[i])), strict=True
+                )
+            ]
+            changed.update(_changed([c for c in per if c not in unstable], pairs_c))
         rep.add(
             "outcome invariance",
             not changed,
@@ -1099,8 +1287,9 @@ def verify_head(path: str | Path, sandbox: Any = None, require_goldens: bool = F
     except ValueError as e:
         raise ValueError(f"{TESTS_FILE} is not valid JSON: {e}") from e
     tests = check_tests_file(tests)
-    card_cols = [f.name for f in agent.card_.features if f.source == "extractor"]
-    uncovered = [c for c in card_cols if c not in set(tests["columns"])]
+    card_cols = [f.name for f in agent.card_.features if f.source in ("extractor", "extractor_candidate")]
+    covered = set(tests["columns"]) | set(tests.get("candidate_columns") or [])
+    uncovered = [c for c in card_cols if c not in covered]
     rep.add(
         "coverage",
         not uncovered,

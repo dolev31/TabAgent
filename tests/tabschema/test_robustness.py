@@ -267,8 +267,9 @@ class FakeLLM:
 
 
 def config(**kw) -> TabSchemaConfig:
-    # context_text=False: these tests pin the LLM-written features (the context text has its own tests);
-    # usefulness=False: the usefulness estimate (cross-validated CatBoost fits) has its own tests
+    # context_text=False, last_step_text=False: these tests pin the LLM-written features (the appended texts
+    # have their own tests); usefulness=False: the usefulness estimate (cross-validated CatBoost fits) has its
+    # own tests
     return TabSchemaConfig(
         **{
             "n_analyze": 3,
@@ -276,6 +277,7 @@ def config(**kw) -> TabSchemaConfig:
             "pair_embeddings": False,
             "timeout_s": 30,
             "context_text": False,
+            "last_step_text": False,
             "usefulness": False,
             **kw,
         }
@@ -592,6 +594,7 @@ def test_unplanned_columns_are_dropped_and_types_follow_the_data(tmp_path):
         TARGET,
         known_paths=union_paths(dp.prefix for dp in dps),
         context_text=False,
+        last_step_text=False,
     )
     assert compiled.dropped["whatever_extra"] == "not in the accepted feature plan"
     assert compiled.features == {
@@ -1687,15 +1690,17 @@ def test_the_context_text_skips_system_prompts_and_keeps_both_ends_of_long_histo
 
 
 def test_the_context_text_never_shadows_an_llm_column_and_is_skipped_when_constant(tmp_path):
-    from tabagent.tabschema.compile import CompiledExtractor, _add_context_text
+    from tabagent.tabschema.compile import CompiledExtractor, _add_appended
 
     prefixes = [{"steps": [{"name": "user", "content": f"request {i}"}]} for i in range(4)]
     res = CompiledExtractor("features = {}", {"context_text": "cat"})
-    _add_context_text(res, prefixes, {"context_text"})  # the LLM's extractor already has a context_text
+    _add_appended(
+        res, "context_text", prefixes, {"context_text"}
+    )  # the LLM's extractor already has a context_text
     assert res.features["context_text"] == "cat" and res.features["tabagent_context_text"] == "text"
     assert "features['tabagent_context_text']" in res.code
     flat = CompiledExtractor("features = {}", {"a": "num"})
-    _add_context_text(flat, [{"steps": [{"name": "Planner", "data": 1}]}] * 4, {"a"})  # no text anywhere
+    _add_appended(flat, "context_text", [{"steps": [{"name": "Planner", "data": 1}]}] * 4, {"a"})  # no text
     assert set(flat.features) == {"a"} and "no context text" in flat.notes[0]
     off = discover(tmp_path, FakeLLM(), context_text=False)
     assert "context_text" not in off.extractor.features
