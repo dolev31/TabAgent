@@ -22,6 +22,7 @@ from test_robustness import (
     PROPOSALS,
     TARGET,
     FakeLLM,
+    about_weather,
     adapter,
     code_for,
     config,
@@ -366,7 +367,7 @@ def test_analyzer_prompts_too_long_are_clipped_harder_then_the_point_is_lost(tmp
 
     def analyzer(p, n):
         sizes.append(len(p))
-        if "weather" in p and len(p) > 1_500:
+        if about_weather(p) and len(p) > 1_500:
             raise ProviderError(400, "prompt is too long: 200000 tokens > 8192 maximum")
         return DEFAULT["analyzer"](p, n)
 

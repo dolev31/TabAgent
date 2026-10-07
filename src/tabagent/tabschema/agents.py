@@ -204,6 +204,9 @@ class Stage:
     role = "stage"
     workers = 1
     retry = RetryPolicy()
+    #: The decision chooses among candidates: the FeatureAggregator, judge and MetaJudge prompts then end with
+    #: the release's note on per-candidate features (``tabagent_candidate_note``; :meth:`noted`).
+    per_candidate = False
 
     def __init__(
         self,
@@ -217,6 +220,15 @@ class Stage:
         self.fallback = fallback  # asked once when the provider's content filter stops ``llm``'s answer
         self.events: list[dict[str, Any]] = []
         self._events_lock = threading.Lock()
+
+    def noted(self, prompt: str) -> str:
+        """``prompt``, followed by the note on per-candidate features when the decision has candidates
+        (``per_candidate``); unchanged otherwise, so a decision without candidates is asked as before."""
+        return (
+            prompts.append(prompt, prompts.render("tabagent_candidate_note"))
+            if self.per_candidate
+            else prompt
+        )
 
     def note(self, event: str, **fields: Any) -> None:
         """Record what happened in this stage (``events``; thread-safe)."""
@@ -643,17 +655,33 @@ def fit_for_prompt(value: Any, budget: int) -> Any:
     return out
 
 
-def analyzer_prompt(dp: DecisionPoint, target: str, budget: int = 400_000) -> str:
+def analyzer_prompt(
+    dp: DecisionPoint,
+    target: str,
+    budget: int = 400_000,
+    candidates: list[dict] | None = None,
+    seed: int = 0,
+) -> str:
     """The FeatureAnalyzer prompt for ``dp``: its prefix fit to ``budget`` characters of JSON
     (:func:`fit_for_prompt`), the schema of the full prefix, the target step (fit to a quarter of the
-    budget)."""
-    return prompts.render(
+    budget). For a decision with ``candidates`` (candidate dicts), the release's addition
+    (``tabagent_analyzer_candidates``) follows: features of a candidate may be proposed too, with three of the
+    decision's candidates, picked from ``seed`` and the point's id (:func:`pick_examples`, never by order or
+    label) and shown as the extractor's prompt shows them (:func:`candidate_examples`). Without candidates
+    the prompt is the paper's alone."""
+    paper = prompts.render(
         "feature_analyzer",
         trajectory_json=_dump(fit_for_prompt(dp.prefix, budget)),
         trajectory_schema=union_schema([dp.prefix]),
         target_name=target,
         target_json=_dump(fit_for_prompt(dp.target_step, budget // 4)),
         trajectory_file=dp.source or dp.trajectory_id,
+    )
+    examples = candidate_examples(pick_examples(candidates, seed, dp.id))
+    if not examples:
+        return paper
+    return prompts.append(
+        paper, prompts.render("tabagent_analyzer_candidates", candidate_examples=_dump(examples))
     )
 
 
@@ -666,17 +694,26 @@ class FeatureAnalyzer(Stage):
 
     role = "analyzer"
     max_chars = 400_000
+    seed = 0  # picks the example candidates the prompt shows (``pick_examples``)
 
-    def prompt(self, dp: DecisionPoint, target: str, budget: int | None = None) -> str:
+    def prompt(
+        self,
+        dp: DecisionPoint,
+        target: str,
+        budget: int | None = None,
+        candidates: list[dict] | None = None,
+    ) -> str:
         """The FeatureAnalyzer prompt for ``dp`` (its prefix fit to ``budget`` characters, default
-        ``max_chars``)."""
-        return analyzer_prompt(dp, target, budget or self.max_chars)
+        ``max_chars``; ``candidates``: the decision's candidate dicts, when it has them)."""
+        return analyzer_prompt(dp, target, budget or self.max_chars, candidates, self.seed)
 
-    def __call__(self, dp: DecisionPoint, target: str) -> list[FeatureSpec]:
+    def __call__(
+        self, dp: DecisionPoint, target: str, candidates: list[dict] | None = None
+    ) -> list[FeatureSpec]:
         budget = self.max_chars
         for tries in range(3):
             try:
-                prompt = self.prompt(dp, target, budget)
+                prompt = self.prompt(dp, target, budget, candidates)
                 out = self.ask_json(prompt)
                 break
             except LLMPromptTooLong:
@@ -737,12 +774,32 @@ def shown_candidate(c: dict, value_chars: int = CANDIDATE_VALUE_CHARS) -> dict:
     return out
 
 
+def _ranked(candidates: list[dict], seed: int, key: str, n: int) -> list[int]:
+    """The positions of ``n`` of ``candidates``, ranked by a hash of ``seed``, ``key`` and each candidate's
+    own content, in a canonical order (by id): the same candidates in any order of the list."""
+    canon = [json.dumps(c, sort_keys=True, default=str) for c in candidates]
+    digest = [hashlib.sha256(f"{seed}:{key}:{text}".encode()).hexdigest() for text in canon]
+    top = sorted(range(len(candidates)), key=lambda i: (digest[i], canon[i]))[:n]
+    return sorted(top, key=lambda i: (str(candidates[i].get("id")), canon[i]))
+
+
+def pick_examples(
+    candidates: list[dict] | None, seed: int = 0, key: str = "", n: int = EXAMPLE_CANDIDATES
+) -> list[dict]:
+    """The ``n`` candidate dicts of a decision that its prompts show as examples, chosen from ``seed``,
+    ``key`` (the decision point's id, so that the points of a fixed catalog show different ones) and the
+    candidates themselves: never from the adapter's order or a label, so a ``candidates_fn`` that lists the
+    chosen candidate first does not make it an example. In a canonical order (by id)."""
+    return [candidates[i] for i in _ranked(candidates, seed, key, n)] if candidates else []
+
+
 def candidate_examples(candidates: list[dict] | None) -> list[dict] | None:
-    """The decision's first ``EXAMPLE_CANDIDATES`` candidate dicts as the prompts show them
-    (:func:`shown_candidate`; None without candidates)."""
+    """``EXAMPLE_CANDIDATES`` of a decision's candidate dicts as the prompts show them (:func:`pick_examples`,
+    which callers that know the decision point use first; :func:`shown_candidate`), None without
+    candidates."""
     if not candidates:
         return None
-    return [shown_candidate(c) for c in candidates[:EXAMPLE_CANDIDATES]]
+    return [shown_candidate(c) for c in pick_examples(candidates)]
 
 
 class CodeExtractor(Stage):
@@ -928,22 +985,23 @@ def extract_with_retries(
     target: str,
     max_retries: int = 3,
     candidates: list[list[dict] | None] | None = None,
+    examples: list[dict] | None = None,
 ) -> tuple[ExtractionAttempt, list[ExtractionAttempt]]:
     """Generate, check and execute extraction code; on failure retry up to ``max_retries`` times with the
     error and the failed code in the prompt (App. D.1). Returns the final attempt and the history.
 
-    ``candidates`` (aligned with ``prefixes``) are the decision's candidate dicts: the prompt shows three of
-    them, and the per-candidate function runs on them. An attempt whose per-candidate function fails too often
+    ``candidates`` (aligned with ``prefixes``) are the decision's candidate dicts: the per-candidate function
+    runs on them, and the prompt shows ``examples`` (:func:`pick_examples`; by default picked from the first
+    decision's candidates). An attempt whose per-candidate function fails too often
     (``candidate_error``) is retried like a failed one; when no later attempt does better, the last such
     attempt is returned, its prefix features intact."""
     history: list[ExtractionAttempt] = []
     errors: list[str] = []
     retry_block = ""
     write = getattr(extractor, "write", None)
-    examples = None
-    if candidates is not None:
-        examples = next((c for c in candidates if c), None)
-    more = {} if examples is None else {"candidates": examples}
+    if examples is None and candidates is not None:
+        examples = pick_examples(next((c for c in candidates if c), None))
+    more = {"candidates": examples} if examples else {}
     fallback: ExtractionAttempt | None = None
     for n in range(max_retries + 1):
         try:
@@ -1029,16 +1087,24 @@ def sample_output(features: Any) -> Any:
 SAMPLE_CANDIDATE_OUTPUTS = 6
 
 
-def candidate_samples(results: list[ExecResult], candidates: list[list[dict] | None]) -> list[dict]:
+def candidate_samples(
+    results: list[ExecResult],
+    candidates: list[list[dict] | None],
+    keys: list[str] | None = None,
+    seed: int = 0,
+) -> list[dict]:
     """Per-candidate outputs for the CodeValidator: up to two candidates of each of the first prefixes the
-    function ran on, each output with the candidate it was computed for (``SAMPLE_CANDIDATE_OUTPUTS`` in
-    all)."""
+    function ran on (chosen as :func:`pick_examples` chooses, from ``seed``, the decision point's id in
+    ``keys`` and the candidates, never from their order), each output with the candidate it was computed for
+    (``SAMPLE_CANDIDATE_OUTPUTS`` in all)."""
     out: list[dict] = []
-    for r, cands in zip(results, candidates, strict=False):
+    for i, (r, cands) in enumerate(zip(results, candidates, strict=False)):
         if not r.ok or not r.candidates or not cands:
             continue
-        done = [(c, v) for c, v in zip(cands, r.candidates, strict=False) if v is not None][:2]
-        out += [{"candidate": shown_candidate(c), "features": sample_output(v)} for c, v in done]
+        done = [(c, v) for c, v in zip(cands, r.candidates, strict=False) if v is not None]
+        key = keys[i] if keys is not None and i < len(keys) else str(i)
+        picked = [done[j] for j in _ranked([c for c, _ in done], seed, key, 2)]
+        out += [{"candidate": shown_candidate(c), "features": sample_output(v)} for c, v in picked]
         if len(out) >= SAMPLE_CANDIDATE_OUTPUTS:
             break
     return out[:SAMPLE_CANDIDATE_OUTPUTS]
@@ -1157,8 +1223,10 @@ class FeatureAggregator(Stage):
 
     def _aggregate(self, specs: list[FeatureSpec]) -> tuple[list[FeatureSpec], list[FeatureSpec]]:
         dicts = [s.to_dict() for s in specs]
-        prompt = prompts.render(
-            "feature_aggregator", potential_features=_dump(dicts), features_schema=get_json_schema(dicts)
+        prompt = self.noted(
+            prompts.render(
+                "feature_aggregator", potential_features=_dump(dicts), features_schema=get_json_schema(dicts)
+            )
         )
         out = self.ask_json(prompt)
         if isinstance(out, list):  # a bare list: the features it keeps

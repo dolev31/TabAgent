@@ -27,8 +27,10 @@ from test_robustness import (
 )
 
 import tabagent
+from tabagent.tabschema.agents import analyzer_prompt
 from tabagent.tabschema.estimate import DataSummary, Profile, estimate, summarize
 from tabagent.tabschema.sampling import sample_decision_points
+from tabagent.tabschema.trajectory import candidate_dict
 
 CLAUDE, GPT = "aws/claude-opus-5-5", "azure/gpt-6-sol"
 PRICES = {CLAUDE: (3.0, 15.0), GPT: (2.0, 10.0)}  # round prices: the check is on tokens, priced alike
@@ -301,12 +303,14 @@ def test_the_dry_run_breaks_the_estimate_down_by_stage_and_counts_the_audit():
 
 def test_the_candidate_sections_and_the_repair_round_are_counted():
     """A decision with candidates adds the per-candidate sections (and three example candidates) to the
-    CodeExtractor and CodeValidator prompts; the compile step's repair round is one more call of each, unless
+    CodeExtractor and CodeValidator prompts, the section on features of a candidate (with the point's own
+    candidates) to the FeatureAnalyzer prompts, and the note on them to the FeatureAggregator, judge and
+    MetaJudge prompts; the compile step's repair round is one more call of each, unless
     ``compile_repair=False``."""
     plain = DataSummary([20_000] * 4, [3_000] * 4, 4_000, [], 200)
     with_cands = DataSummary([20_000] * 4, [3_000] * 4, 4_000, [], 200, candidate_chars=1_500)
     base, more = estimate(plain, model=CLAUDE), estimate(with_cands, model=CLAUDE)
-    for stage in ("extractor", "validator"):
+    for stage in ("extractor", "validator", "aggregator", "judge_relevance", "meta_judge"):
         assert more.stages[stage].input_tokens > base.stages[stage].input_tokens, stage
         assert more.stages[stage].calls == base.stages[stage].calls, stage
     lean = estimate(plain, model=CLAUDE, compile_repair=False)
@@ -314,4 +318,8 @@ def test_the_candidate_sections_and_the_repair_round_are_counted():
         assert lean.stages[stage].calls == pytest.approx(base.stages[stage].calls - P.compile_repair_calls)
     dps = [dp for t in runs()[:2] for dp in adapter().decision_points(t, TARGET)]
     data = summarize(dps[:1], dps, TARGET, candidates_of=adapter().candidates)
-    assert data.candidate_chars > 0 and summarize(dps[:1], dps, TARGET).candidate_chars == 0
+    single = summarize(dps[:1], dps, TARGET)
+    assert data.candidate_chars > 0 and single.candidate_chars == 0
+    cands = [candidate_dict(c) for c in adapter().candidates(dps[0])]
+    assert data.analyzer_chars == [len(analyzer_prompt(dps[0], TARGET, candidates=cands))]  # as asked
+    assert data.analyzer_chars[0] > single.analyzer_chars[0] == len(analyzer_prompt(dps[0], TARGET))

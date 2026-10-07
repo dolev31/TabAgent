@@ -32,7 +32,7 @@ from test_robustness import (
 import tabagent
 from tabagent import auto
 from tabagent.tabschema import TabSchema, TabSchemaConfig, prompts
-from tabagent.tabschema.agents import CodeExecutor, CodeExtractor, CodeValidator, FeatureSpec
+from tabagent.tabschema.agents import CodeExecutor, CodeExtractor, CodeValidator, FeatureSpec, pick_examples
 from tabagent.tabschema.compile import (
     POSITIONAL_REASON,
     TAKEN_REASON,
@@ -139,8 +139,9 @@ def test_the_prompt_additions_follow_the_verbatim_paper_prompts():
     assert with_cands.startswith(plain.rstrip("\n"))
     tail = with_cands[len(plain.rstrip("\n")) :]
     assert "extract_candidate_features(trajectory_data, candidate)" in tail
-    assert '"id": "search_flights"' in tail and '"id": "get_weather"' in tail  # the first three candidates
-    assert '"id": "send_email"' not in tail
+    shown = {c["id"] for c in pick_examples(cands)}  # three, picked label-free, never the first three
+    assert len(shown) == 3 and all(f'"id": "{c["id"]}"' in tail for c in cands if c["id"] in shown)
+    assert not any(f'"id": "{c["id"]}"' in tail for c in cands if c["id"] not in shown)
     assert "index the decision's candidates by position" in tail and "global dict" in tail
     assert "the code may define a second function" in tail  # optional, never required
     assert "a model's, a skill's or an application's description" in tail  # examples beyond APIs

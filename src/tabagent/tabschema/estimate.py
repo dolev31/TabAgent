@@ -4,7 +4,8 @@
 The estimate follows the pipeline stage by stage and builds what it can from the data itself:
 
 * the **FeatureAnalyzer** prompts are rendered exactly, for the very decision points the run will analyze (the
-  same sample, the same clipping);
+  same sample, the same clipping, and, for a decision with candidates, the same section on features of a
+  candidate with the point's own candidates);
 * the **CodeExtractor** and **CodeValidator** prompts are the templates plus each analyzed point's own schema
   (exact) plus the feature plans and code the answers will hold (estimated); the retries carry the failed code
   and its error;
@@ -15,7 +16,8 @@ The estimate follows the pipeline stage by stage and builds what it can from the
   round (one more CodeExtractor and CodeValidator call) is counted, since it is asked whenever an accepted
   feature has no column, is flagged or indexes candidates by position, which most real runs have;
 * for a decision with candidates, the CodeExtractor and CodeValidator prompts carry the release's section on
-  the per-candidate function, with three of the decision's candidates (measured on the data);
+  the per-candidate function, with three of the decision's candidates (measured on the data), and the
+  FeatureAggregator, judge and MetaJudge prompts its note on features of a candidate;
 * the **OutputAuditor** prompts hold the audited points' prefixes, clipped as the run clips them (exact),
   and up to 48 features each.
 
@@ -46,6 +48,7 @@ from tabagent.tabschema.agents import (
     analyzer_prompt,
     candidate_examples,
     fit_for_prompt,
+    pick_examples,
 )
 from tabagent.tabschema.audit import AUDIT_MAX_CHARS, AUDIT_MAX_COLUMNS
 from tabagent.tabschema.judges import BATCH as JUDGE_BATCH
@@ -161,22 +164,27 @@ def summarize(
     max_chars: int = 400_000,
     audit_sample: list | None = None,
     candidates_of: Any = None,
+    seed: int = 0,
 ) -> DataSummary:
     """Measure the data-dependent prompt sizes: the FeatureAnalyzer prompts of the analyzed ``sample``
     (rendered as the run renders them), each analyzed point's schema, the schema merged over (a sample of) the
     ``decision_points``, the clipped prefixes of the ``audit_sample``, and the example candidates the
     CodeExtractor and CodeValidator prompts show (``candidates_of``: the adapter's candidates, for a decision
-    that has them)."""
+    that has them; the FeatureAnalyzer prompts show each analyzed point's own, picked with the run's
+    ``seed`` as the run picks them)."""
     step = max(1, len(decision_points) // SCHEMA_SAMPLE)
     merged = merge_examples([dp.prefix for dp in decision_points[::step]])
+
+    def cands(dp) -> list[dict] | None:
+        return None if candidates_of is None else [candidate_dict(c) for c in candidates_of(dp) or ()]
+
     shown = 0
     for dp in decision_points[:50] if candidates_of is not None else []:
-        cands = [candidate_dict(c) for c in candidates_of(dp) or ()]
-        if cands:
-            shown = len(_dump(candidate_examples(cands)))
+        if found := cands(dp):
+            shown = len(_dump(candidate_examples(pick_examples(found, seed, dp.id))))
             break
     return DataSummary(
-        analyzer_chars=[len(analyzer_prompt(dp, target, max_chars)) for dp in sample],
+        analyzer_chars=[len(analyzer_prompt(dp, target, max_chars, cands(dp), seed)) for dp in sample],
         schema_chars=[_schema_len(dp.prefix) for dp in sample],
         merged_schema_chars=len(str(union_schema([merged]))),
         audit_prefix_chars=[
@@ -277,22 +285,24 @@ def estimate(
         (n + comp_val_calls) * pr.validator_out,
     )
 
+    note = len(text("tabagent_candidate_note")) if data.candidate_chars else 0  # with candidates
     agg_calls = math.ceil(distinct / AGGREGATOR_BATCH) if distinct else 0
     stages["aggregator"] = (
         agg_calls,
-        agg_calls * (len(text("feature_aggregator")) + 60 * AGGREGATOR_BATCH) + distinct * pr.spec_chars,
+        agg_calls * (len(text("feature_aggregator")) + note + 60 * AGGREGATOR_BATCH)
+        + distinct * pr.spec_chars,
         distinct * pr.aggregator_out_per_proposal,
     )
     judge_calls = math.ceil(kept / JUDGE_BATCH) if kept else 0
     for dim in ("relevance", "generality", "impact"):
         stages[f"judge_{dim}"] = (
             judge_calls,
-            judge_calls * (len(text(f"judge_{dim}")) + 60 * JUDGE_BATCH) + kept * pr.spec_chars,
+            judge_calls * (len(text(f"judge_{dim}")) + note + 60 * JUDGE_BATCH) + kept * pr.spec_chars,
             kept * pr.judge_out_per_feature,
         )
     stages["meta_judge"] = (
         judge_calls,
-        judge_calls * (len(text("meta_judge")) + 3 * 300) + kept * pr.meta_row_chars,
+        judge_calls * (len(text("meta_judge")) + note + 3 * 300) + kept * pr.meta_row_chars,
         kept * pr.meta_out_per_feature,
     )
     if audit and data.audit_prefix_chars:

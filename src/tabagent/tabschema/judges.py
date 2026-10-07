@@ -49,10 +49,12 @@ class Judge(Stage):
 
     def __call__(self, features: list[FeatureSpec]) -> list[dict[str, Any]]:
         dicts = [f.to_dict() for f in features]
-        prompt = prompts.render(
-            JUDGES[self.dimension],
-            filtered_features=json.dumps(dicts, indent=2, ensure_ascii=False),
-            features_schema=get_json_schema(dicts),
+        prompt = self.noted(
+            prompts.render(
+                JUDGES[self.dimension],
+                filtered_features=json.dumps(dicts, indent=2, ensure_ascii=False),
+                features_schema=get_json_schema(dicts),
+            )
         )
         out = self.ask_json(prompt)
         given = {f.key for f in features}
@@ -175,12 +177,14 @@ class MetaJudge(Stage):
         return list(decisions.values())
 
     def _decide(self, verdicts: dict[str, list[dict]], table: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        prompt = prompts.render(
-            "meta_judge",
-            relevance_schema=get_json_schema(verdicts.get("relevance", [])),
-            generality_schema=get_json_schema(verdicts.get("generality", [])),
-            impact_schema=get_json_schema(verdicts.get("impact", [])),
-            all_judge_features=json.dumps(table, indent=2, default=str, ensure_ascii=False),
+        prompt = self.noted(
+            prompts.render(
+                "meta_judge",
+                relevance_schema=get_json_schema(verdicts.get("relevance", [])),
+                generality_schema=get_json_schema(verdicts.get("generality", [])),
+                impact_schema=get_json_schema(verdicts.get("impact", [])),
+                all_judge_features=json.dumps(table, indent=2, default=str, ensure_ascii=False),
+            )
         )
         out = self.ask_json(prompt)
         given = {normalize_name(r["feature_name"]) for r in table}

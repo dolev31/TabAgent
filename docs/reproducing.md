@@ -54,6 +54,7 @@ card with an embedding-similarity feature also downloads the e5-small-v2 encoder
 | Table 15 and Fig. 4 (cost formulas and the reported points) | `experiments.efficiency.cost`, `experiments.efficiency.pareto --paper` | CPU | seconds | none | public |
 | per-decision latency on public data | `experiments.efficiency.latency` | CPU | 5 min | 8.2 MB | public |
 | the release's within-decision relative features on public data ([Components](components.md)) | `experiments.relative_features` | CPU | 6 min | 604 MB + 3.5 MB (shared) | public |
+| the release's TabSchema, onboarded with an LLM on public τ²-bench logs ([Components](components.md), "Evidence") | `experiments.tabschema_tau2 download`; `... commands` prints the three onboardings; `... evaluate --previous RUN --run1 RUN --run2 RUN` | CPU; the onboardings need an LLM API | evaluation 39 min; an onboarding takes about 32 min and about $12 to $13 of LLM calls | 68 MB | public; an onboarding asks an LLM, so its card and numbers vary with the model and from run to run |
 | every result on the CUGA agent's AppWorld trajectories: AppWorld tool shortlisting and application selection (Table 1, Tables 5–10, 12–14, 19; Figs. 5–7), the in-loop hot swap (Tables 3, 23), Table 16, Figs. 8a, 9–14, Tables 17, 21 and 22 (AppWorld rows), Tables 18, 24 and 25 | none | | | | not released |
 | OAK and BPO rows of Table 1 | none (the benchmarks are public; loaders are not included yet) | | | | public |
 
@@ -115,6 +116,15 @@ against always-activate (49.6), as in the paper. Skill selection over fine-tuned
 acts): Table 2 as above. Trajectories to 90% of full-pool quality (Table 17, ten seeds): Claude-3.7 37
 [32, 43], GPT-4.1 45 [40, 51], GPT-4.1-mini 45 [38, 53], o4-mini 51 [45, 58], as in the paper. Hashed tool
 names at test time with the prior carried (Table 21, τ² row): P@R 76.6 → 54.3, −22.3 pp, as in the paper.
+
+**TabSchema on public τ²-bench logs** (`experiments.tabschema_tau2`): the GPT-4.1 agent's airline, retail and
+telecom result files of the official release, its next tool call as a ranking decision (3,226 decisions,
+43,093 rows). `download` fetches the three files (checked against their SHA-256) into the cache, `commands`
+prints the onboarding of each pipeline version (Claude Opus 5.5, GPT-6 Sol writing the code, 20 analyzed
+decision points, accepted features only), and `evaluate` cross-validates the three run directories' cards
+and their variants on identical rows and folds, writing results/tabschema_tau2.json. The evaluation of given
+run directories is deterministic; a new onboarding gives another card, so its numbers differ from those in
+[Components](components.md).
 
 ## Differences from the paper
 

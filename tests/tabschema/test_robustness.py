@@ -28,6 +28,7 @@ import tabagent
 from tabagent import DecisionSpec, DecisionTable, Feature, FeatureCard, TabAgent, TabHead
 from tabagent.adapters import NEXT_TOOL_CALL, TOOL_SHORTLIST, CugaAdapter, OpenAIMessagesAdapter
 from tabagent.api import DryRun, TabAgentHead
+from tabagent.defaults import DEFAULT_SEED
 from tabagent.tabschema import TabSchema, TabSchemaConfig, Trajectory, agents, checks, prompts
 from tabagent.tabschema.agents import (
     CodeExecutor,
@@ -35,6 +36,7 @@ from tabagent.tabschema.agents import (
     FeatureSpec,
     LLMFormatError,
     normalize_name,
+    pick_examples,
     premerge,
 )
 from tabagent.tabschema.compile import ExtractionError, ExtractorRunner, compile_extractor
@@ -59,6 +61,7 @@ from tabagent.tabschema.trajectory import (
     TASK_KEYS,
     Candidate,
     GenericJsonAdapter,
+    candidate_dict,
     get_json_schema,
     union_paths,
     union_schema,
@@ -132,6 +135,13 @@ def runs(n: int = 16, make=raw_run) -> list[Trajectory]:
 
 def tool_candidates(dp) -> list[Candidate]:
     return [Candidate(t, t.replace("_", " "), d) for t, d in TOOLS.items()]
+
+
+def shown_sets(point_ids, seed: int = DEFAULT_SEED) -> set[tuple[str, ...]]:
+    """The distinct sets of example candidates the given decision points' prompts show
+    (``agents.pick_examples``: each point its own)."""
+    cands = [candidate_dict(c) for c in tool_candidates(None)]
+    return {tuple(c["id"] for c in pick_examples(cands, seed, i)) for i in point_ids}
 
 
 def used_tools(dp, raw) -> set[str]:
@@ -292,9 +302,15 @@ def discover(tmp_path, llm, trajs=None, run_id: str = "r1", ad=None, **kw):
     return schema_for(tmp_path, llm, run_id, ad, **kw).discover(runs() if trajs is None else trajs, TARGET)
 
 
+def about_weather(prompt: str) -> bool:
+    """Whether an analyzer prompt is about a weather task: its trajectory, not the example candidates the
+    release's section shows (one of them is ``get_weather``)."""
+    return "weather" in prompt.split("\n# Additional rules")[0]
+
+
 def with_bad_feature(p, n):
     """Analyzer answer: the usual proposals, plus ``bad_feature`` on the weather tasks."""
-    extra = [spec("bad_feature")] if "weather" in p else []
+    extra = [spec("bad_feature")] if about_weather(p) else []
     return json.dumps({"potential_features": PROPOSALS + extra})
 
 
@@ -337,7 +353,7 @@ def test_answers_cut_at_the_output_limit_raise_a_clear_error(tmp_path):
         discover(tmp_path, FakeLLM(aggregator=cut))
 
     def cut_weather(p, n):  # one decision point's truncated analysis loses only that point
-        return (with_bad_feature(p, n)[:40], "length") if "weather" in p else DEFAULT["analyzer"](p, n)
+        return (with_bad_feature(p, n)[:40], "length") if about_weather(p) else DEFAULT["analyzer"](p, n)
 
     result = discover(tmp_path, FakeLLM(analyzer=cut_weather), run_id="r2", n_analyze=16, workers=4)
     lost = [a for a in result.report.analyzed if a["error"]]
@@ -381,7 +397,7 @@ def test_empty_answers_are_a_provider_error_retried_and_never_stored(tmp_path, a
 )
 def test_wrong_shapes_on_some_decision_points_only_lose_those_points(tmp_path, payload):
     def analyzer(p, n):
-        return json.dumps(payload) if "weather" in p else DEFAULT["analyzer"](p, n)
+        return json.dumps(payload) if about_weather(p) else DEFAULT["analyzer"](p, n)
 
     result = discover(tmp_path, FakeLLM(analyzer=analyzer), n_analyze=16, workers=4)
     assert set(result.extractor.features) == set(EXPRESSIONS)
@@ -389,7 +405,7 @@ def test_wrong_shapes_on_some_decision_points_only_lose_those_points(tmp_path, p
 
 def test_provider_errors_on_some_decision_points_only_lose_those_points(tmp_path):
     def flaky(p, n):
-        if "weather" in p:
+        if about_weather(p):
             raise ValueError("unsupported parameter for this model")  # not transient: never retried
         return DEFAULT["analyzer"](p, n)
 
@@ -637,10 +653,12 @@ def test_syntax_errors_stop_after_exactly_three_retries(tmp_path):
     assert len(bad) == 4  # the weather tasks: the whole proposal of each is infeasible
     assert all(a["attempts"] == 4 and a["kept"] == [] for a in bad)
     assert all("infeasible after 4 attempts" in a["error"] and "syntax" in a["error"] for a in bad)
-    # the first attempt and three retries; the other weather points reuse these cached answers
+    # the first attempt and three retries for each set of example candidates the points show (each point
+    # its own); a point that shows the same ones as another reuses its cached answers
     asked = [p for p in llm.prompts("extractor") if "bad_feature" in p]
-    assert len(asked) == 4
-    assert [sum(f"Attempt #{k}" in p for p in asked) for k in (2, 3, 4, 5)] == [1, 1, 1, 0]
+    shown = len(shown_sets(a["decision_point"] for a in bad))
+    assert len(asked) == 4 * shown
+    assert [sum(f"Attempt #{k}" in p for p in asked) for k in (2, 3, 4, 5)] == [shown, shown, shown, 0]
     last = next(p for p in asked if "Attempt #4" in p)  # every earlier error is fed back (App. D.1)
     assert all(f"[attempt {k}]" in last for k in (1, 2, 3))
     assert "bad_feature" not in result.report.aggregated
@@ -1551,9 +1569,11 @@ def test_content_filtered_answers_are_not_retried_on_the_same_model(tmp_path):
     with pytest.raises(Exception, match="content filter") as err:
         discover(tmp_path, llm)
     assert "stage_models" in str(err.value) and "extractor" in str(err.value)
-    # the three points ask the same prompt: one paid call, no code-tag re-ask and no retries with the same
-    # model; the filtered answer is kept, so a rerun meets the same filter without paying for it again
-    assert llm.roles()["extractor"] == 1
+    # one paid call per prompt (each point shows its own example candidates), no code-tag re-ask and no
+    # retries with the same model; the filtered answer is kept, so a rerun meets the same filter without
+    # paying for it again
+    sample = json.loads((tmp_path / "runs" / "r1" / "sample.json").read_text())
+    assert llm.roles()["extractor"] == len(shown_sets(sample)) == len(set(llm.prompts("extractor")))
     again = FakeLLM(extractor=filtered)
     with pytest.raises(Exception, match="content filter"):
         discover(tmp_path, again)

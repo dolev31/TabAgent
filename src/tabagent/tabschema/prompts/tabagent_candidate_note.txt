@@ -1,0 +1,3 @@
+# Additional rules
+
+The classification suitable component chooses among candidates, and each row of the classification dataset is one candidate of one decision. A feature of a candidate, or of how the trajectory relates to a candidate, is computed once per candidate from the trajectory before the component and the candidate's fields (its id, name, description, arguments and catalog entry), which are known before the decision: such a feature is obtainable, and its inputs are available for every candidate of every decision; judge its generality as you would any other feature's (one that hard-codes particular candidates is still specific). It must never encode which candidate was chosen.

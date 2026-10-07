@@ -6,6 +6,29 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ### Per-candidate features
 
+- **The FeatureAnalyzer is told when the decision chooses among candidates.** Its prompt gets an "Additional
+  rules" section (appended; the paper's prompt is unchanged): each row is one candidate of one decision, and
+  features of a candidate, or of how the trajectory relates to one, may be proposed, computed per candidate
+  from its fields, with up to three of the decision's candidates, neutral examples and a label-safety rule.
+  Without it, logs whose steps do not list the candidates (most chat tool-calling agents) gave no
+  per-candidate proposals, so the compile step dropped the per-candidate columns the CodeExtractor wrote as
+  outside the accepted plan. The FeatureAggregator, judge and MetaJudge prompts get a note that such features
+  are obtainable and judged for generality like any other. The example candidates of every prompt (the
+  analyzer's, the CodeExtractor's, the CodeValidator's) are picked from the run's seed, the decision point and
+  the candidates themselves, never from the adapter's order, so an adapter that lists the chosen candidate
+  first does not make it an example, and the points of a fixed catalog show different ones. The dry-run
+  estimate counts the new sections. **Rerunning a ranking or multi-label onboarding in an existing run
+  directory asks the analyzer (and the aggregator and the judges) again**, since their prompts changed; a
+  single-class decision's stored answers are replayed as before.
+- **A public measurement of the per-candidate pipeline** (`experiments/tabschema_tau2.py`; components.md,
+  "Evidence"). On the public τ²-bench GPT-4.1 logs (next tool call as a ranking decision; 3,226 decisions),
+  one onboarding per pipeline version with Claude Opus 5.5 (GPT-6 Sol writing the code): without the
+  FeatureAnalyzer's section the card had no per-candidate feature; with it, 19 of 119 proposed features of a
+  candidate were accepted and compiled, and removing them lowered P@R by 0.026 [0.014, 0.039], Recall@3 by
+  0.016 [0.007, 0.025] and Recall@5 by 0.013 [0.006, 0.021] (paired bootstrap 95% over tasks, 5-fold grouped
+  CV, seeds 0 to 2). Against the previous pipeline's card: Recall@3 +0.020 [+0.012, +0.029], Recall@5 +0.012
+  [+0.006, +0.020], P@R +0.010 [−0.003, +0.022]. The positional guard did not trigger there. One onboarding
+  per version, so the differences include an LLM's run-to-run variation.
 - **An extractor may define `extract_candidate_features(trajectory_data, candidate)`** next to the paper's
   entry point, for ranking and multi-label decisions: features of one (decision, candidate) row, such as the
   request's words in the candidate's description. `candidate` is `{"id", "name", "description", "args",
@@ -18,8 +41,7 @@ Changes that affect users, newest first. The GitHub release notes list every pul
   (`timeout_s * (1 + candidates / 50)`), and a candidate whose call fails loses only its own values.
   `decide`, `tabagent serve`, the CUGA hot swap and the tool filter score candidates exactly as training did.
   `head.json` records `"candidate_function": true`. Extractors without the function, and saved heads, behave
-  as before. The section is on by default and has not yet been validated by onboarding with an LLM on public
-  data.
+  as before. On by default; see the public measurement above.
 - **Candidates carry their catalog entry.** `Candidate.spec` holds the entry the decision offered (a tool's
   JSON schema; a CUGA API's path, method, parameters and response schemas), and the per-candidate function
   reads it as `candidate["spec"]`. The CUGA adapter (its runs and its `catalog=`), the hot swap, and `decide`
@@ -36,9 +58,11 @@ Changes that affect users, newest first. The GitHub release notes list every pul
   validation: a discovered card never holds them; the recipe search (`auto.select(relative=True)`, from
   `TabSchemaConfig.relative_features`, `--no-relative-features` to skip) fits the winner without them and
   adds them only when the winner with them scores strictly better (`Recipe.relative`), and `head.json`
-  records the choice (`relative_features`). On public data the effect is neutral: P@R +0.004 [−0.002, +0.010] on τ²-bench GPT-4.1
-  tool shortlisting and −0.011 [−0.036, +0.016] on SkillsBench skill selection (paired bootstrap 95%
-  intervals, `experiments/relative_features.py`). Cards without them behave as before.
+  records the choice (`relative_features`). On the public bundled cards the effect is neutral: P@R +0.004
+  [−0.002, +0.010] on τ²-bench GPT-4.1 tool shortlisting and −0.011 [−0.036, +0.016] on SkillsBench skill
+  selection (paired bootstrap 95% intervals, `experiments/relative_features.py`); on the τ²-bench TabSchema
+  card above it was mixed, P@R +0.009 [−0.001, +0.019] and Recall@3 −0.008 [−0.018, −0.001]. Cards without
+  them behave as before.
 - **Positional columns are moved to the per-candidate function.** When the decision has candidates, prefix
   columns that index them by position (`candidate_3_overlap`) are reported, and the repair round asks for the
   feature in the per-candidate function. An indexed enumeration (no history word in its names) is positional
@@ -46,8 +70,8 @@ Changes that affect users, newest first. The GitHub release notes list every pul
   when its size follows the candidates' count across decisions of different sizes (columns emitted only where
   set included); a constant count, or the first few of a longer enumeration, needs the texts. The columns are
   dropped once the per-candidate function computes the feature, and kept with a compile note otherwise
-  (`TabSchemaConfig.positional_guard`, `--no-positional-guard`). On by default; not yet validated by
-  onboarding with an LLM on public data.
+  (`TabSchemaConfig.positional_guard`, `--no-positional-guard`). On by default; it did not trigger in the
+  public τ²-bench onboarding, so it is not yet tested on public data.
 - **One form per text feature.** The CodeExtractor is asked to emit a tokenized, bag-of-words or n-gram feature
   once, as the plain text, under the feature's name (unless another feature already emits that text), and
   compile drops a column that restates another column of the same feature in a shorter derived form on every
@@ -58,8 +82,9 @@ Changes that affect users, newest first. The GitHub release notes list every pul
   count them by reason and list the per-decision and per-candidate columns separately.
 - **`last_step_text`**: a second fixed function appended to every extractor, the text of the prefix's last step
   (`TabSchemaConfig.last_step_text`, `--no-last-step-text`): the step that handed control to the decision,
-  which the clipped context text can dilute among long payloads. On by default; not yet measured on public
-  data in this repository.
+  which the clipped context text can dilute among long payloads. On by default; on the public τ²-bench
+  onboarding it was neutral to slightly positive (P@R +0.006 [−0.004, +0.015], Recall@3 +0.003 [−0.001,
+  +0.008], Recall@5 −0.000 [−0.004, +0.003], paired over tasks).
 
 ### TabSchema in production
 

@@ -22,6 +22,7 @@ from test_robustness import (
     TARGET,
     FakeLiteLLMModule,
     FakeLLM,
+    about_weather,
     adapter,
     config,
     discover,
@@ -75,7 +76,7 @@ def test_a_full_replay_counts_the_same_cost_and_writes_the_same_card(tmp_path):
 
     def schema() -> TabSchema:
         primary = FakeLLM(
-            analyzer=lambda p, n: ("", "content_filter") if "weather" in p else DEFAULT["analyzer"](p, n)
+            analyzer=lambda p, n: ("", "content_filter") if about_weather(p) else DEFAULT["analyzer"](p, n)
         )
         return make(
             tmp_path,
@@ -97,7 +98,7 @@ def test_a_full_replay_counts_the_same_cost_and_writes_the_same_card(tmp_path):
 # --------------------------------------------------------------------------- M1: a raised output limit
 def test_a_raised_output_limit_asks_again_only_the_truncated_answers(tmp_path):
     def analyzer(p, n):
-        if "weather" in p:
+        if about_weather(p):
             return '{"potential_features": [', "length"
         return DEFAULT["analyzer"](p, n)
 
@@ -114,7 +115,7 @@ def test_a_raised_output_limit_asks_again_only_the_truncated_answers(tmp_path):
     bigger.max_tokens = 4_000
     second = make(tmp_path, bigger, n_analyze=8).discover(runs(), TARGET)
     assert bigger.roles()["analyzer"] == len(lost)  # only the truncated ones are asked again
-    assert all("weather" in p for p in bigger.prompts("analyzer"))
+    assert all(about_weather(p) for p in bigger.prompts("analyzer"))
     assert not [a for a in second.report.analyzed if a["error"]]
 
 

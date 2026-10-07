@@ -6,8 +6,17 @@ not have, which judges the values the compiled extractor computes (``tabagent.ta
 ``string.Template`` files (``${name}`` placeholders), so their JSON examples need no brace escaping.
 
 ``ADDITIONS`` are the release's sections appended after a rendered prompt, as the release's other additions
-are (the retry block, the request for a parseable answer); the prompts themselves stay verbatim:
+are (the retry block, the request for a parseable answer); the prompts themselves stay verbatim, and each
+addition sits under the heading ``# Additional rules``:
 
+* ``tabagent_analyzer_candidates``: appended to the FeatureAnalyzer prompt when the decision has candidates
+  (a ranking or multi-label decision): each row is one candidate of one decision; besides features of the
+  trajectory, features of a candidate or of how the trajectory relates to one may be proposed, computed per
+  candidate from its fields; up to three of the decision's candidates; neutral examples; and that every
+  feature is computable before the decision and never encodes which candidate was chosen;
+* ``tabagent_candidate_note``: appended to the FeatureAggregator, judge and MetaJudge prompts when the
+  decision has candidates: a feature of a candidate is obtainable (its fields are known before the decision,
+  for every candidate of every decision), and its generality is judged as any other feature's;
 * ``tabagent_extractor``: appended to every CodeExtractor prompt, under the heading ``# Additional rules``:
   a planned feature that is a tokenized, bag-of-words or n-gram form of a text is emitted once, as the plain
   text, under its own name, unless another feature already emits that text;
@@ -42,6 +51,8 @@ PAPER_PROMPTS = (
 RELEASE_PROMPTS = ("code_validator", "output_auditor")
 PROMPTS = (*PAPER_PROMPTS, *RELEASE_PROMPTS)
 ADDITIONS = (
+    "tabagent_analyzer_candidates",
+    "tabagent_candidate_note",
     "tabagent_extractor",
     "tabagent_extractor_candidates",
     "tabagent_validator_candidates",

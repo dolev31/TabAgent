@@ -21,9 +21,11 @@ component:
 
 For a ranking or multi-label decision, the extractor may also define a per-candidate function,
 ``extract_candidate_features(trajectory_data, candidate)``, whose features describe one candidate in the
-context of the prefix (the release's addition; ``compile``): the CodeExtractor and CodeValidator prompts get a
-TabAgent section on it, and its columns enter the card as schema features computed per (decision, candidate)
-row (``source: extractor_candidate``).
+context of the prefix (the release's addition; ``compile``): the FeatureAnalyzer prompt says that features of
+a candidate may be proposed (with three of the decision's candidates, picked label-free:
+``agents.pick_examples``), the FeatureAggregator, judge and MetaJudge prompts that such features are
+obtainable, the CodeExtractor and CodeValidator prompts get a section on the function, and its columns enter
+the card as schema features computed per (decision, candidate) row (``source: extractor_candidate``).
 
 The release adds three checks the paper does not have, between compiling and the card: the compile step's
 **verification** of the values (determinism, outcome and future invariance, robustness; ``verify``) with
@@ -87,6 +89,7 @@ from tabagent.tabschema.agents import (
     extract_with_retries,
     forget_cause,
     normalize_name,
+    pick_examples,
     premerge,
     shutdown_interrupted,
 )
@@ -813,6 +816,14 @@ class TabSchema:
         self._stages.append(st)
         return st
 
+    @staticmethod
+    def _noted(stage, kind: str, candidates: frozenset[str]):
+        """``stage`` (the FeatureAggregator, a judge, the MetaJudge), told that the decision chooses among
+        candidates when it does, so that a feature of a candidate is judged as obtainable
+        (``Stage.noted``)."""
+        stage.per_candidate = kind != "single" and bool(candidates)
+        return stage
+
     def _candidates(self, dp: DecisionPoint, kind: str) -> list:
         """The adapter's candidates of ``dp``, [] for a single-class decision or an adapter that has none
         (it raises ``NotImplementedError``). Any other error of the adapter is logged and raised: it must not
@@ -988,10 +999,11 @@ class TabSchema:
         cfg = self.config
         rec: dict[str, Any] = {"decision_point": dp.id, "proposed": [], "kept": [], "error": ""}
         try:
-            specs = analyzer(dp, target)
+            cands = [candidate_dict(c) for c in self._candidates(dp, kind)]
+            shown = pick_examples(cands, cfg.sample_seed, dp.id)  # never by the adapter's order or a label
+            specs = analyzer(dp, target, cands)  # with candidates, features of a candidate may be proposed
             rec["proposed"] = [s.feature_name for s in specs]
             executor = CodeExecutor(self.sandbox, known, outcome_keys)
-            cands = [candidate_dict(c) for c in self._candidates(dp, kind)]
             attempt, history = extract_with_retries(
                 extractor,
                 executor,
@@ -1001,6 +1013,7 @@ class TabSchema:
                 target,
                 cfg.max_code_retries,
                 candidates=[cands] if cands else None,
+                examples=shown,
             )
             rec["attempts"] = len(history)
             if not attempt.ok:
@@ -1011,7 +1024,8 @@ class TabSchema:
                 rec["candidate_error"] = attempt.candidate_error[:300]
             more = {}
             if cands:  # the per-candidate function's outputs, judged next to the prefix's
-                more = {"candidates": cands, "candidate_outputs": candidate_samples(attempt.results, [cands])}
+                outputs = candidate_samples(attempt.results, [cands], [dp.id], cfg.sample_seed)
+                more = {"candidates": shown, "candidate_outputs": outputs}
             try:
                 verdicts = validator(
                     specs, attempt.code, dp.prefix, [attempt.results[0].features], target, **more
@@ -1080,7 +1094,7 @@ class TabSchema:
         mark = len(self._stages)
         with log.stage("analyze") as rec:
             analyzer, extractor = self._stage(FeatureAnalyzer), self._stage(CodeExtractor)
-            analyzer.max_chars = cfg.max_prompt_chars
+            analyzer.max_chars, analyzer.seed = cfg.max_prompt_chars, cfg.sample_seed
             validator = self._stage(CodeValidator)
             pool = ThreadPoolExecutor(max_workers=cfg.workers)
             try:
@@ -1152,7 +1166,7 @@ class TabSchema:
         # --- aggregation
         mark = len(self._stages)
         with log.stage("aggregate") as rec:
-            aggregator = self._stage(FeatureAggregator)
+            aggregator = self._noted(self._stage(FeatureAggregator), kind, candidates)
             filtered, rejected = aggregator(proposals)
             unaggregated = list(getattr(aggregator, "unaggregated", []))
             logger.info("TabSchema: aggregated %d proposals into %d features", len(proposals), len(filtered))
@@ -1197,7 +1211,7 @@ class TabSchema:
         with log.stage("judge") as rec:
             verdicts = run_judges(
                 filtered,
-                lambda d: self._stage(Judge, d),
+                lambda d: self._noted(self._stage(Judge, d), kind, candidates),
                 workers=max(3, cfg.workers),
                 stages=[],
             )
@@ -1218,7 +1232,7 @@ class TabSchema:
         judge_events = self._events(mark)
         mark = len(self._stages)
         with log.stage("meta_judge") as rec:
-            decisions = self._stage(MetaJudge)(verdicts, table)
+            decisions = self._noted(self._stage(MetaJudge), kind, candidates)(verdicts, table)
             events = [*judge_events, *self._events(mark)]
             store.write_json(
                 "judges.json",

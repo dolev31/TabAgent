@@ -1,0 +1,6 @@
+# Additional rules
+
+- The classification suitable component chooses among candidates (tools, APIs, skills, applications, models, ...), and each row of the classification dataset is one candidate of one decision. Besides features of the trajectory, you may propose features of a candidate, or of how the trajectory relates to a candidate. Such a feature is computed once per candidate, from the trajectory before the component and the candidate's fields: "id", "name", "description", "args" and "spec" (the candidate's entry in the catalog the decision offered, or null). Up to three candidates of this decision, as such a feature receives them (long values clipped here):
+${candidate_examples}
+- Examples of such features: how many times the candidate was already called in the trajectory; whether the latest user message mentions the candidate's name or words of its description; whether the candidate's required arguments appear in the conversation; how well a model's, a skill's or an application's description fits the request. Say in "computation" how the feature is computed for one candidate.
+- The full step of the component is shown only so that you understand the decision. Every feature, of the trajectory or of a candidate, must be computable before the component, and must never encode which candidate was chosen.

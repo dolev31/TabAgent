@@ -49,7 +49,9 @@ CodeExecutor's retries but not the text added to the CodeExtractor prompt after 
 that retry block is the release's too. The release's other additions are sections appended after a rendered
 prompt, never inside it (`prompts.ADDITIONS`, hash-pinned): the CodeExtractor is asked to emit each text feature
 once, as plain text, and, for a decision with candidates, told about the optional per-candidate function
-described next, which the CodeValidator and the OutputAuditor are told about too. That function keeps the
+described next, which the CodeValidator and the OutputAuditor are told about too; the FeatureAnalyzer is told
+that it may propose features of a candidate, and the FeatureAggregator, judges and MetaJudge that such
+features are obtainable. That function keeps the
 paper's entry point, `extract_features_for_classification(trajectory_data)`, and writes the paper's examples of
 features that relate the context to a candidate as stateless code over the prefix and one candidate.
 Every LLM call is cached in a run directory (a resumed run costs
@@ -60,7 +62,8 @@ The paper ran TabSchema with GPT-5.4 and found open models unreliable for this l
 Azure OpenAI, and any OpenAI-compatible server through `OPENAI_BASE_URL`, and Anthropic, Gemini and others
 through LiteLLM (`pip install "tabagent[llm]"`). The reproduced paper numbers do not run TabSchema: they use the
 frozen or hand-authored cards bundled with the public datasets ([Reproducing the paper](reproducing.md)), and
-the released TabSchema has not yet been validated against a paper number.
+the released TabSchema has not yet been validated against a paper number. One public onboarding with an LLM
+compares versions of the release's own pipeline (Evidence, under per-candidate features below).
 
 ### Per-candidate features
 
@@ -74,9 +77,54 @@ of a decision and do not describe the candidate the row scores. In one internal 
 interval), most of the kept columns were positional, the judges' best-rated features were per-candidate ideas,
 and computing them per candidate improved ranking.
 
-**Evidence.** The per-candidate prompt section and the positional guard below are on by default, but neither
-has been validated yet by onboarding with an LLM on public data: the public numbers in this repository come
-from the bundled cards, which TabSchema did not write. The one measurement so far is the internal run above.
+**Evidence.** The per-candidate prompt sections (the FeatureAnalyzer's, the CodeExtractor's and the
+CodeValidator's, and the note to the aggregator and the judges) and the positional guard below are on by
+default. One public measurement onboards with an LLM: the GPT-4.1 agent's logs of τ²-bench (sierra-research/
+tau2-bench at `cf71a80`, the airline, retail and telecom `default` result files, four trials per task), its
+next tool call as a ranking decision (`NextToolCall`): 1,112 runs, 606 successful, 3,226 decisions, 43,093
+(decision, tool) rows. Each of three pipeline versions onboarded once, with Claude Opus 5.5 for every stage but
+the CodeExtractor (GPT-6 Sol), 20 analyzed decision points and only accepted features compiled: the pipeline
+before the per-candidate function (the previous card), PR #47 without the FeatureAnalyzer's section (run 1),
+and with it (run 2). The cards were evaluated on identical rows and folds: 5-fold task-grouped
+cross-validation, head seeds 0 to 2, the CatBoost paper preset, no TabSynth; 95% bootstrap intervals over
+decisions, and paired bootstrap 95% intervals of differences over tasks (`experiments/tabschema_tau2.py`
+prints the onboarding commands and, from the three run directories, reproduces the numbers below).
+
+| card | features | P@R | Recall@3 | Recall@5 |
+|---|---|---|---|---|
+| previous pipeline | 215 | 0.837 [0.825, 0.850] | 0.939 [0.931, 0.946] | 0.967 [0.961, 0.972] |
+| run 1 (no per-candidate features) | 217 | 0.847 [0.834, 0.858] | 0.947 [0.939, 0.954] | 0.968 [0.961, 0.973] |
+| run 2 (19 per-candidate features) | 85 | 0.848 [0.837, 0.860] | 0.956 [0.949, 0.962] | 0.976 [0.971, 0.981] |
+| run 2 without its per-candidate features | 66 | 0.828 [0.816, 0.840] | 0.945 [0.937, 0.952] | 0.966 [0.960, 0.972] |
+| run 2 with relative features | 113 | 0.858 [0.847, 0.870] | 0.955 [0.948, 0.961] | 0.977 [0.972, 0.981] |
+
+| paired difference over tasks | P@R | Recall@3 | Recall@5 |
+|---|---|---|---|
+| run 2 − previous pipeline | +0.010 [−0.003, +0.022] | +0.020 [+0.012, +0.029] | +0.012 [+0.006, +0.020] |
+| run 2 − run 1 | +0.006 [−0.008, +0.021] | +0.014 [+0.006, +0.024] | +0.012 [+0.005, +0.021] |
+| run 2 − run 2 without its per-candidate features | +0.026 [+0.014, +0.039] | +0.016 [+0.007, +0.025] | +0.013 [+0.006, +0.021] |
+| run 2 with relative features − run 2 | +0.009 [−0.001, +0.019] | −0.008 [−0.018, −0.001] | −0.001 [−0.006, +0.003] |
+| run 1 − run 1 without `last_step_text` | +0.006 [−0.004, +0.015] | +0.003 [−0.001, +0.008] | −0.000 [−0.004, +0.003] |
+
+* The per-candidate features helped on all three metrics: removing them from run 2's card lowered P@R,
+  Recall@3 and Recall@5, each difference outside its interval. Run 2's card, with 85 features against 215
+  and 217, ranked better than both earlier cards on Recall@3 and Recall@5; its P@R gain over them is within
+  its interval.
+* The FeatureAnalyzer's section was necessary. These chat logs do not print the tool catalog in any step, so
+  in run 1 the analyzer proposed no feature of a candidate; the CodeExtractor still wrote per-candidate
+  features, and the compile step dropped them as outside the accepted plan. With the section, the analyzer
+  proposed 119 features of a candidate over the 20 decision points, the MetaJudge accepted 19, and all 19
+  compiled.
+* The positional guard did not trigger: neither run's compile step reported a positional column, so this run
+  does not test it.
+* The relative features were mixed: P@R +0.009, within its interval, and Recall@3 −0.008, just outside it.
+  This is why the recipe search adds them only when its inner validation scores strictly better.
+* `last_step_text` was neutral to slightly positive, every difference within its interval.
+
+This is one onboarding per pipeline version: an onboarding asks an LLM, so a card, and the numbers it gives,
+vary with the model and from run to run, and the differences between versions include that variation; the
+evaluation of given run directories is deterministic. The internal run above, whose logs list the API catalog
+in the shortlister's own step, is the only other measurement.
 
 The extractor may therefore define a second function:
 
@@ -95,9 +143,28 @@ def extract_candidate_features(trajectory_data: dict, candidate: dict) -> dict: 
   what the decision was offered, not what it chose. As defense in depth, the deterministic checks refuse any
   other top-level key (`candidate["chosen"]`) and allow any path under `candidate["spec"]`, whose shape
   depends on the catalog; the prefix rules (known fields, no outcome fields) apply to both functions.
+* The FeatureAnalyzer prompt gets an "Additional rules" section when the decision has candidates, since a
+  chat agent's logs rarely list the tools a decision chooses among, and the paper's prompt shows only the
+  prefix and the target step: each row is one candidate of one decision; besides features of the trajectory,
+  features of a candidate, or of how the trajectory relates to one, may be proposed, computed once per
+  candidate from the trajectory and the candidate's fields (`id`, `name`, `description`, `args`, `spec`); up
+  to three of the decision's candidates, shown as to the CodeExtractor; neutral examples (how many times the
+  candidate was already called, whether the latest user message mentions its name or description words,
+  whether its required arguments appear in the conversation, how well a model's, skill's or application's
+  description fits the request); and that every feature must be computable before the decision and never
+  encode which candidate was chosen (the target step is shown only to explain the decision). The
+  FeatureAggregator, judge and MetaJudge prompts get a one-paragraph note under the same heading: such a
+  feature is obtainable, since a candidate's fields are known before the decision for every candidate of
+  every decision, and its generality is judged as any other feature's (one that hard-codes particular
+  candidates is still specific). Without candidates every prompt is the paper's alone, so a run directory's stored
+  answers stay valid for it; a ranking or multi-label decision's analyzer, aggregator and judges are asked
+  again.
 * The CodeExtractor and CodeValidator prompts get an "Additional rules" section when the decision has
   candidates: the code may define the function; up to three of the decision's candidates as it receives them
-  (each `spec` fit to 2,000 characters of JSON); a feature about a candidate belongs only there, with examples
+  (each `spec` fit to 2,000 characters of JSON; in every prompt, the example candidates are picked from the
+  run's seed, the decision point's id and the candidates themselves, never from the adapter's order or a
+  label, so an adapter that lists the chosen candidate first does not make it an example, and the points of
+  a fixed catalog show different ones); a feature about a candidate belongs only there, with examples
   for model, skill, application and tool decisions and, when the catalog describes HTTP APIs, for method and
   parameters; a feature about the history of earlier calls belongs in the first function; the first function
   never enumerates the candidates or indexes them by position; and what depends on the prefix alone is
@@ -132,7 +199,8 @@ def extract_candidate_features(trajectory_data: dict, candidate: dict) -> dict: 
   enumeration. A fixed-size list (`item_1_price` to `item_3_price`, `tools_used_1` to `tools_used_3`) or a
   list of earlier calls (`prev_tool_1`, `tool_1_ago`) is not positional. The repair round asks the
   CodeExtractor to compute a positional feature in the per-candidate function; its positional columns are
-  dropped once that function computes the feature, and kept, with a compile note, until it does.
+  dropped once that function computes the feature, and kept, with a compile note, until it does. It did not
+  trigger in the public τ²-bench onboarding (Evidence, above), so it is not yet tested on public data.
 * `TabAgentHead.decide`, `tabagent serve`, the CUGA hot swap and the tool filter pass the decision's
   candidates to the extractor, which scores them exactly as the training rows were scored: `decide` reads
   `Candidate` objects, tool schemas and `{"id", "name", "description", "args", "spec"}` records alike, and a
@@ -161,8 +229,10 @@ the winning recipe without them and tries it once with them (`relative=on` in it
 when the inner validation scores strictly better (ties, and too few groups to search, keep them off); the
 saved head's `head.json` records the choice (`"relative_features": true` or `false`).
 `TabSchemaConfig(relative_features=False)` (`--no-relative-features`) skips the challenger. In one internal
-API-shortlisting run (no interval) they improved ranking. On public data the effect is neutral, within its
-interval (`experiments/relative_features.py`; the bundled cards
+API-shortlisting run (no interval) they improved ranking. On the TabSchema card of the public τ²-bench next
+tool call (Evidence, above) they were mixed: P@R +0.009 [−0.001, +0.019], Recall@3 −0.008 [−0.018, −0.001].
+On the public bundled cards the effect is neutral, within its interval (`experiments/relative_features.py`;
+the bundled cards
 with the paper's folds, paper preset, seeds 0 to 2, rank and gap of the cards' overlap and prior features;
 differences are paired bootstrap 95% intervals over tasks):
 
@@ -195,8 +265,10 @@ characters, so the step that handed control to the decision can be diluted by lo
 appends a second fixed function, `last_step_text`: the `content`, `text`, `thoughts`, `intent` and `data`
 strings of the prefix's last step with text (steps named `system` skipped, outcome fields never read, the
 adapter's step list), clipped the same way. It is a context text like `context_text` (TabSynth paraphrases it,
-and the context-candidate similarities use it). It is on by default, but it has not been measured on public
-data in this repository; in one internal API-shortlisting run (no interval) it improved ranking.
+and the context-candidate similarities use it). It is on by default. On the public τ²-bench next tool call
+(Evidence, above) it was neutral to slightly positive: P@R +0.006 [−0.004, +0.015], Recall@3 +0.003 [−0.001,
++0.008], Recall@5 −0.000 [−0.004, +0.003], paired over tasks; in one internal API-shortlisting run (no
+interval) it improved ranking.
 `TabSchemaConfig(last_step_text=False)` (`--no-last-step-text`) leaves it out.
 
 **Dependency features** are not code the LLM writes: a card references the library's fitted statistics

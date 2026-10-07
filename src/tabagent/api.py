@@ -917,7 +917,7 @@ def onboard(
                 return []
 
         cands = candidates_of if kind != "single" else None
-        data = summarize(sample, dps, decision, cfg.max_prompt_chars, audit_sample, cands)
+        data = summarize(sample, dps, decision, cfg.max_prompt_chars, audit_sample, cands, cfg.sample_seed)
         est = estimate(
             data,
             model=name,

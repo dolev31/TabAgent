@@ -74,6 +74,7 @@ from tabagent.tabschema.agents import (
     extract_with_retries,
     generate_retry_prompt,
     normalize_name,
+    pick_examples,
 )
 from tabagent.tabschema.checks import defines_candidate_function
 from tabagent.tabschema.fitted import context_items
@@ -632,13 +633,15 @@ def _repair(
     history,
     guarded=None,
     candidates=None,
+    examples=None,
 ):
     """Ask the CodeExtractor once more, in one call, with the error of the retry prompt listing the
     CodeValidator's objections, the accepted features the code does not produce (to add, or to list in
     ``NOT_EXTRACTED`` as merged into another feature or declined, with the reason) and, with ``guarded``
     (the decision's candidates, when the positional guard is on), the features whose columns index candidates
-    by position (to be computed by the per-candidate function). Keep the new code only if it runs and fewer
-    accepted features are flagged, missing or positional. Returns (attempt, verdicts, note)."""
+    by position (to be computed by the per-candidate function); the prompt shows the example candidates
+    ``examples``. Keep the new code only if it runs and fewer accepted features are flagged, missing or
+    positional. Returns (attempt, verdicts, note)."""
     flagged = _flagged(verdicts, by_key)
     moved = _positional(attempt, by_key, guarded)[0] if guarded is not None else {}
     missing = _not_produced(attempt, by_key)
@@ -675,7 +678,7 @@ def _repair(
         )
     error = "\n".join(parts) + "\nFix these features; keep the others unchanged."
     n = len(flagged) + len(moved) + len(missing)
-    more = {} if candidates is None else {"candidates": next((c for c in candidates if c), None)}
+    more = {"candidates": examples} if candidates is not None and examples else {}
     try:
         code = extractor(accepted, example, target, generate_retry_prompt(1, error, attempt.code), **more)
         new = executor.run(code, prefixes) if candidates is None else executor.run(code, prefixes, candidates)
@@ -1110,9 +1113,24 @@ def compile_extractor(
     example = merge_examples(prefixes)
     candidates = _candidate_lists(decision_points, candidates_of)
     guard = positional_guard and candidates is not None
+    # the example candidates the prompts show: three of the first decision point's that has some, picked from
+    # the seed and its id, never by the adapter's order or a label
+    examples = None
+    if candidates is not None:
+        first = next(i for i, c in enumerate(candidates) if c)
+        examples = pick_examples(candidates[first], seed, decision_points[first].id)
+    keys = [dp.id for dp in decision_points]
     executor = CodeExecutor(sandbox, known_paths, outcome_keys, max_failure_rate=1 - min_success)
     attempt, history = extract_with_retries(
-        extractor, executor, accepted, prefixes, example, target, max_retries, candidates=candidates
+        extractor,
+        executor,
+        accepted,
+        prefixes,
+        example,
+        target,
+        max_retries,
+        candidates=candidates,
+        examples=examples,
     )
     if not attempt.ok:
         error = ExtractionError(f"extractor failed after {len(history)} attempts: {attempt.error[:500]}")
@@ -1122,13 +1140,12 @@ def compile_extractor(
 
     by_key = {s.key: s for s in accepted}
     notes: list[str] = []
-    examples = None if candidates is None else next(c for c in candidates if c)
 
     def judged(att) -> tuple[dict[str, str], dict[str, str]]:
         sample = [r.features for r in att.results if r.ok][:3]
         if candidates is None:
             return validator.judge(accepted, att.code, example, sample, target)
-        shown = candidate_samples(att.results, candidates)
+        shown = candidate_samples(att.results, candidates, keys, seed)
         return validator.judge(accepted, att.code, example, sample, target, examples, shown)
 
     verdicts: dict[str, str] = {}
@@ -1157,6 +1174,7 @@ def compile_extractor(
                 history,
                 candidates if guard else None,
                 candidates,
+                examples,
             )
             notes.append(note)
     except LLMFormatError as e:  # the deterministic checks and the quality gates still apply
