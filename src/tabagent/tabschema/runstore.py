@@ -3,9 +3,10 @@ and the LLM call log. A crashed or interrupted run resumes from the cache; a rer
 makes no new LLM calls.
 
 Every file is written atomically (a temporary file, then a rename), so a process killed at any moment leaves
-complete files only. Cache entries are also locked across processes (``fcntl`` locks, on POSIX): two runs on
-one run directory wait for each other's answer to the same prompt instead of paying for it twice. Each process
-that opens the directory is a *session* (``session``), recorded with every logged call.
+complete files only; the temporary file it was writing is removed when a run next opens the directory. Cache
+entries are also locked across processes (``fcntl`` locks, on POSIX): two runs on one run directory wait for
+each other's answer to the same prompt instead of paying for it twice. Each process that opens the directory
+is a *session* (``session``), recorded with every logged call.
 
 Run directories hold trajectory text, so they live outside the repository (default
 ``~/.cache/tabagent/runs``) and must be treated like the trajectories themselves.
@@ -18,8 +19,10 @@ import hashlib
 import json
 import os
 import secrets
+import sys
 import tempfile
 import threading
+import time
 from collections.abc import Callable, Iterator
 from datetime import datetime, timezone
 from pathlib import Path
@@ -53,20 +56,97 @@ def _umask() -> int:
 UMASK = _umask()
 
 
+#: A temporary file older than this is removed when a run directory is opened, whoever wrote it.
+STALE_TMP_S = 24 * 3600
+
+_writes = threading.Condition()  # announces the end of each atomic write (wait_for_writes)
+_writing = 0  # atomic writes in progress in this process
+
+
 def atomic_write(p: Path | str, text: str) -> None:
     """Write through a temporary file and a rename: readers and resumed runs never see a partial file. The
     file gets the mode a plain ``open`` would give it (``0o666`` less the umask), not the temporary file's
-    private ``0o600``."""
+    private ``0o600``. The temporary file, ``.<name>.<pid>.<random>.tmp``, names the process writing it
+    (``remove_stale_tmp``)."""
+    global _writing
     p = Path(p)
-    fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.", suffix=".tmp")
+    with _writes:
+        _writing += 1
     try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            f.write(text)
-        os.chmod(tmp, 0o666 & ~UMASK)
-        os.replace(tmp, p)
-    except BaseException:
-        Path(tmp).unlink(missing_ok=True)
-        raise
+        fd, tmp = tempfile.mkstemp(dir=p.parent, prefix=f".{p.name}.{os.getpid()}.", suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                f.write(text)
+            os.chmod(tmp, 0o666 & ~UMASK)
+            os.replace(tmp, p)
+        except BaseException:
+            Path(tmp).unlink(missing_ok=True)
+            raise
+    finally:
+        with _writes:
+            _writing -= 1
+            _writes.notify_all()
+
+
+def wait_for_writes(timeout: float = 2.0) -> bool:
+    """Wait until no atomic write is in progress in this process, for at most ``timeout`` seconds; True when
+    none is. An interrupted run waits so for the files its threads are writing (an answer being stored), not
+    for the threads still waiting for an LLM answer."""
+    with _writes:
+        return _writes.wait_for(lambda: _writing == 0, timeout)
+
+
+def _pid_alive(pid: Any) -> bool:
+    """Whether process ``pid`` exists. On Windows ``os.kill(pid, 0)`` would send it a Ctrl+C, so the process
+    is looked up (``OpenProcess``) instead; where that cannot be asked, the process counts as alive."""
+    try:
+        pid = int(pid)
+    except (TypeError, ValueError):
+        return False
+    if pid <= 0:
+        return False
+    if sys.platform == "win32":
+        try:
+            import ctypes
+
+            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if not handle:
+                return False
+            code = ctypes.c_ulong()
+            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
+            kernel32.CloseHandle(handle)
+            return not ok or code.value == 259  # STILL_ACTIVE
+        except Exception:  # noqa: BLE001 - unknown: counted as alive (its records and files are kept)
+            return True
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # it exists, owned by someone else
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def remove_stale_tmp(root: Path, max_age_s: float = STALE_TMP_S) -> int:
+    """Remove the temporary files under ``root`` that no write will finish: those of a process that is gone
+    (killed in the middle of a write) and any older than ``max_age_s``, whoever wrote them (a file named
+    before the pid was, ``.<name>.<random>.tmp``, is judged by its age only). The files of live processes on
+    this host, this one included, are kept: another process may be writing in the same directory. Returns
+    how many were removed."""
+    removed, now = 0, time.time()
+    for f in root.rglob(".*.tmp"):
+        parts = f.name[: -len(".tmp")].rsplit(".", 2)  # ".<name>", "<pid>", "<random>"
+        dead = len(parts) == 3 and parts[1].isdigit() and not _pid_alive(parts[1])
+        try:
+            if dead or now - f.stat().st_mtime > max_age_s:
+                f.unlink()
+                removed += 1
+        except OSError:  # renamed by its writer in the meantime, or not ours to remove
+            continue
+    return removed
 
 
 class RunStore:
@@ -78,6 +158,7 @@ class RunStore:
         self.run_id = run_id or datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         self.dir = base / self.run_id
         self.dir.mkdir(parents=True, exist_ok=True)
+        remove_stale_tmp(self.dir)
         self.session = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ-") + secrets.token_hex(3)
         self.phase: str | None = None  # the pipeline stage running now (recorded with every logged call)
         self._lock = threading.Lock()

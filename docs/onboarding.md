@@ -500,12 +500,14 @@ Rerun with the same `run_dir` (`--run-dir`, the run directory itself) to resume:
   since the same prompt to the same model would be stopped again (route the stage to another model);
 * the report and the card count reused answers at the cost they had when first paid.
 
-Every file is written atomically, so a process killed at any moment leaves complete files. Two runs on one run
-directory at once (two processes) are safe: each answer is paid once, by whichever asks first, and the other
-waits for it (file locks, on POSIX). The same trajectories and the same answers give a byte-identical `card.yaml`
-and `extract.py`; the card holds no local paths. The tests drive every stage with a scripted LLM that misbehaves
-in every way above, interrupt runs inside every stage (Ctrl+C, `SIGKILL`, the budget, a provider that stays
-down) and check these guarantees (`tests/tabschema/test_chaos.py`, `test_resume.py`).
+Every file is written atomically, so a process killed at any moment leaves complete files (the temporary file
+it was writing is removed when a run next opens the directory). Ctrl+C starts no new LLM call and waits, up to
+2 s, only for the answers being written. Two runs on one run directory at once (two processes) are safe: each
+answer is paid once, by whichever asks first, and the other waits for it (file locks, on POSIX). The same
+trajectories and the same answers give a byte-identical `card.yaml` and `extract.py`; the card holds no local
+paths. The tests drive every stage with a scripted LLM that misbehaves in every way above, interrupt runs
+inside every stage (Ctrl+C, `SIGKILL`, the budget, a provider that stays down) and check these guarantees
+(`tests/tabschema/test_chaos.py`, `test_resume.py`).
 
 **`run.json`** is the run's machine-readable summary, written as the run progresses: its status (`running`,
 `completed`, `stopped`, `failed`) and the error that ended it; every session that worked in the directory; per

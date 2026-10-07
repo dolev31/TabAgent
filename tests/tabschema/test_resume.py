@@ -16,6 +16,8 @@ import socket
 import subprocess
 import sys
 import textwrap
+import threading
+import time
 from collections import Counter
 from pathlib import Path
 
@@ -29,9 +31,9 @@ from test_robustness import (
     waits,  # noqa: F401 - autouse: backoff is recorded, not slept
 )
 
-from tabagent.tabschema import FeatureCard, TabSchema
+from tabagent.tabschema import FeatureCard, TabSchema, agents, runstore
 from tabagent.tabschema.llm import BudgetExceeded, LLMUnavailable
-from tabagent.tabschema.runstore import RunStore, read_jsonl
+from tabagent.tabschema.runstore import RunStore, atomic_write, read_jsonl
 
 HERE = Path(__file__).parent
 PRICES = {"fake": (1.0, 2.0)}  # USD per 1M tokens: every call has a cost
@@ -118,8 +120,13 @@ def test_an_interrupted_run_resumes_to_the_same_card_without_paying_twice(tmp_pa
     if reference["roles"][role] <= n:
         pytest.skip(f"the reference run makes only {reference['roles'][role]} {role} calls")
     first = Recording(role, n)
+    before = set(threading.enumerate())
     with pytest.raises(KeyboardInterrupt):
         schema(tmp_path, first).discover(runs(), TARGET)
+    # The run returns without waiting for a thread whose LLM call was under way at the interruption (it stores
+    # that answer, then stops); the interpreter waits for such threads at exit, and so does the test.
+    for t in set(threading.enumerate()) - before:
+        t.join(60)
     run = tmp_path / "runs" / "run"
     summary = json.loads((run / "run.json").read_text())
     assert summary["status"] == "stopped" and summary["stopped_by"] == "KeyboardInterrupt"
@@ -133,6 +140,54 @@ def test_an_interrupted_run_resumes_to_the_same_card_without_paying_twice(tmp_pa
     assert not first.paid() & second.paid()
     sessions = json.loads((run / "run.json").read_text())["sessions"]
     assert [s["status"] for s in sessions] == ["stopped", "completed"]
+
+
+def test_an_interrupt_waits_for_the_files_being_written_not_for_the_llm_calls(tmp_path, monkeypatch):
+    """Ctrl+C in a parallel stage returns once the answers being stored are written (no temporary file is left
+    behind), without waiting for a thread whose LLM call has not answered yet."""
+    writing, answered, tmp = threading.Event(), threading.Event(), []
+    replace = os.replace
+
+    def slow_replace(src, dst):  # a slow disk: the rename lands 0.3 s into the write
+        if Path(dst).name == "answer.json":
+            tmp.append(Path(src).name)
+            writing.set()
+            time.sleep(0.3)
+        replace(src, dst)
+
+    monkeypatch.setattr(runstore.os, "replace", slow_replace)
+
+    def work(i):
+        if i == 0:  # Ctrl+C, while the next thread is storing its answer
+            writing.wait(10)
+            raise KeyboardInterrupt
+        if i == 1:
+            atomic_write(tmp_path / "answer.json", "{}")
+        else:
+            answered.wait(10)  # an LLM call still waiting for its answer
+
+    t0 = time.monotonic()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            agents.in_parallel(work, [0, 1, 2], workers=3)
+        assert (tmp_path / "answer.json").exists() and not list(tmp_path.glob("*.tmp"))
+        assert time.monotonic() - t0 < 1.5
+        assert tmp[0].startswith(f".answer.json.{os.getpid()}.")  # names its writer (stale-file cleanup)
+    finally:
+        answered.set()
+        agents.STOP.clear()
+
+
+def test_an_interrupted_run_starts_no_new_llm_call():
+    """After Ctrl+C, a thread the run left running stops at its next paid call instead of making it."""
+    llm = FakeLLM()
+    agents.STOP.set()
+    try:
+        with pytest.raises(KeyboardInterrupt):
+            agents.FeatureAggregator(llm).call("a prompt")
+    finally:
+        agents.STOP.clear()
+    assert not llm.calls
 
 
 @pytest.mark.parametrize("stage", ["analyze", "aggregate", "judge", "meta_judge", "compile", "audit"])
@@ -240,6 +295,7 @@ def test_a_killed_process_leaves_a_run_directory_that_resumes(tmp_path, referenc
     second = Recording()
     result = schema(tmp_path, second).discover(runs(), TARGET)
     assert result.card.to_dict() == reference["card"] and result.extractor.code == reference["code"]
+    assert not list(run.rglob("*.tmp"))  # the killed writer's were removed when the run directory was opened
     assert killed_paid + second.roles() == reference["roles"]  # nothing paid twice
     sessions = json.loads((run / "run.json").read_text())["sessions"]
     assert [s["status"] for s in sessions] == ["killed", "completed"]

@@ -96,6 +96,8 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 - **Config checks.** Every `TabSchemaConfig` field is validated (a typo in `accept` used to compile nothing after
   paying for the whole run); `TabSchemaConfig.from_dict`, `tabagent onboard --config FILE`, and flags for
   `accept`, the sample strategy, workers, timeouts, retries, the audit sample and every check.
+- **Ctrl+C starts no new LLM call** and waits (up to 2 s) only for the answers being written; a temporary file
+  left by a killed process, or older than a day, is removed when a run directory is opened.
 
 ### Agent logs
 

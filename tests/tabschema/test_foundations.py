@@ -1,6 +1,9 @@
 """TabSchema foundations: trajectories, LLM layer, sandbox, deterministic checks, prompts, run store."""
 
 import json
+import os
+import subprocess
+import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
 
@@ -242,6 +245,37 @@ def test_runstore_cache_is_thread_safe(tmp_path):
         out = list(pool.map(lambda _: store.cached("llm", {"k": 1}, slow), range(16)))
     assert calls == [1] and all(o == {"text": "x" * 100_000} for o in out)
     assert not list((tmp_path / "r1" / "cache").rglob("*.tmp"))
+
+
+def test_opening_a_run_directory_removes_the_temporary_files_of_dead_writers(tmp_path):
+    """A temporary file whose writer is gone (a process killed in the middle of a write) is removed when a run
+    directory is opened; one whose writer is alive (this process) is kept: it may be writing there now."""
+    gone = subprocess.Popen([sys.executable, "-c", ""])
+    gone.wait()
+    cache = tmp_path / "r1" / "cache" / "llm"
+    cache.mkdir(parents=True)
+    dead = cache / f".{'a' * 64}.json.{gone.pid}.k2j3h4g5.tmp"
+    live = cache / f".{'b' * 64}.json.{os.getpid()}.x9y8z7w6.tmp"
+    for f in (dead, live):
+        f.write_text("{")
+    RunStore(tmp_path, run_id="r1")
+    assert not dead.exists() and live.exists()
+
+
+def test_opening_a_run_directory_removes_temporary_files_older_than_a_day(tmp_path):
+    """Temporary files named before the writer's pid was (``.<name>.<random>.tmp``) are removed once older
+    than a day, as is any temporary file that old; fresh ones are kept."""
+    run = tmp_path / "r1"
+    run.mkdir()
+    old, fresh = run / ".card.yaml.k2j3h4g5.tmp", run / ".run.json.x9y8z7w6.tmp"
+    old_live = run / f".report.md.{os.getpid()}.a1b2c3d4.tmp"
+    for f in (old, fresh, old_live):
+        f.write_text("x")
+    day_ago = time.time() - 25 * 3600
+    for f in (old, old_live):
+        os.utime(f, (day_ago, day_ago))
+    RunStore(tmp_path, run_id="r1")
+    assert not old.exists() and not old_live.exists() and fresh.exists()
 
 
 # Pinned hashes of the prompt files. The seven paper prompts reproduce App. D.2-D.3 word for word (verified

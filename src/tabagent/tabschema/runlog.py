@@ -27,7 +27,6 @@ import json
 import logging
 import os
 import socket
-import sys
 import threading
 import time
 from collections import Counter, defaultdict
@@ -35,7 +34,7 @@ from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
-from tabagent.tabschema.runstore import RunStore, atomic_write, read_jsonl, utc_now
+from tabagent.tabschema.runstore import RunStore, _pid_alive, atomic_write, read_jsonl, utc_now
 
 logger = logging.getLogger(__name__)
 
@@ -89,40 +88,6 @@ def drop_reason(reason: str) -> str:
     """The category of one drop reason (see ``REASONS``); other reasons are kept as they are, clipped."""
     low = str(reason).lower()
     return next((cat for start, cat in REASONS if low.startswith(start)), str(reason)[:80])
-
-
-def _pid_alive(pid: Any) -> bool:
-    """Whether process ``pid`` exists. On Windows ``os.kill(pid, 0)`` would send it a Ctrl+C, so the process
-    is looked up (``OpenProcess``) instead; where that cannot be asked, the process counts as alive."""
-    try:
-        pid = int(pid)
-    except (TypeError, ValueError):
-        return False
-    if pid <= 0:
-        return False
-    if sys.platform == "win32":
-        try:
-            import ctypes
-
-            kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-            handle = kernel32.OpenProcess(0x1000, False, pid)  # PROCESS_QUERY_LIMITED_INFORMATION
-            if not handle:
-                return False
-            code = ctypes.c_ulong()
-            ok = kernel32.GetExitCodeProcess(handle, ctypes.byref(code))
-            kernel32.CloseHandle(handle)
-            return not ok or code.value == 259  # STILL_ACTIVE
-        except Exception:  # noqa: BLE001 - unknown: keep the other session's record as it is
-            return True
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:  # it exists, owned by someone else
-        return True
-    except OSError:
-        return False
-    return True
 
 
 def _meter_state(meter: Any) -> dict[str, dict[str, float]]:

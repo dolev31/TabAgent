@@ -44,7 +44,7 @@ from tabagent.tabschema.llm import (
     retry_after,
     status_code,
 )
-from tabagent.tabschema.runstore import RunStore
+from tabagent.tabschema.runstore import RunStore, wait_for_writes
 from tabagent.tabschema.sandbox import MAX_CANDIDATE_ERRORS, ExecResult, SubprocessSandbox
 from tabagent.tabschema.trajectory import (
     DecisionPoint,
@@ -161,7 +161,7 @@ def json_items(value: Any) -> list[dict[str, Any]]:
 
 def in_parallel(fn, items: list, workers: int = 1) -> list:
     """``[fn(x) for x in items]``, run on up to ``workers`` threads; results keep the order of ``items``. An
-    interruption (Ctrl+C) returns at once: waiting threads are woken (``STOP``) and not waited for."""
+    interruption (Ctrl+C) returns at once (``shutdown_interrupted``)."""
     if workers <= 1 or len(items) <= 1:
         return [fn(x) for x in items]
     pool = ThreadPoolExecutor(max_workers=min(workers, len(items)))
@@ -178,10 +178,12 @@ def in_parallel(fn, items: list, workers: int = 1) -> list:
 
 
 def shutdown_interrupted(pool: ThreadPoolExecutor) -> None:
-    """Stop a pool after an interruption without waiting for its threads: queued work is cancelled, and
-    threads waiting in a backoff wake up and stop (``STOP``)."""
+    """Stop a pool after an interruption without waiting for its threads: queued work is cancelled, threads
+    waiting in a backoff wake up and stop, and none starts another LLM call (``STOP``). Only the files being
+    written (an answer being stored) are waited for, up to 2 s, so none is left half-written."""
     STOP.set()
     pool.shutdown(wait=False, cancel_futures=True)
+    wait_for_writes()
 
 
 class Stage:
@@ -334,6 +336,8 @@ class Stage:
         attempt = timeouts = 0
         while True:
             attempt += 1
+            if STOP.is_set():  # an interrupted run's threads start no new paid call
+                raise KeyboardInterrupt("TabSchema was interrupted")
             self.meter.check()  # a spent budget stops every stage before its next paid call
             est = self.meter.reserve(self.role, llm.model, len(prompt))  # and so does one about to be
             t0 = time.monotonic()

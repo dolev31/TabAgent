@@ -238,12 +238,15 @@ def test_slow_but_legal_trajectories_finish_across_interpreters():
     assert [r.ok for r in rs] == [True] * 16 and [r.features["i"] for r in rs] == list(range(16))
 
 
-def test_the_session_check_never_signals_a_process_on_windows(monkeypatch):
-    from tabagent.tabschema import runlog
+def test_the_session_check_never_signals_a_process_on_windows(monkeypatch, tmp_path):
+    from tabagent.tabschema import runlog, runstore
 
-    monkeypatch.setattr(runlog.sys, "platform", "win32")
-    monkeypatch.setattr(runlog.os, "kill", lambda *a: pytest.fail("os.kill would send Ctrl+C on Windows"))
+    monkeypatch.setattr(runstore.sys, "platform", "win32")
+    monkeypatch.setattr(runstore.os, "kill", lambda *a: pytest.fail("os.kill would send Ctrl+C on Windows"))
     assert runlog._pid_alive(os.getpid()) is True  # unknown there without ctypes.windll: kept as alive
+    mine = tmp_path / f".a.json.{os.getpid()}.k2j3h4g5.tmp"  # nor does the stale temporary file cleanup
+    mine.write_text("{")
+    assert runstore.remove_stale_tmp(tmp_path) == 0 and mine.exists()
 
 
 # --------------------------------------------------------------------------- M7, L7: the auditor
