@@ -115,6 +115,22 @@ KILL_POINTS = [
 ]
 
 
+def _join_new_threads(before: set, timeout: float = 60.0) -> None:
+    """Wait for the threads started since ``before``, as the interpreter does at exit. A thread that was
+    started but is not running yet cannot be joined (RuntimeError); it is retried until it runs or the time is
+    up."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        new = [t for t in threading.enumerate() if t not in before and t is not threading.current_thread()]
+        if not new:
+            return
+        for t in new:
+            try:
+                t.join(max(0.0, min(1.0, deadline - time.monotonic())))
+            except RuntimeError:  # started, not yet running
+                time.sleep(0.01)
+
+
 @pytest.mark.parametrize("role, n", KILL_POINTS)
 def test_an_interrupted_run_resumes_to_the_same_card_without_paying_twice(tmp_path, reference, role, n):
     if reference["roles"][role] <= n:
@@ -125,8 +141,7 @@ def test_an_interrupted_run_resumes_to_the_same_card_without_paying_twice(tmp_pa
         schema(tmp_path, first).discover(runs(), TARGET)
     # The run returns without waiting for a thread whose LLM call was under way at the interruption (it stores
     # that answer, then stops); the interpreter waits for such threads at exit, and so does the test.
-    for t in set(threading.enumerate()) - before:
-        t.join(60)
+    _join_new_threads(before)
     run = tmp_path / "runs" / "run"
     summary = json.loads((run / "run.json").read_text())
     assert summary["status"] == "stopped" and summary["stopped_by"] == "KeyboardInterrupt"
