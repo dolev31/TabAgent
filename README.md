@@ -156,6 +156,23 @@ calls no LLM. The released TabSchema implementation has not yet been validated a
 <img src="docs/assets/candidate_overload.png" width="49%" alt="P@R against candidate-set size: the TabAgent classifier stays highest at every size while the LLM regimes degrade sharply">
 </details>
 
+## Reproduce the paper
+
+Every public result has one command; `make reproduce` runs every public Table 1 and Table 2 cell on a CPU.
+
+| Paper result | Command | Runs on |
+|---|---|---|
+| Table 1, τ²-bench rows | `python -m experiments.reproduce --cells tau2-airline tau2-retail tau2-telecom tau2-combined` | CPU, 25 min |
+| Table 1, skill selection | `python -m experiments.reproduce --cells skill-selection` | CPU, 2 min |
+| Table 1, Mind2Web operation and element selection | `python -m experiments.reproduce --cells operation-selection element-selection` | CPU, 5.9 GB of data |
+| Table 2, transfer across agents | `python -m experiments.reproduce --cells transfer` | CPU, 5 min |
+| Fig. 3, classifier heads | `python -m experiments.figures.head_ablation` | CPU, 1 hour |
+| Table 15 and Fig. 4, cost and the Pareto plot | `python -m experiments.efficiency.cost` and `python -m experiments.efficiency.pareto --paper` | CPU, seconds |
+
+[Reproducing the paper](docs/reproducing.md) lists every table and figure with its command, time and data, puts
+the released numbers next to the paper's, and names what public data cannot reproduce (the results on the CUGA
+agent's AppWorld trajectories).
+
 ## Use it in your agent
 
 **1. Onboard** a decision from the agent's own logs (OpenAI, Anthropic, LangChain, τ²-bench, CUGA or generic JSON):
