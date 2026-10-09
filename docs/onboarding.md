@@ -310,10 +310,10 @@ OutputAuditor. What the LLM will do (how many features it proposes and keeps, ho
 code needs a retry) comes from real runs (`estimate.Profile`), and characters become tokens at the model's
 measured ratio: 2.3 characters per token for Claude models (billed counts on real runs were 2.33 to 2.74) and
 3.9 for others (measured offline with OpenAI's o200k tokenizer, not against billed usage). On four public
-τ²-bench runs (next tool call, $6 to $12 each) and two sets of private agent logs with prompts of up to 160,000
-tokens, the estimate landed within 30% of the actual cost before the audit: 6% to 17% low on τ²-bench, 8% low
-and 26% high on the private logs. The earlier estimate, which assumed 4 characters per token for every model,
-was 22% low on the logs with the longest prompts and counted the audit at about a tenth of its cost. A model
+τ²-bench runs (next tool call, $6 to $12 each) and two sets of private agent logs with much longer prompts, the
+estimate landed within 30% of the actual cost before the audit (6% to 17% low on τ²-bench). The earlier
+estimate, which assumed 4 characters per token for every model, was too low on the logs with the longest
+prompts and counted the audit at about a tenth of its cost. A model
 much more or less verbose than the profile moves the actual cost away from the estimate.
 
 **A budget**, `max_cost_usd` (`--max-cost`), stops discovery before a call whose estimated cost (its prompt at the

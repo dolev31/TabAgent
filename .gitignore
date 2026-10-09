@@ -37,3 +37,7 @@ catboost_info/
 !tests/fixtures/**
 
 /site/
+
+# Local outputs of the examples and launch material kept outside the repository
+/my_head/
+/peo/

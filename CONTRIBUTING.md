@@ -1,7 +1,8 @@
 # Contributing to TabAgent
 
 Thank you for helping. Bug reports, new log formats, decision kinds and benchmark loaders are all welcome.
-Loaders for the public OAK and BPO benchmarks are the most wanted addition.
+Loaders for the public OAK and BPO benchmarks are the most wanted addition. Everyone taking part follows the
+[Code of Conduct](CODE_OF_CONDUCT.md); report security issues privately, as [SECURITY.md](SECURITY.md) describes.
 
 ## Set up
 

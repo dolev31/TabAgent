@@ -24,7 +24,7 @@ def test_each_pipeline_version_is_onboarded_with_the_same_settings(tmp_path, mon
     assert len(onboard) == 3 and all(T.SETTINGS in line for line in onboard)
     assert all(str(T.logs_dir()) in line for line in onboard)
     for name, rev in T.VERSIONS.items():
-        assert f"git checkout {rev} " in "\n".join(lines)
+        assert f"git checkout {T.revision(rev)} " in "\n".join(lines)
         assert f"--run-dir {Path('runs') / name / 'run'} " in "\n".join(onboard)
     assert "--n-analyze 20 --accept accept" in T.SETTINGS and "extractor=azure/gpt-6-sol" in T.SETTINGS
 
@@ -43,3 +43,24 @@ def test_download_gathers_the_files_in_one_folder(tmp_path, monkeypatch):
     assert out == T.logs_dir() and sorted(p.name for p in out.iterdir()) == sorted(T.FILES)
     assert all((out / name).read_text() == "[]" for name in T.FILES)
     assert T.download() == out and len(list(out.iterdir())) == 3  # again: the links are replaced
+
+
+def test_a_version_is_found_by_its_pull_request_number(tmp_path):
+    """The printed checkout resolves a pull request number to its main-branch commit, never to another one
+    whose number starts the same (#4 against #47), whatever the commit hashes."""
+    import subprocess
+
+    def git(*args):
+        return subprocess.run(["git", "-C", str(tmp_path), *args], check=True, capture_output=True, text=True)
+
+    git("init", "-q", "-b", "main")
+    shas = {}
+    for pr in ("#4", "#47", "#48"):
+        who = ("-c", "user.name=t", "-c", "user.email=t@example.org")
+        git(*who, "commit", "-q", "--allow-empty", "-m", f"x ({pr})")
+        shas[pr] = git("rev-parse", "HEAD").stdout.strip()
+    for pr, sha in shas.items():
+        out = subprocess.run(
+            ["bash", "-c", f"echo {T.revision(pr)}"], cwd=tmp_path, check=True, capture_output=True, text=True
+        )
+        assert out.stdout.strip() == sha, pr

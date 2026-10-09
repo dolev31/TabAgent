@@ -4,6 +4,34 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.1.0: first public release
+
+The code of the paper *TabAgent: Distilling LLM Agent Components into Cheap Classifiers*
+([arXiv:2602.16429](https://arxiv.org/abs/2602.16429)), as the `tabagent` package (Python 3.10 to 3.13,
+Apache-2.0).
+
+- **The paper's components**, under the paper's names: TabSchema (LLM-driven feature discovery from successful
+  trajectories, with a sandboxed, reviewed extractor), TabSynth (label-preserving paraphrase rows) and TabHead
+  (a CatBoost head that scores every candidate of a decision in one pass), with task-grouped cross-validation,
+  the paper's metrics and paired bootstrap intervals.
+- **Onboarding from agent logs**: `tabagent.onboard` and `tabagent onboard`, with log adapters for OpenAI,
+  Anthropic and LangChain tool-call messages, τ²-bench results, CUGA trajectories and generic JSON; `tabagent
+  scan`, `components` and `check-logs` before any LLM call; a dry-run cost estimate, a budget, redaction and
+  resumable run directories.
+- **scikit-learn estimators**: `TabAgentRanker`, `TabAgentClassifier` and `TabAgentRouter`, which pick their
+  recipe by nested validation; `tabagent.scorer` and `tabagent.pointwise`.
+- **Deployment**: saved heads whose extractor is pinned by hash, `tabagent verify-head`, `tabagent serve` (an
+  HTTP service with warm sandboxed workers, readiness, Prometheus metrics and drift monitoring), the OpenAI
+  tool filter, the CUGA hot-swap helpers, and `tabagent.load("hf://...")` for heads on the Hugging Face Hub.
+- **Reproduction**: loaders for the public benchmarks at pinned, SHA-256-verified revisions (τ²-bench,
+  SkillsBench, Mind2Web, LLMRouterBench as an opt-in download, AppWorld sub-agent routing through its official
+  CLI), their frozen or hand-authored feature cards and the paper's folds and seeds, and `experiments/` for the
+  paper's tables and figures ([docs/reproducing.md](docs/reproducing.md)).
+
+The sections below record what changed during the release's development, after the paper's experiments.
+
 ### Per-candidate features
 
 - **The FeatureAnalyzer is told when the decision chooses among candidates.** Its prompt gets an "Additional
@@ -168,7 +196,7 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 - `TabAgent.fit` records the training distribution of the head's inputs (`model/feature_stats.json`), which
   drift monitoring compares live decisions with.
 
-### Upgrading
+### Upgrading from development builds
 
 - **Older extractors may be refused at serve time.** A sandbox chosen by name now re-applies the
   security-relevant static checks of the compile step to `extract.py` before running it. The checks are the

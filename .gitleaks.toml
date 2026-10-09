@@ -1,0 +1,11 @@
+# gitleaks configuration: the default rules, and one known false positive allowed by its text (not by commit
+# fingerprint, so the allowance survives history rewrites and covers every commit that holds the text).
+title = "TabAgent"
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "generic-api-key false positive: `outcome_keys, max_failure_rate=` is a list of JSON field names and a keyword argument in tabagent/tabschema/compile.py, not a credential"
+regexTarget = "match"
+regexes = ['''outcome_keys, max_failure_rate=''']

@@ -3,3 +3,6 @@ contact_links:
   - name: Reproducing a paper result
     url: https://github.com/dolev31/TabAgent/blob/main/docs/reproducing.md
     about: Every reproducible cell, the command that recomputes it, and the value it produces.
+  - name: Report a security vulnerability
+    url: https://github.com/dolev31/TabAgent/security/advisories/new
+    about: Report it privately, not in a public issue (see SECURITY.md).

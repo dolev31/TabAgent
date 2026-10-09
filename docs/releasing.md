@@ -33,8 +33,9 @@ private.
 
 1. **Bump the version** in `src/tabagent/__init__.py` (`__version__`, [PEP 440](https://peps.python.org/pep-0440/):
    `0.1.0`, `0.2.0rc1`, ...). For the first release, also remove the
-   `# until the PyPI release: pip install "tabagent @ git+..."` line from the README's Install section. Merge the
-   change to `main` through a pull request, with CI green.
+   `# until the PyPI release: pip install "tabagent @ git+..."` line from the README's Install section. In
+   `CHANGELOG.md`, move the *Unreleased* entries under a heading for the new version and add the release date.
+   Merge the change to `main` through a pull request, with CI green.
 2. **Check the build locally** (optional; the workflow repeats it):
 
     ```bash

@@ -12,9 +12,14 @@ checked against the SHA-256 the repository records (``tabagent/datasets/manifest
 
 The pipeline versions, each onboarded once with the same settings (``commands`` prints them):
 
-* ``previous``: the pipeline before the per-candidate function (the parent of PR #47);
+* ``previous``: the pipeline before the per-candidate function (PR #43, the parent of PR #47);
 * ``run1``: PR #47, whose FeatureAnalyzer is not told that the decision chooses among candidates;
-* ``run2``: the FeatureAnalyzer told so (``tabagent_analyzer_candidates``).
+* ``run2``: PR #48, the FeatureAnalyzer told so (``tabagent_analyzer_candidates``). Its run was onboarded from
+  the pull request's branch, whose prompts and stages are those of the merged commit (which also holds PR
+  #49's handling of Ctrl+C).
+
+Each version is found on the main branch by its pull request number, which ends the commit's subject, so the
+commands work in any clone of the repository.
 
 ``evaluate`` reads each run directory's ``card.yaml`` and ``extract.py``, extracts every card's features on
 the same decision points, and cross-validates TabAgent on each card and on three variants: run 1 without
@@ -48,11 +53,12 @@ FILES = [
 DECISION = "NextToolCall"
 METRICS = ("p@r", "recall@3", "recall@5")
 SEEDS = (0, 1, 2)
-#: The pipeline versions (git revisions of github.com/dolev31/TabAgent) and the onboarding settings.
+#: The pipeline versions, by the pull request that merged each into main (github.com/dolev31/TabAgent), and
+#: the onboarding settings.
 VERSIONS = {
-    "previous": "a99decd~1",
-    "run1": "a99decd",
-    "run2": "tabschema/analyzer-candidates",
+    "previous": "#43",
+    "run1": "#47",
+    "run2": "#48",
 }
 SETTINGS = (
     "--decision NextToolCall --kind ranking --model aws/claude-opus-5-5 "
@@ -89,14 +95,20 @@ def download() -> Path:
     return out
 
 
+def revision(pr: str) -> str:
+    """A shell expression for the main-branch commit of pull request ``pr`` (``"#47"``): the one whose subject
+    ends in ``(#47)``. Commit hashes are not used, since they differ between clones of a rewritten history."""
+    return f"\"$(git log -1 --format=%H --grep='({pr})$' main)\""
+
+
 def commands(root: Path) -> list[str]:
     """The onboarding command of each pipeline version (run directories and heads under ``root``)."""
     logs = logs_dir()
     out = []
     for name, rev in VERSIONS.items():
         out += [
-            f"# {name}: TabAgent at {rev}",
-            f"git checkout {rev} && uv sync --extra tabschema --extra llm",
+            f"# {name}: TabAgent at PR {rev}",
+            f"git checkout {revision(rev)} && uv sync --extra tabschema --extra llm",
             f"tabagent onboard {logs} {SETTINGS} --run-dir {root / name / 'run'} "
             f"--out {root / name / 'head'}",
         ]

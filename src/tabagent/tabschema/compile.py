@@ -209,10 +209,13 @@ def _follows_count(indices: dict[int, list[str]], rows: list, candidates: list) 
     if len(indices) < 2:
         return False
     present = []
+    index_of = {c: i for i, cols in indices.items() for c in cols}
     for row, cands in zip(rows, candidates, strict=True):
         if row is None or not cands:
             continue
-        have = [i for i, cols in indices.items() if any(not _is_null(row.get(c)) for c in cols)]
+        # the indices with a value at this point, from the row's own keys (a family can have as many indices
+        # as there are decision points, so scanning every index at every point would be quadratic)
+        have = list({index_of[c] for c, v in row.items() if c in index_of and not _is_null(v)})
         if have:
             present.append((have, len(cands)))
     if len(present) < POSITIONAL_MIN_POINTS or len({n for _, n in present}) < 2:
@@ -233,8 +236,11 @@ def _lines_up(indices: dict[int, list[str]], rows: list, candidates: list) -> bo
         for row, cands in zip(rows, candidates, strict=True):
             if row is None or not cands:
                 continue
-            for i, cols in indices.items():
-                if not 0 <= i - offset < len(cands):
+            # only the indices that can name one of this point's candidates (a family can have as many
+            # indices as there are decision points, so scanning every index at every point would be quadratic)
+            for i in range(offset, offset + len(cands)):
+                cols = indices.get(i)
+                if not cols:
                     continue
                 names = {str(cands[i - offset].get(k) or "").lower() for k in ("id", "name")} - {""}
                 for c in cols:

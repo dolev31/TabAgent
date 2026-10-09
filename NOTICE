@@ -10,7 +10,8 @@ source from its upstream location at a pinned revision into a local cache, subje
 
   * tau2-bench (sierra-research/tau2-bench) ............ MIT
   * tau2-sft-final (Hugging Face dataset) ............... Apache-2.0
-  * SkillsBench (benchflow-ai/skillsbench) .............. Apache-2.0
+  * SkillsBench (benchflow-ai/skillsbench and the
+    benchflow/skillsbench-leaderboard dataset) ......... Apache-2.0
   * Mind2Web (osunlp/Mind2Web) .......................... CC-BY-4.0 (attribution required)
   * LLMRouterBench ...................................... MIT, as declared in the upstream README (the
                                                           repository ships no LICENSE file); opt-in download
@@ -18,3 +19,15 @@ source from its upstream location at a pinned revision into a local cache, subje
                                                           condition; obtained only via the official CLI
   * intfloat/e5-small-v2 (text encoder) ................. MIT
   * CatBoost ............................................ Apache-2.0
+
+Models downloaded by the paper-reproduction scripts in `experiments/` (not by the package), each under its
+own license:
+
+  * Llama 3.1 8B Instruct and Llama 3.2 1B/3B Instruct .. Llama 3.1 / Llama 3.2 Community License
+  * Qwen2.5-7B-Instruct ................................. Apache-2.0
+  * TabSTAR (optional head of the head ablation) ........ MIT (code), CC-BY-4.0 (pretrained weights)
+
+Artwork
+-------
+The logo, wordmarks and hero images in `docs/assets/brand/` set their text in Inter and JetBrains Mono (SIL Open
+Font License 1.1), converted to outlines; no font file is bundled.

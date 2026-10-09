@@ -24,7 +24,7 @@ The estimate follows the pipeline stage by stage and builds what it can from the
 How the LLM behaves (how many features it proposes, how many survive each stage, how long its answers are, how
 often code needs a retry) cannot be read from the data: ``Profile`` holds those numbers, measured on real
 discovery runs (Claude Opus 5.5 with GPT-6 Sol writing the code; the public τ²-bench GPT-4.1 logs, next tool
-call and tool shortlist, and two private agent-log sets with prefixes of up to 160,000 tokens). Characters are
+call and tool shortlist, and two private agent-log sets with much longer prefixes). Characters are
 turned into tokens with the model's measured ratio (``llm.chars_per_token``: 2.3 characters per token for
 Claude models, 3.9 for others), the main source of the earlier estimate's error on long prompts, where 4 was
 assumed for every model.
