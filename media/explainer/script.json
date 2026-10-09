@@ -1,0 +1,23 @@
+{
+  "duration": 73.0,
+  "note": "The narration. Each cue is a caption (VTT/SRT) and the on-screen text of the same moment. {repo_url} is filled from config.json. 'screen' says where the text is shown: 'column' = the left text column, otherwise the scene draws it itself.",
+  "cues": [
+    {"id": "c01", "start": 0.3, "end": 3.9, "screen": "column", "text": "Which tool?\nWhich skill?\nWhich model?"},
+    {"id": "c02", "start": 3.9, "end": 7.5, "screen": "column", "text": "Agents ask a frontier LLM, again and again. Slow and costly."},
+    {"id": "c03", "start": 7.5, "end": 11.3, "screen": "column", "text": "But the agent's successful runs already hold the answers."},
+    {"id": "c04", "start": 11.3, "end": 15.3, "screen": "column", "text": "So turn each decision into a table, and train a classifier."},
+    {"id": "c05", "start": 15.3, "end": 19.1, "screen": "column", "text": "LLM agents read the successful runs and propose features."},
+    {"id": "c06", "start": 19.1, "end": 23.1, "screen": "column", "text": "They write extraction code, run it in a sandbox, and validate it."},
+    {"id": "c07", "start": 23.1, "end": 26.9, "screen": "column", "text": "Three judges score each feature. A MetaJudge decides."},
+    {"id": "c08", "start": 26.9, "end": 31.5, "screen": "column", "text": "Out comes a feature card: one row per candidate."},
+    {"id": "c09", "start": 31.5, "end": 35.5, "screen": "column", "text": "TabSynth paraphrases the free text to grow the training set."},
+    {"id": "c10", "start": 35.5, "end": 40.0, "screen": "column", "text": "Candidate and label are copied verbatim, so it never invents a positive."},
+    {"id": "c11", "start": 40.0, "end": 44.0, "screen": "column", "text": "TabHead, a CatBoost classifier, ranks every candidate in one pass."},
+    {"id": "c12", "start": 44.0, "end": 47.6, "screen": "column", "text": "In milliseconds, on a CPU."},
+    {"id": "c13", "start": 47.6, "end": 52.0, "screen": "column", "text": "Unsure? A confidence gate hands the decision back to the LLM."},
+    {"id": "c14", "start": 52.0, "end": 57.0, "screen": "payoff", "text": "Per decision: about 10³× lower latency and 10⁵× lower cost than the GPT-5.4 shortlister."},
+    {"id": "c15", "start": 57.0, "end": 63.0, "screen": "payoff", "text": "And it recovers essentially all of the tools the GPT-5.4 shortlister used on its successful runs (Recall@9)."},
+    {"id": "c16", "start": 63.0, "end": 67.4, "screen": "cta", "text": "TabAgent: distilling LLM agent components into cheap classifiers."},
+    {"id": "c17", "start": 67.4, "end": 73.0, "screen": "cta", "text": "Onboard your own agent from its logs. {repo_url}"}
+  ]
+}

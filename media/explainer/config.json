@@ -1,0 +1,9 @@
+{
+  "repo_url": "github.com/dolev31/TabAgent",
+  "arxiv_id": "2602.16429",
+  "install_cmd": "pip install \"tabagent[tabschema]\"",
+  "onboard_cmd": "tabagent onboard ./logs --decision ToolShortlist",
+  "fps": 60,
+  "loop_fps": 30,
+  "loop_seconds": 8
+}

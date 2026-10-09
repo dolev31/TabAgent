@@ -27,7 +27,9 @@ own license:
   * Qwen2.5-7B-Instruct ................................. Apache-2.0
   * TabSTAR (optional head of the head ablation) ........ MIT (code), CC-BY-4.0 (pretrained weights)
 
-Artwork
--------
-The logo, wordmarks and hero images in `docs/assets/brand/` set their text in Inter and JetBrains Mono (SIL Open
-Font License 1.1), converted to outlines; no font file is bundled.
+Artwork and fonts
+-----------------
+The logo, wordmarks and hero images in `docs/assets/brand/`, `docs/assets/pipeline-animated.svg`, and the
+explainer video in `media/explainer/` and its stills set their text in Inter (rsms/inter) and JetBrains Mono
+(JetBrains/JetBrainsMono), both under the SIL Open Font License 1.1. The SVG images hold glyph outlines as paths
+and no font file is bundled: the renderer in `media/explainer/` downloads the fonts at render time.

@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>TabAgent pipeline loop</title>
+<link rel="stylesheet" href="css/base.css">
+</head>
+<body>
+<div id="stage"></div>
+<script src="js/engine.js"></script>
+<script src="js/components.js"></script>
+<script src="js/loop.js"></script>
+<script src="js/main.js"></script>
+<script>
+  __boot((stage, script, cfg) => {
+    const c = Loop.build(stage, script, cfg);
+    return { seek: c.seek, duration: Loop.PERIOD, size: [Loop.W, Loop.H] };
+  });
+</script>
+</body>
+</html>
