@@ -76,7 +76,7 @@ real-only head otherwise.
 | decision | paper | released |
 |---|---|---|
 | τ²-bench airline / retail / telecom / combined, P@R | 72 / 75 / 85 / 77 | 71.9 / 75.4 / 84.7 / 76.8 |
-| … +synth (the extended TabSynth operators of App. H, nested choice) | 71 / 75 / 85 / 78 | 71.3 / 75.2 / 85.2 / 77.8 |
+| … +synth (the extended TabSynth operators of App. H, nested choice) | 71 / 75 / 85 / 78 | 71.3 / 75.2 / 85.2 / 77.6 |
 | … R@k: Recall@9 of the +synth head | 97 / 96 / 100 / 97 | 96.7 / 95.7 / 99.7 / 97.3 |
 | … Recall@9 of the real-only head (Table 11) | 98 / 96 / 100 / 97 | 98.1 / 95.7 / 100 / 97.0 |
 | … chance | 21 / 28 / 26 / 10 | 21.1 / 27.8 / 25.5 / 9.5 |

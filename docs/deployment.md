@@ -511,7 +511,7 @@ extractor), so it decides from candidate rows:
 | Hub repository | decision | fitted on | paper, 5-fold task-level CV | released code, same protocol |
 |---|---|---|---|---|
 | [dolev31/tabagent-skillsbench-skill-selection](https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection) | skill selection over the 195 SkillsBench skills | all 87 SkillsBench tasks | P@R 80, Recall@9 91 | P@R 79.6, Recall@9 90.5 |
-| [dolev31/tabagent-tau2-tool-shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) | tool shortlisting over the 38 agent tools of τ²-bench airline, retail and telecom | all 326 tau2-sft-final trajectories | P@R 78, Recall@9 97 (+synth head) | P@R 77.8, Recall@9 97.3 |
+| [dolev31/tabagent-tau2-tool-shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) | tool shortlisting over the 38 agent tools of τ²-bench airline, retail and telecom | all 326 tau2-sft-final trajectories | P@R 78, Recall@9 97 (+synth head) | P@R 77.6, Recall@9 97.3 |
 
 Both were fitted once on their full table with the paper's settings: the bundled card, CatBoost with 300
 iterations, learning rate 0.08 and depth 6, the first of the paper's three seeds, and for τ²-bench the TabSynth
