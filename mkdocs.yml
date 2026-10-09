@@ -12,19 +12,33 @@ exclude_docs: |
   /hooks/
   /releasing.md
 
+# Built and searchable by link, but kept out of the navigation: the source of every number on the README and the
+# landing page.
+not_in_nav: |
+  /claims-map.md
+
 hooks:
   - docs/hooks/faq.py
+  - docs/hooks/media.py
+
+# Fonts are served from the site itself: the privacy plugin downloads Inter and JetBrains Mono (SIL OFL 1.1) from
+# Google Fonts at build time, so a visitor's browser never contacts Google. Nothing else external is fetched.
+plugins:
+  - search
+  - privacy:
+      assets_include:
+        - fonts.googleapis.com/*
+        - fonts.gstatic.com/*
 
 theme:
   name: material
   custom_dir: docs/overrides
-  logo: assets/brand/logo.svg
-  favicon: assets/brand/favicon.png
+  logo: assets/brand/tabagent-mark.svg
+  favicon: assets/brand/favicon.svg
   icon:
     repo: fontawesome/brands/github
-  font:
-    text: Inter
-    code: JetBrains Mono
+  # Inter and JetBrains Mono load in docs/overrides/main.html (variable weights 400-800), self-hosted by `privacy`.
+  font: false
   palette:
     - media: "(prefers-color-scheme: light)"
       scheme: default
@@ -63,6 +77,11 @@ extra:
 #   google_site_verification: TOKEN   # Google Search Console, URL-prefix property, HTML-tag method
 #   bing_site_verification: TOKEN     # Bing Webmaster Tools, meta-tag method (msvalidate.01)
   goatcounter: tabagent              # GoatCounter site code (tabagent.goatcounter.com): counts visits without cookies
+  # The explainer video on the landing page. The Pages workflow downloads the MP4, WebM and VTT from the GitHub
+  # Release media-v1 into docs/assets/video/ (git-ignored; docs/releasing.md). docs/hooks/media.py plays them only
+  # when the MP4 is there at build time; otherwise the page shows the animated pipeline.
+  explainer_video: assets/video/tabagent-explainer.mp4
+  explainer_poster: assets/explainer-poster.webp
 
 markdown_extensions:
   - admonition

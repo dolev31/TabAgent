@@ -1,15 +1,15 @@
 # On-screen claims and their sources
 
-Every number and claim the explainer shows (video, captions, loop, poster, OG image, animated SVG) is listed here
-with its source. Paper references are to `peo/source/tabagent.tex` of the paper (line numbers of the version this
-video was built from, and the LaTeX label of the section). Code claims cite the repository's public docs. Nothing
-comes from private data, and the video shows no number that is not below.
+Every number and claim the explainer shows (video, captions, loop, poster, README thumbnail, OG image, animated
+SVG) is listed here with its source. Paper references are to `peo/source/tabagent.tex` of the paper (line numbers of
+the version this video was built from, and the LaTeX label of the section). Code claims cite the repository's public
+docs. Nothing comes from private data, and the video shows no number that is not below.
 
 ## Numbers (all from the paper; AppWorld tool shortlisting, per decision)
 
 | On screen | Exact paper wording | Source |
 |---|---|---|
-| `~10³× lower latency`, `~10⁵× lower cost` (payoff headline, poster, OG; caption c14 "about 10³× lower latency and 10⁵× lower cost") | "at 99.96% lower latency and 99.9996% lower cost per call (~10³× and ~10⁵×)" | abstract, line 154; repeated in the conclusion, line 863 |
+| `~10³× lower latency`, `~10⁵× lower cost` (payoff headline, poster, README thumbnail, OG; caption c14 "about 10³× lower latency and 10⁵× lower cost") | "at 99.96% lower latency and 99.9996% lower cost per call (~10³× and ~10⁵×)" | abstract, line 154; repeated in the conclusion, line 863 |
 | `7.50 s` and `$0.052` for the "GPT-5.4 shortlister" | "against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces" | `subsec:eff_new`, line 654; App. Table `tab:cost-runtime`, line 1949 |
 | `2.682 ms` and `$2.0×10⁻⁷` for the "TabAgent head" | "A single TabHead pass runs in 2.682 ms at $2.0×10⁻⁷" | `subsec:eff_new`, line 654; `tab:cost-runtime`, line 1954 |
 | "per decision" (eyebrow "AppWorld tool shortlisting · per decision") | the table's caption: "Per-decision cost and runtime for one AppWorld shortlisting decision" | `tab:cost-runtime`, line 1941 |

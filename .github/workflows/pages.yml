@@ -24,6 +24,26 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: astral-sh/setup-uv@v5
+      - name: The explainer video from a GitHub Release (the landing page shows the pipeline while there is none)
+        # The MP4, WebM and VTT are too large to commit (docs/releasing.md). The newest release tagged media-v*
+        # that has the MP4 wins, else any release that has it; docs/hooks/media.py plays the video only if the MP4
+        # is there at build time.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          tag=$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '
+            [.[] | select(.draft | not) | select(any(.assets[]; .name == "tabagent-explainer.mp4"))]
+            | (map(select(.tag_name | startswith("media-v"))) + .) | .[0].tag_name // empty') || tag=""
+          if [ -z "$tag" ]; then
+            echo "No release has tabagent-explainer.mp4: the landing page shows the pipeline."
+            exit 0
+          fi
+          mkdir -p docs/assets/video
+          for f in tabagent-explainer.mp4 tabagent-explainer.webm tabagent-explainer.vtt; do
+            gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "$f" -D docs/assets/video --clobber \
+              || { rm -f "docs/assets/video/$f"; echo "$f: not downloaded from $tag"; }
+          done
+          ls -l docs/assets/video
       - run: uv run --group docs mkdocs build --strict
       - name: The paper's PDF beside the page (Google Scholar attaches a PDF only from the page's own directory)
         # Pinned to the version whose title the page carries; until it is listed, the Scholar PDF tag is dropped.

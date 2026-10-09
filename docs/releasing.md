@@ -55,6 +55,80 @@ private.
    from the merged pull requests (edit them there if needed). Tags with `a`, `b`, `rc` or `dev` are marked as
    pre-releases. Confirm with `pip install tabagent==0.1.0` in a fresh environment.
 
+## The explainer video
+
+The landing page plays a 73-second explainer video, and the README links to it. The MP4 (about 6 MB), the WebM
+and the captions (VTT) are not committed, because the repository caps files at 500 KB: they are assets of a GitHub
+Release, which the `pages` workflow downloads into `docs/assets/video/` before it builds the site. It takes the
+newest release tagged `media-v*` that has the MP4, else any release that has it. Without one, the landing page shows
+the animated pipeline in the video's place, and the README's thumbnail links to that.
+
+**At launch**, once the repository is public and Pages is enabled:
+
+1. **Render the video** if `media/explainer/out/` does not hold it yet: see `media/explainer/README.md` (about
+   12 minutes).
+2. **Create the release and rebuild the site:**
+
+    ```bash
+    gh release create media-v1 --latest=false --title "Explainer video" \
+      --notes "The explainer video of the documentation site, with English captions. Source: media/explainer/." \
+      media/explainer/out/tabagent-explainer.mp4 media/explainer/out/tabagent-explainer.webm \
+      media/explainer/out/tabagent-explainer.vtt
+    gh workflow run pages.yml --ref main
+    ```
+
+    `--latest=false` keeps the package's version release as the repository's latest release, and the tag does
+    not match `v*`, so nothing is published to PyPI. When the `pages` run is green, its log lists the three files
+    and the landing page plays the video.
+3. **Put the player in the README.** Open the pull request that makes this change and drag
+   `tabagent-explainer.mp4` into its description: GitHub uploads it (10 MB at most on a free plan) and inserts a
+   `https://github.com/user-attachments/assets/...` URL. In `README.md`, put that URL on its own line at the
+   `EXPLAINER VIDEO` comment and delete the thumbnail block below the comment; GitHub renders the line as a video
+   player.
+
+A new cut of the video replaces the assets of the same release
+(`gh release upload media-v1 media/explainer/out/tabagent-explainer.{mp4,webm,vtt} --clobber`), followed by
+another run of `pages.yml`, and a new upload for the README.
+
+## Moving the repository
+
+The project's address is `github.com/dolev31/TabAgent`, and the site's is `dolev31.github.io/TabAgent`. If the
+repository moves to another owner, one command from the repository root rewrites every reference. Set `NEW` to the
+new `owner/name`, and `NEW_SITE` to its site address, where GitHub Pages writes the owner in lower case:
+
+```bash
+export OLD=dolev31/TabAgent NEW=IBM/TabAgent OLD_SITE=dolev31.github.io/TabAgent NEW_SITE=ibm.github.io/TabAgent
+git grep -lzIF -e "$OLD" -e "$OLD_SITE" | xargs -0 perl -pi -e 's/\Q$ENV{OLD}\E/$ENV{NEW}/g; s/\Q$ENV{OLD_SITE}\E/$ENV{NEW_SITE}/g'
+```
+
+It changes these files (`git grep -lIF -e "$OLD" -e "$OLD_SITE"` lists them):
+
+| File | What holds the address |
+|---|---|
+| `README.md` | the badges, the install-from-git and clone commands, the site and video links |
+| `pyproject.toml` | the project URLs, and the absolute links and images of the README on PyPI |
+| `mkdocs.yml` | `site_url` and `repo_url`, from which the site's canonical URLs, Scholar tags, JSON-LD and GitHub links follow |
+| `CITATION.cff` | `repository-code` and `url` |
+| `.github/ISSUE_TEMPLATE/config.yml` | the reproduction guide and the private vulnerability report |
+| `docs/index.md`, `docs/deployment.md`, `docs/claims-map.md`, `docs/llms.txt` | clone commands and links to the repository and the site |
+| `notebooks/quickstart.ipynb` | the Colab badge and the install cell |
+| `experiments/tabschema_tau2.py` | the pull requests that its pipeline versions cite |
+| `media/explainer/config.json`, `media/explainer/claims.md` | `repo_url`, shown on the video's end card, poster and thumbnail |
+| `docs/releasing.md` | this page, including the command's `OLD` values, ready for the next move |
+
+What the command cannot change:
+
+- **The address in pixels.** The video's end card and captions, its poster and the README's thumbnail show it.
+  Render them again (`render.py explainer captions stills`, see `media/explainer/README.md`), commit the two WebP
+  files under `docs/assets/`, upload the new MP4, WebM and VTT to the release with `--clobber`, and upload the MP4
+  again for the README's player.
+- **Settings outside the repository:** the PyPI trusted publisher (its *Owner* and *Repository name*, above), the
+  repository's homepage and Pages settings, the Search Console property for the new site address, and the links to
+  the repository on the Hugging Face model cards and Space. The Hugging Face namespace (`huggingface.co/dolev31`)
+  is separate and does not move.
+- **Old links:** GitHub redirects `github.com` URLs after a transfer or a rename, but not `github.io` ones: the old
+  site stops answering.
+
 ## Notes
 
 - **The PyPI page is the README.** `[tool.hatch.metadata.hooks.fancy-pypi-readme]` in `pyproject.toml` turns its

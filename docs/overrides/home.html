@@ -1,0 +1,173 @@
+{% extends "main.html" %}
+
+{#-
+  The landing page (docs/index.md sets `template: home.html`). The full-bleed hero, the explainer and the animated
+  pipeline live here; everything after them is docs/index.md's own Markdown, so its Questions keep feeding
+  docs/hooks/faq.py and the FAQPage data. main.html still writes the head (Scholar tags, JSON-LD, counter).
+  Every number on this page is in docs/claims-map.md with its place in the paper. Whatever names the authors, their
+  institutions, the repository or the arXiv listing sits in a named block, which the anonymous copy strips.
+-#}
+
+{% block hero %}
+<section class="ta-hero" aria-labelledby="ta-hero-title">
+  <div class="ta-hero__bg" aria-hidden="true"></div>
+  <div class="ta-hero__inner md-grid">
+    {# named #}
+    <a class="ta-pill" href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper">
+      <span class="ta-pill__tag">Paper</span>
+      <span class="ta-pill__text">Distilling LLM Agent Components into Cheap Classifiers</span>
+      <span class="ta-pill__arrow" aria-hidden="true">&rarr;</span>
+    </a>
+    {# /named #}
+    <h1 class="ta-hero__title" id="ta-hero-title"><span class="ta-wm-tab">Tab</span><span class="ta-wm-agent">Agent</span></h1>
+    <p class="ta-hero__pitch">Replace an LLM agent's closed&#8209;set decisions with a cheap classifier trained from its own&nbsp;logs.</p>
+    <p class="ta-hero__sub">Tool shortlisting, routing, skill and application selection: learned from the agent's successful runs, decided in milliseconds, with the rest of the agent left unchanged.</p>
+    <div class="ta-hero__actions">
+      <a class="ta-btn ta-btn--primary" href="#quick-start">Get started <span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/arrow-right.svg" %}</span></a>
+      {# named #}
+      <a class="ta-btn ta-btn--ghost" href="{{ config.repo_url }}" data-goatcounter-click="code"><span class="ta-btn__icon" aria-hidden="true">{% include ".icons/fontawesome/brands/github.svg" %}</span> GitHub</a>
+      {# /named #}
+    </div>
+    <div class="ta-install" role="group" aria-label="Install command">
+      <span class="ta-install__prompt" aria-hidden="true">$</span>
+      <code id="ta-install-cmd">pip install tabagent</code>
+      <button class="md-clipboard ta-install__copy" type="button" data-clipboard-target="#ta-install-cmd" title="Copy to clipboard" aria-label="Copy the install command"></button>
+    </div>
+    {# named #}
+    <p class="ta-hero__authors"><span>Ido&nbsp;Levy<sup>1,2</sup>&nbsp;·</span> <span>Segev&nbsp;Shlomov<sup>1</sup>&nbsp;·</span> <span>Avi&nbsp;Yaeli<sup>1</sup>&nbsp;·</span> <span>Nir&nbsp;Mashkif<sup>1</sup>&nbsp;·</span> <span>Asaf&nbsp;Adi<sup>1</sup>&nbsp;·</span> <span>Yinon&nbsp;Goldstein<sup>1</sup>&nbsp;·</span> <span>Eilam&nbsp;Shapira<sup>1</sup>&nbsp;·</span> <span>Leshem&nbsp;Choshen<sup>1,2</sup></span></p>
+    <p class="ta-hero__affil"><sup>1</sup>IBM · <sup>2</sup>Weizmann Institute of Science</p>
+    {# /named #}
+  </div>
+</section>
+
+{#- docs/hooks/media.py keeps explainer_video only when its file is there at build time (the Pages workflow downloads
+    it from a GitHub Release), and sets the WebM and captions beside it when they exist. -#}
+{%- set ex = config.extra %}
+<section class="ta-explainer" id="explainer" aria-label="{{ 'Explainer video' if ex.explainer_video else 'Explainer' }}">
+  <div class="ta-explainer__inner md-grid">
+    <figure class="ta-frame">
+      <div class="ta-frame__bar" aria-hidden="true"><span></span><span></span><span></span></div>
+      {%- if ex.explainer_video %}
+      <video class="ta-frame__media" controls muted playsinline preload="none" width="1920" height="1080"
+             {%- if ex.explainer_poster %} poster="{{ ex.explainer_poster | url }}"{% endif %}
+             aria-label="TabAgent explainer video: how an agent's successful runs become a classifier that replaces an LLM decision">
+        {%- if ex.explainer_webm %}
+        <source src="{{ ex.explainer_webm | url }}" type='video/webm; codecs="vp9"'>
+        {%- endif %}
+        <source src="{{ ex.explainer_video | url }}" type="video/mp4">
+        {%- if ex.explainer_captions %}
+        <track kind="captions" src="{{ ex.explainer_captions | url }}" srclang="en" label="English">
+        {%- endif %}
+        <a href="{{ ex.explainer_video | url }}">Download the explainer video (MP4)</a>
+      </video>
+      {%- else %}
+      <picture>
+        <source media="(prefers-reduced-motion: reduce)" srcset="{{ 'assets/pipeline.svg' | url }}" width="1200" height="560">
+        <img class="ta-frame__media" src="{{ 'assets/pipeline-animated.svg' | url }}" width="1200" height="400" decoding="async" fetchpriority="high"
+             alt="How TabAgent works. Training, once per agent: the agent's successful runs go through TabSchema, which discovers features, TabSynth, which adds label-preserving paraphrases, and TabHead, a CatBoost classifier that decides in milliseconds and returns a ranked shortlist in one pass.">
+      </picture>
+      {%- endif %}
+    </figure>
+  </div>
+</section>
+
+<section class="ta-how md-typeset" id="how-it-works" aria-labelledby="ta-how-title">
+  <div class="md-grid ta-how__inner">
+    <p class="ta-eyebrow">How it works</p>
+    <h2 class="ta-section-title" id="ta-how-title">Three phases, once per agent. Then milliseconds per decision.</h2>
+    <p class="ta-section-lead">TabAgent learns a closed-set decision from the agent's own successful trajectories and serves it from a tabular classifier. Data flows left to right; nothing else in the agent changes.</p>
+    <ol class="ta-flow">
+      <li class="ta-flow__end">
+        <span class="ta-glyph ta-glyph--logs" aria-hidden="true"><i></i><i></i><i></i><i class="ok"></i></span>
+        <strong>Agent logs</strong>
+        <span>successful trajectories</span>
+      </li>
+      <li class="ta-flow__phase ta-flow__phase--schema">
+        <span class="ta-flow__num" aria-hidden="true">1</span>
+        <h3>TabSchema</h3>
+        <p class="ta-flow__what">Discovers features</p>
+        <p>LLM agents analyze the trajectories, write and sandbox-test the extraction code, and a judge ensemble keeps the features that matter.</p>
+        <a href="{{ 'components/' | url }}#tabschema-feature-discovery-from-traces">TabSchema in detail</a>
+      </li>
+      <li class="ta-flow__phase ta-flow__phase--synth">
+        <span class="ta-flow__num" aria-hidden="true">2</span>
+        <h3>TabSynth</h3>
+        <p class="ta-flow__what">Augments the rows</p>
+        <p>Deterministic, label-preserving paraphrases of the free-text state, where trajectories are scarce.</p>
+        <a href="{{ 'components/' | url }}#tabsynth-label-preserving-augmentation">TabSynth in detail</a>
+      </li>
+      <li class="ta-flow__phase ta-flow__phase--head">
+        <span class="ta-flow__num" aria-hidden="true">3</span>
+        <h3>TabHead</h3>
+        <p class="ta-flow__what">Decides in milliseconds</p>
+        <p>A CatBoost classifier scores every candidate of a decision in one pass, with an optional confidence gate.</p>
+        <a href="{{ 'components/' | url }}#tabhead-the-classifier">TabHead in detail</a>
+      </li>
+      <li class="ta-flow__end ta-flow__end--out">
+        <span class="ta-glyph ta-glyph--out" aria-hidden="true"><i class="hi"></i><i class="hi"></i><i></i><i></i></span>
+        <strong>Decision</strong>
+        <span>top-k tools, a label or a route</span>
+      </li>
+    </ol>
+    <div class="ta-infer" role="note" aria-label="At inference">
+      <span class="ta-infer__label">At inference</span>
+      <span class="ta-infer__step">agent step</span>
+      <span class="ta-infer__arrow" aria-hidden="true"></span>
+      <span class="ta-infer__step ta-infer__step--head">TabHead <b>2.682&nbsp;ms</b></span>
+      <span class="ta-infer__arrow" aria-hidden="true"></span>
+      <span class="ta-infer__step">decision</span>
+      <span class="ta-infer__or">unsure?</span>
+      <span class="ta-infer__step ta-infer__step--llm">defer to the LLM</span>
+    </div>
+  </div>
+</section>
+{% endblock %}
+
+{% block content %}
+  {{ page.content }}
+{% endblock %}
+
+{% block footer %}
+<footer class="ta-footer" aria-label="TabAgent">
+  <div class="md-grid ta-footer__inner">
+    <div class="ta-footer__brand">
+      <img src="{{ 'assets/brand/tabagent-mark.svg' | url }}" alt="TabAgent logo" width="32" height="32" loading="lazy">
+      <div>
+        <strong>TabAgent</strong>
+        <p>Distilling LLM agent components into cheap classifiers. Apache-2.0.</p>
+      </div>
+    </div>
+    <nav class="ta-footer__col" aria-label="Guides">
+      <h2>Guides</h2>
+      <a href="{{ 'concepts/' | url }}">Concepts</a>
+      <a href="{{ 'components/' | url }}">Components</a>
+      <a href="{{ 'onboarding/' | url }}">Onboard an agent</a>
+      <a href="{{ 'bring_your_own_data/' | url }}">Bring your own table</a>
+      <a href="{{ 'deployment/' | url }}">Deploy</a>
+    </nav>
+    <nav class="ta-footer__col" aria-label="Research">
+      <h2>Research</h2>
+      {# named #}
+      <a href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper">Paper on arXiv</a>
+      {# /named #}
+      <a href="{{ 'reproducing/' | url }}">Reproducing the paper</a>
+      <a href="{{ 'datasets/' | url }}">Datasets</a>
+      <a href="#citation">Cite</a>
+      <a href="{{ 'llms.txt' | url }}">llms.txt</a>
+    </nav>
+    {# named #}
+    <nav class="ta-footer__col" aria-label="Project">
+      <h2>Project</h2>
+      <a href="{{ config.repo_url }}">GitHub</a>
+      <a href="https://pypi.org/project/tabagent/">PyPI</a>
+      <a href="https://huggingface.co/dolev31">Hugging Face</a>
+      <a href="{{ config.repo_url }}/blob/main/CHANGELOG.md">Changelog</a>
+      <a href="{{ config.repo_url }}/blob/main/CONTRIBUTING.md">Contributing</a>
+      <a href="{{ config.repo_url }}/blob/main/CODE_OF_CONDUCT.md">Code of Conduct</a>
+      <a href="{{ config.repo_url }}/blob/main/SECURITY.md">Security</a>
+    </nav>
+    {# /named #}
+  </div>
+</footer>
+{{ super() }}
+{% endblock %}

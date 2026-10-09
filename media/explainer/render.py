@@ -8,8 +8,9 @@ bundled with ``imageio-ffmpeg``) encodes them. Run from the repository root:
         python media/explainer/render.py            # everything, into media/explainer/out/
 
 Targets (default ``all``): ``explainer`` (MP4 + WebM), ``loop`` (MP4 + WebP), ``stills`` (poster, OG
-image), ``captions`` (VTT + SRT), ``sheet`` (contact sheet), ``svg`` (docs/assets/pipeline-animated.svg),
-``verify`` (ffprobe report and limits), ``frames --at 3.5,12`` (single PNGs for review).
+image, and the poster and README thumbnail as WebP in docs/assets/), ``captions`` (VTT + SRT), ``sheet``
+(contact sheet), ``svg`` (docs/assets/pipeline-animated.svg), ``verify`` (ffprobe report and limits),
+``frames --at 3.5,12`` (single PNGs for review).
 """
 
 from __future__ import annotations
@@ -59,9 +60,15 @@ COMPS = {
     "loop": ("scenes/loop.html", (1280, 640)),
     "poster": ("scenes/stills.html?comp=poster", (1920, 1080)),
     "og": ("scenes/stills.html?comp=og", (1200, 630)),
+    "thumb": ("scenes/stills.html?comp=thumb", (1920, 1080)),
 }
 
-LIMITS = {"mp4_mb": 15.0, "webp_mb": 1.5, "svg_kb": 60.0}
+LIMITS = {"mp4_mb": 15.0, "webp_mb": 1.5, "svg_kb": 60.0, "still_kb": 300.0}
+DOCS_ASSETS = ROOT.parent.parent / "docs" / "assets"
+# committed stills: the site's <video> poster, and the README's thumbnail (the poster with a play button),
+# whose corners are cut round to match the pipeline card under it (docs/assets/pipeline-animated.svg: rx 24
+# of 1200)
+STILLS_WEBP = {"poster.png": ("explainer-poster.webp", 0), "thumb.png": ("explainer-thumb.webp", 38)}
 
 
 def log(*a):
@@ -346,9 +353,32 @@ def do_loop(port, cfg, args):
     log(f"loop WebP quality {q}: {mb:.2f} MB")
 
 
+def to_webp(src: Path, dst: Path, radius: int = 0) -> None:
+    """A still for the repository: WebP at the highest quality that stays within LIMITS["still_kb"], with its
+    corners cut round (transparent) when ``radius`` is set."""
+    from PIL import Image, ImageDraw
+
+    im = Image.open(src).convert("RGB")
+    if radius:
+        k = 4  # the mask is drawn 4x larger and scaled down, for smooth edges
+        mask = Image.new("L", (im.width * k, im.height * k), 0)
+        ImageDraw.Draw(mask).rounded_rectangle((0, 0, mask.width - 1, mask.height - 1), radius * k, fill=255)
+        im.putalpha(mask.resize(im.size, Image.LANCZOS))
+    for q in (88, 82, 76, 70, 64, 58):
+        im.save(dst, "WEBP", quality=q, method=6)
+        kb = dst.stat().st_size / 1024
+        if kb <= LIMITS["still_kb"]:
+            break
+    log(f"{dst.relative_to(ROOT.parent.parent)}: {im.width}x{im.height}, WebP quality {q}, {kb:.0f} KB")
+
+
 def do_stills(port, cfg, args):
-    for comp, name in (("poster", "poster.png"), ("og", "og-video.png")):
+    # the thumbnail shows the explainer's running time
+    cfg = {**cfg, "explainer_seconds": comp_duration(port, "explainer", cfg)}
+    for comp, name in (("poster", "poster.png"), ("og", "og-video.png"), ("thumb", "thumb.png")):
         render_frames(port, comp, cfg, [0.0], [OUT / name], 1)
+    for src, (dst, radius) in STILLS_WEBP.items():
+        to_webp(OUT / src, DOCS_ASSETS / dst, radius)
 
 
 def fmt_ts(s: float, sep: str) -> str:
@@ -478,6 +508,7 @@ def do_verify():
     for name in (
         "poster.png",
         "og-video.png",
+        "thumb.png",
         "contact-sheet.png",
         "tabagent-explainer.vtt",
         "tabagent-explainer.srt",
@@ -485,9 +516,13 @@ def do_verify():
         p = OUT / name
         if p.exists():
             report[name] = {"KB": round(p.stat().st_size / 1e3, 1)}
-    svg = ROOT.parent.parent / "docs" / "assets" / "pipeline-animated.svg"
+    svg = DOCS_ASSETS / "pipeline-animated.svg"
     if svg.exists():
         report["docs/assets/pipeline-animated.svg"] = {"KB": round(svg.stat().st_size / 1e3, 1)}
+    for name, _ in STILLS_WEBP.values():
+        p = DOCS_ASSETS / name
+        if p.exists():
+            report[f"docs/assets/{name}"] = {"KB": round(p.stat().st_size / 1024, 1)}
     print(json.dumps(report, indent=2))
     problems = []
     mp4 = report.get("tabagent-explainer.mp4")
@@ -501,6 +536,10 @@ def do_verify():
     s = report.get("docs/assets/pipeline-animated.svg")
     if s and s["KB"] > LIMITS["svg_kb"]:
         problems.append("animated SVG over 60 KB")
+    for name, _ in STILLS_WEBP.values():
+        w = report.get(f"docs/assets/{name}")
+        if w and w["KB"] > LIMITS["still_kb"]:
+            problems.append(f"{name} over 300 KB")
     if problems:
         sys.exit("limits: " + "; ".join(problems))
     log("verify: all limits met")
@@ -515,7 +554,9 @@ def main(argv=None):
     ap.add_argument("--vp9-crf", type=int, default=33, help="VP9 CRF of the explainer WebM")
     ap.add_argument("--repo-url", help="override config.json repo_url (the one place the URL lives)")
     ap.add_argument("--at", default="0", help="frames: comma-separated times in seconds")
-    ap.add_argument("--comp", default="explainer", help="frames: composition (explainer, loop, poster, og)")
+    ap.add_argument(
+        "--comp", default="explainer", help="frames: composition (explainer, loop, poster, og, thumb)"
+    )
     args = ap.parse_args(argv)
     targets = set(args.targets)
     if "all" in targets:

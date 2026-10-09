@@ -29,7 +29,11 @@ own license:
 
 Artwork and fonts
 -----------------
-The logo, wordmarks and hero images in `docs/assets/brand/`, `docs/assets/pipeline-animated.svg`, and the
-explainer video in `media/explainer/` and its stills set their text in Inter (rsms/inter) and JetBrains Mono
-(JetBrains/JetBrainsMono), both under the SIL Open Font License 1.1. The SVG images hold glyph outlines as paths
-and no font file is bundled: the renderer in `media/explainer/` downloads the fonts at render time.
+The brand images under `docs/assets/` (logo, wordmarks, phase chips, the static and animated pipeline diagrams
+and social cards) and the explainer video in `media/explainer/` and its stills set their text in Inter and
+JetBrains Mono. The SVG images hold glyph outlines and no font file is bundled: the renderer in `media/explainer/`
+downloads the fonts at render time, and the documentation site serves them from its own domain, downloaded at
+build time.
+
+  * Inter (rsms/inter) .................................. SIL OFL 1.1
+  * JetBrains Mono (JetBrains/JetBrainsMono) ............ SIL OFL 1.1

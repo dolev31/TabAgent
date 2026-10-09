@@ -9,6 +9,13 @@
   when their code is set under `extra:` in mkdocs.yml.
 -#}
 
+{#- Inter and JetBrains Mono (SIL OFL 1.1) at variable weights. The privacy plugin downloads this stylesheet and its
+    fonts at build time and points the link at the site's own copy, so no visitor's browser contacts Google. #}
+{% block fonts %}
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400..800&family=JetBrains+Mono:wght@400..700&display=swap">
+  <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
+{% endblock %}
+
 {% block htmltitle %}
   {%- if page and page.is_homepage %}
   <title>TabAgent: Distilling LLM Agent Components into Cheap Classifiers</title>
@@ -32,6 +39,10 @@
   {%- endif -%}
   {%- set ta_description = ta_meta.description or config.site_description -%}
   {%- set ta_image_alt = "TabAgent: Distilling LLM Agent Components into Cheap Classifiers. TabSchema, TabSynth and TabHead, at 2.682 ms vs 7.50 s and $2.0×10⁻⁷ vs $0.052 per decision." %}
+  <link rel="icon" type="image/png" sizes="48x48" href="{{ 'assets/brand/favicon.png' | url }}">
+  <link rel="apple-touch-icon" href="{{ 'assets/brand/apple-touch-icon.png' | url }}">
+  <meta name="theme-color" media="(prefers-color-scheme: light)" content="#F7F8FC">
+  <meta name="theme-color" media="(prefers-color-scheme: dark)" content="#0B1020">
   {%- if config.extra.google_site_verification %}
   <meta name="google-site-verification" content="{{ config.extra.google_site_verification | e }}">
   {%- endif %}
@@ -48,11 +59,11 @@
   <meta property="og:url" content="{{ page.canonical_url }}">
   {%- endif %}
   {%- if config.site_url %}
-  <meta property="og:image" content="{{ config.site_url }}assets/brand/social-preview.png">
-  <meta property="og:image:width" content="1280">
-  <meta property="og:image:height" content="640">
+  <meta property="og:image" content="{{ config.site_url }}assets/social-card.png">
+  <meta property="og:image:width" content="1200">
+  <meta property="og:image:height" content="630">
   <meta property="og:image:alt" content="{{ ta_image_alt | e }}">
-  <meta name="twitter:image" content="{{ config.site_url }}assets/brand/social-preview.png">
+  <meta name="twitter:image" content="{{ config.site_url }}assets/social-card.png">
   <meta name="twitter:image:alt" content="{{ ta_image_alt | e }}">
   {%- endif %}
   <meta name="twitter:card" content="summary_large_image">
@@ -155,7 +166,7 @@
           "mainEntityOfPage": {{ page.canonical_url | tojson }},
           {%- endif %}
           {%- if config.site_url %}
-          "image": {{ (config.site_url ~ "assets/brand/social-preview.png") | tojson }},
+          "image": {{ (config.site_url ~ "assets/social-card.png") | tojson }},
           {%- endif %}
           "description": {{ ta_description | tojson }},
           "inLanguage": "en",
@@ -198,6 +209,25 @@
 
 {% block scripts %}
   {{ super() }}
+  {#- Accessibility fixes to the theme: the search overlay has role="dialog" but no name, and a table or tab strip
+      that scrolls sideways on a phone must be reachable from the keyboard (WCAG 2.1.1). #}
+  <script>
+    (function () {
+      function fix() {
+        document.querySelectorAll('.md-search[role="dialog"]:not([aria-label])').forEach(function (d) {
+          d.setAttribute("aria-label", "Search");
+        });
+        document.querySelectorAll(".md-typeset__scrollwrap, .tabbed-labels").forEach(function (el) {
+          if (el.scrollWidth > el.clientWidth + 1 && !el.hasAttribute("tabindex")) {
+            el.setAttribute("tabindex", "0");
+            el.setAttribute("role", "region");
+            el.setAttribute("aria-label", el.classList.contains("tabbed-labels") ? "Tabs" : "Table");
+          }
+        });
+      }
+      if (window.document$) document$.subscribe(fix); else document.addEventListener("DOMContentLoaded", fix);
+    })();
+  </script>
   {%- if config.extra.goatcounter %}
   <script>
     /* count.js counts the first page and binds the tagged links itself. Instant navigation swaps later pages in

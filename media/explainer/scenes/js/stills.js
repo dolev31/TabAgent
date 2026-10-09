@@ -79,5 +79,37 @@
     return { seek() {}, duration: 0, size: [W, H] };
   }
 
-  g.Stills = { poster, og };
+  // The README's video thumbnail: the poster with a play button and the running time. The button sits in the
+  // open space right of the headline, so it covers no text.
+  function thumb(stage, cfg) {
+    const comp = poster(stage, cfg);
+    const L = h("div", { cls: "layer" }, stage);
+    // the pipeline card's border (1.5 px at 1200 wide); render.py cuts the corners at the same radius
+    const frame = h("div", { cls: "abs", style: { border: "2.4px solid #232B45", borderRadius: "38px" } }, L);
+    place(frame, 0, 0, 1920, 1080);
+    const D = 156, X = 1650, Y = 330, PAD = 48, S = D + 2 * PAD, c = S / 2, r = D / 2;
+    const s = h("svg", { cls: "abs", attrs: { width: S, height: S, viewBox: `0 0 ${S} ${S}` } }, L);
+    place(s, X - c, Y - c);
+    // a rounded triangle, its centroid on the circle's centre (optical centring)
+    const tw = 0.3 * D, th = 0.36 * D, tx = c - tw / 3;
+    s.innerHTML = `<defs>
+      <linearGradient id="ring" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="${C.schema}"/>
+        <stop offset=".5" stop-color="${C.synth}"/><stop offset="1" stop-color="${C.head}"/></linearGradient>
+      <radialGradient id="halo"><stop offset=".6" stop-color="${C.synth}" stop-opacity=".2"/>
+        <stop offset="1" stop-color="${C.synth}" stop-opacity="0"/></radialGradient></defs>
+      <circle cx="${c}" cy="${c}" r="${c}" fill="url(#halo)"/>
+      <circle cx="${c}" cy="${c}" r="${r - 1.5}" fill="${rgba(C.ink2, 0.82)}" stroke="url(#ring)" stroke-width="3"/>
+      <path d="M${tx} ${c - th / 2}L${tx + tw} ${c}L${tx} ${c + th / 2}Z" fill="${C.paper}" stroke="${C.paper}"
+        stroke-width="9" stroke-linejoin="round"/>`;
+    const sec = Math.round(cfg.explainer_seconds || 0);
+    if (sec) {
+      const chip = h("div", { cls: "abs", text: `${Math.floor(sec / 60)}:${String(sec % 60).padStart(2, "0")}`, style: {
+        fontFamily: '"JetBrains Mono"', fontWeight: 500, fontSize: "26px", lineHeight: "26px", color: C.paper,
+        padding: "9px 14px", borderRadius: "12px", background: rgba(C.ink, 0.82), border: `1.5px solid ${C.line2}` } }, L);
+      Object.assign(chip.style, { left: "auto", right: "120px", top: "942px" }); // level with the footer line
+    }
+    return comp;
+  }
+
+  g.Stills = { poster, og, thumb };
 })(window);

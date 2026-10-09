@@ -5,8 +5,9 @@ efficiency and accuracy, and how to start), with its companions: a seamless pipe
 a poster, an Open Graph image, captions and an animated SVG.
 
 Everything is source: HTML, CSS and SVG scenes driven by a deterministic timeline, rendered frame by frame in
-headless Chrome and encoded with ffmpeg. The renders go to `out/`, which git ignores; the final MP4 and WebM are
-hosted outside the repository.
+headless Chrome and encoded with ffmpeg. The renders go to `out/`, which git ignores. The final MP4, WebM and VTT
+are not committed: they are assets of the GitHub Release `media-v1`, which the Pages workflow copies onto the
+documentation site ([docs/releasing.md](../../docs/releasing.md#the-explainer-video)).
 
 ## Re-render
 
@@ -20,7 +21,8 @@ uv run --no-project --with playwright --with imageio-ffmpeg --with pillow --with
     python media/explainer/render.py
 ```
 
-This renders every target into `media/explainer/out/` and regenerates `docs/assets/pipeline-animated.svg`. A full
+This renders every target into `media/explainer/out/` and regenerates the committed `docs/assets/pipeline-animated.svg`,
+`docs/assets/explainer-poster.webp` and `docs/assets/explainer-thumb.webp`. A full
 run takes about 12 minutes on a 10-core laptop, most of it the two-pass VP9 encode (the 4,380 frames take under
 two minutes). Targets can be named one by one:
 
@@ -28,12 +30,12 @@ two minutes). Targets can be named one by one:
 |---|---|
 | `explainer` | `tabagent-explainer.mp4` (1920x1080, 60 fps, H.264 yuv420p, faststart) and `tabagent-explainer.webm` (VP9) |
 | `loop` | `tabagent-loop.mp4` and `tabagent-loop.webp` (1280x640, 8 s, seamless) |
-| `stills` | `poster.png` (1920x1080) and `og-video.png` (1200x630) |
+| `stills` | `poster.png` (1920x1080), `og-video.png` (1200x630) and `thumb.png` (the poster with a play button and the running time), and as WebP under 300 KB `docs/assets/explainer-poster.webp` (the site's video poster) and `docs/assets/explainer-thumb.webp` (the README's link to the video) |
 | `captions` | `tabagent-explainer.vtt` and `tabagent-explainer.srt` |
 | `sheet` | `contact-sheet.png`: one frame per second, for review |
 | `svg` | `docs/assets/pipeline-animated.svg` (also `python media/explainer/make_svg.py`) |
 | `verify` | an ffprobe report of the outputs and a check of the size limits |
-| `frames --at 3.5,12` | single PNGs in `out/review/` (`--comp loop`, `poster` or `og` for the others) |
+| `frames --at 3.5,12` | single PNGs in `out/review/` (`--comp loop`, `poster`, `og` or `thumb` for the others) |
 
 Options: `--fps 30` for a quicker explainer render, `--workers N` for the number of parallel Chrome instances,
 `--crf` and `--vp9-crf` for the encoders' quality, `--repo-url` to override the repository URL for one render.

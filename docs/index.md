@@ -35,70 +35,220 @@ terms:
     definition: "The share of a task's ground-truth tools that appear in the top R of the ranking, where R is the task's relevant-set size, averaged over tasks. It equals Recall@R and captures completeness."
   - name: "Recall@k"
     definition: "The share of a task's ground-truth tools recovered in the top k of the ranking, averaged over tasks: recovery at a fixed budget."
+template: home.html
 hide:
   - navigation
   - toc
 ---
 
-<div class="ta-hero" markdown>
+<!-- The hero, the explainer and the animated pipeline are in docs/overrides/home.html. Every number below is listed
+     in docs/claims-map.md with its place in the paper. -->
 
-<h1 class="ta-hero__title" id="tabagent" markdown>![TabAgent](assets/brand/wordmark-light.svg#only-light) ![TabAgent](assets/brand/wordmark-dark.svg#only-dark)</h1>
+<p class="ta-eyebrow">Results at a glance</p>
 
-<p class="ta-hero__tagline">Replace an LLM agent's repeated <span class="ta-nowrap">closed-set</span> decisions with a cheap classifier trained on the agent's own successful runs.</p>
+## One classifier pass instead of a frontier-LLM call { #results-at-a-glance }
 
-<p class="ta-hero__paper" markdown>Code for the paper *TabAgent: Distilling LLM Agent Components into Cheap Classifiers*.</p>
-
-<!-- named -->
-<p class="ta-hero__authors">Ido&nbsp;Levy<sup>1,2</sup>&nbsp;· Segev&nbsp;Shlomov<sup>1</sup>&nbsp;· Avi&nbsp;Yaeli<sup>1</sup>&nbsp;· Nir&nbsp;Mashkif<sup>1</sup>&nbsp;· Asaf&nbsp;Adi<sup>1</sup>&nbsp;· Yinon&nbsp;Goldstein<sup>1</sup>&nbsp;· Eilam&nbsp;Shapira<sup>1</sup>&nbsp;· Leshem&nbsp;Choshen<sup>1,2</sup></p>
-<p class="ta-hero__authors"><sup>1</sup>IBM&nbsp;· <sup>2</sup>Weizmann&nbsp;Institute&nbsp;of&nbsp;Science</p>
-<!-- /named -->
-
-<div class="ta-hero__actions" markdown>
-
-[Get started :material-arrow-right:](bring_your_own_data.md){ .md-button .md-button--primary }
-<!-- named -->
-[Paper](https://arxiv.org/abs/2602.16429){ .md-button data-goatcounter-click="paper" }
-<!-- /named -->
-[Onboard an agent](onboarding.md){ .md-button }
-[Reproduce the paper](reproducing.md){ .md-button }
-
-</div>
-
-<div class="ta-hero__art" markdown>
-
-![Today an LLM agent sends each closed-set decision, such as shortlisting tools, to a frontier-LLM call. With TabAgent, its successful runs pass through TabSchema, TabSynth and TabHead, and one classifier pass returns the ranked shortlist.](assets/brand/hero-light.svg#only-light)
-![Today an LLM agent sends each closed-set decision, such as shortlisting tools, to a frontier-LLM call. With TabAgent, its successful runs pass through TabSchema, TabSynth and TabHead, and one classifier pass returns the ranked shortlist.](assets/brand/hero-dark.svg#only-dark)
-
-</div>
-
-</div>
+<p class="ta-section-lead">AppWorld tool shortlisting, per decision: TabAgent's head against the GPT-5.4 shortlister it replaces. From the paper.</p>
 
 <div class="ta-stats">
-  <div class="ta-stat">
+  <div class="ta-stat ta-stat--head">
     <div class="ta-stat__label">Latency per decision</div>
-    <div class="ta-stat__value">2.682 ms</div>
-    <div class="ta-stat__compare">vs 7.50 s per decision for the GPT-5.4 shortlister</div>
+    <div class="ta-stat__value">2.682<small>&nbsp;ms</small></div>
+    <div class="ta-stat__compare">vs 7.50&nbsp;s for the GPT-5.4 shortlister, more than 10³× lower</div>
   </div>
-  <div class="ta-stat">
+  <div class="ta-stat ta-stat--head">
     <div class="ta-stat__label">Cost per decision</div>
-    <div class="ta-stat__value">$2.0×10⁻⁷</div>
-    <div class="ta-stat__compare">vs $0.052 per decision for the GPT-5.4 shortlister</div>
+    <div class="ta-stat__value">$2.0×10<sup>−7</sup></div>
+    <div class="ta-stat__compare">vs $0.052 for the GPT-5.4 shortlister, about 10⁵× lower</div>
   </div>
-  <div class="ta-stat">
+  <div class="ta-stat ta-stat--schema">
     <div class="ta-stat__label">Recall@9</div>
     <div class="ta-stat__value">92–100</div>
-    <div class="ta-stat__compare">of the tools the GPT-5.4 shortlister used on its successful runs</div>
+    <div class="ta-stat__compare">of the tools GPT-5.4's successful runs used, across five AppWorld apps</div>
+  </div>
+  <div class="ta-stat ta-stat--synth">
+    <div class="ta-stat__label">Trajectories needed</div>
+    <div class="ta-stat__value">118</div>
+    <div class="ta-stat__compare">successful runs reach 90% of the head's full-pool P@R on AppWorld</div>
   </div>
 </div>
-<p class="ta-stats__caption">AppWorld tool shortlisting: TabAgent's head against the GPT-5.4 shortlister it replaces.</p>
 
-Agents call a frontier LLM again and again for decisions whose answer comes from a fixed set: which tools to
-shortlist, which skill or application to use, which model or sub-agent to route to, whether to activate a
-skill. TabAgent learns those decisions from the agent's execution traces and serves them from a tabular
-classifier, with the surrounding agent left unchanged.
-{ .ta-lead }
+<div class="ta-results" markdown>
 
-## Guides
+| Decision | Benchmark | Metric | Best baseline | TabAgent | Reproducible here |
+|---|---|---|---:|---:|:---:|
+| Tool shortlisting | AppWorld, five apps | P@R | 56–92 | **66–96** | traces not released |
+| Tool shortlisting | τ²-bench, three domains, 38 tools | P@R | 42 | **78** | ✓ |
+| Skill shortlisting | SkillsBench, 195 skills | P@R | 74 | **80** | ✓ |
+| Application selection | AppWorld, multi-label | macro&#8209;F1 | 92 | **97** | traces not released |
+| Operation selection | Mind2Web, three-way | macro&#8209;F1 | 84 | **92** | ✓ |
+| GUI element selection | Mind2Web, three domains | R@3 | 15–23 | **68–74** | ✓ |
+| Model routing | LLMRouterBench, 12 models | route@1 | 70 | **71**&nbsp;(on&nbsp;par) | ✓ opt-in download |
+
+</div>
+
+??? note "How to read this table"
+
+    Percentages from the paper's Table 1 and, for AppWorld, its full per-method table. TabAgent is the better of
+    its real-only and +synth variants. Best baseline is the strongest of BM25, DSR (zero-shot and fine-tuned; on
+    AppWorld also fine-tuned on the same TabSynth rows, where TabAgent's lead is significant only on Gmail) and the
+    few-shot LLM in each row; on model routing it is the best single model applied to every task. A fine-tuned 8B
+    small LLM, a reference at about 10²–10⁴× TabAgent's cost, is excluded as in the paper; it scores higher on four
+    of the five AppWorld apps. The AppWorld rows use the CUGA agent's own trajectories, which are not released. The
+    paper's table also covers the OAK and BPO enterprise benchmarks, where the small trajectory pools leave TabAgent
+    behind or level with the best baseline, and sub-agent routing and skill gating, where it is on par with the best
+    fixed default. [Reproducing the paper](reproducing.md) recomputes every public row.
+
+    The reproducible rows run on the feature cards bundled with each public dataset, not on a new TabSchema run, so
+    reproducing them calls no LLM. A card is *frozen* when its feature list was taken from the paper's experiment
+    code for that benchmark and fixed, every feature recomputed by the release's code (a few frozen cards are
+    variants; each card's `provenance` note says how), and *hand-authored* when it was written for the release from
+    the paper's description of the benchmark's features (`provenance.kind` in each card). The released TabSchema
+    implementation has not yet been validated against a paper number.
+
+<p class="ta-eyebrow">Quick start</p>
+
+## Install, onboard, decide { #quick-start }
+
+<div class="ta-quick" markdown>
+
+=== "pip"
+
+    ```bash
+    pip install tabagent                # core: tables, TabSynth, TabHead, evaluation
+    pip install "tabagent[tabschema]"   # + onboarding from agent logs (OpenAI and OpenAI-compatible LLMs)
+    pip install "tabagent[llm]"         # + Anthropic, Gemini and other providers through LiteLLM
+    pip install "tabagent[serve]"       # + the HTTP decision service
+    ```
+
+    Python 3.10 to 3.13. Until the PyPI release, install from GitHub:
+    `pip install "tabagent @ git+https://github.com/dolev31/TabAgent"`.
+
+=== "CLI"
+
+    ```bash
+    export OPENAI_API_KEY=...                                     # the LLM TabSchema calls
+    tabagent scan ./agent_logs                                    # which LLM calls are worth replacing?
+    tabagent onboard ./agent_logs --decision ToolShortlist --dry-run   # what it will process and cost
+    tabagent onboard ./agent_logs --decision ToolShortlist --out ./my_head
+    tabagent serve ./my_head --port 8077                          # POST /decide
+    ```
+
+=== "Python"
+
+    ```python
+    import tabagent
+
+    head = tabagent.onboard("./agent_logs", decision="ToolShortlist")
+    print(head.report)  # grouped cross-validation vs BM25 and chance, latency, cost per decision
+    head.save("my_head")
+    head.decide(prefix, candidates, k=5)  # {"candidates", "scores", "confidence", "deferred", "error"}
+    ```
+
+=== "Your own table"
+
+    ```python
+    from tabagent import TabAgentRanker
+
+    # one row per (decision, candidate); y = 1 if the agent chose the candidate
+    ranker = TabAgentRanker(group_col="task_id", candidate_col="tool")
+    ranker.fit(X, y)  # infers the card, picks TabSynth and the prior by nested validation
+    ranker.rank(X_new, k=5)  # top-5 candidates per decision
+    ```
+
+=== "Reproduce"
+
+    ```bash
+    git clone https://github.com/dolev31/TabAgent && cd TabAgent
+    pip install -e ".[embed]"
+    python examples/01_quickstart_skillsbench.py   # P@R ≈ 0.80 on SkillsBench, CPU, a few minutes
+    ```
+
+</div>
+
+<!-- named -->
+<p class="ta-colab" markdown>Or run the quickstart in your browser: [![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg){ width="117" height="20" }](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb)</p>
+<!-- /named -->
+
+<p class="ta-eyebrow">Use it in your agent</p>
+
+## Onboard, serve, hot-swap { #use-it-in-your-agent }
+
+<div class="ta-uses" markdown>
+
+<div class="ta-use" markdown>
+
+### Onboard from logs
+
+`tabagent onboard` reads the agent's own logs (OpenAI, Anthropic, LangChain, τ²-bench, CUGA or generic JSON),
+discovers the features with TabSchema, and saves a head with a reviewed, hash-pinned extractor.
+
+[Onboard an agent](onboarding.md)
+</div>
+
+<div class="ta-use" markdown>
+
+### Serve it
+
+`tabagent serve` answers `POST /decide` from warm, sandboxed workers, defers a decision whose extraction runs late,
+and exposes readiness, Prometheus metrics and feature-drift monitoring.
+
+[Deploy and operate](deployment.md#production-runbook)
+</div>
+
+<div class="ta-use" markdown>
+
+### Hot-swap the LLM call
+
+`ToolFilter` sends your tool-calling LLM only the tools the head shortlists, and the full list whenever the head
+defers. The surrounding agent is unchanged.
+
+[The tool filter](deployment.md#live-prefixes)
+</div>
+
+</div>
+
+```python
+from tabagent.integrations.openai_tools import ToolFilter
+
+tool_filter = ToolFilter("my_head", k=7)  # or the URL of a `tabagent serve` service
+session = tool_filter.session(task={"instruction": goal})  # one per conversation
+client.chat.completions.create(model=..., messages=messages, tools=session(messages, tools))
+```
+
+<p class="ta-eyebrow">What the paper finds</p>
+
+## The representation, not the model { #what-the-paper-finds }
+
+<div class="ta-findings" markdown>
+
+<figure class="ta-figure" markdown="span">
+  ![Per-decision latency against shortlisting quality: TabAgent is the fastest and cheapest point, near the top on quality](assets/pareto.webp){ loading=lazy decoding=async width="1300" height="814" }
+  <figcaption>Per-decision latency (x, log ms) against shortlisting quality P@R (y) on AppWorld. TabAgent (star) is the fastest and cheapest point while remaining near the top on quality; filled circles are fine-tuned small LLMs, open circles the same models few-shot. Figure from the paper.</figcaption>
+</figure>
+
+<div markdown>
+
+Across three decision families and seven agent benchmarks:
+
+- **Set retrieval.** On AppWorld tool shortlisting, TabAgent recovers essentially all of the tools the GPT-5.4
+  shortlister used on its successful runs (Recall@9) at far lower latency and cost.
+- **Classification and policy.** It ranks first on the classification decisions and is on par with a strong
+  fixed default on the harder routing and gating decisions, where a costly generative router does worse.
+- **Representation, not model.** A discriminative head over raw text or embeddings alone collapses; the
+  trace-derived features make it accurate.
+- **In the loop.** Placed on a live agent's critical path, TabAgent drives AppWorld tasks to completion about
+  as often as the GPT-5.4 shortlister it replaces.
+- **Few traces.** The head reaches 90% of its full-pool P@R from 118 successful trajectories on AppWorld and
+  from 37 to 51 on the four τ²-bench agents.
+
+</div>
+
+</div>
+
+<p class="ta-eyebrow">Go deeper</p>
+
+## Guides { #guides }
 
 <div class="grid cards ta-guides" markdown>
 
@@ -130,154 +280,13 @@ classifier, with the surrounding agent left unchanged.
 
     Each paper cell, the command that recomputes it, paper vs released values.
 
--   :material-code-braces: [Examples](#try-it)
+-   :material-code-braces: [Examples](https://github.com/dolev31/TabAgent/tree/main/examples)
 
     Five runnable scripts, from the public-benchmark quickstart to cross-agent transfer.
 
 </div>
 
-## How it works
-
-<div class="ta-pipeline" role="img" aria-label="Successful agent trajectories go to TabSchema, LLM-driven feature discovery, which produces a feature card and a compiled extractor; TabSynth adds label-preserving paraphrases; TabHead, CatBoost over the card, returns the decision: a top-k shortlist, a label or a route.">
-  <div class="ta-pipeline__step"><strong>successful agent</strong><span>trajectories</span></div>
-  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
-  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabSchema</strong><span>LLM-driven feature discovery</span></div>
-  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
-  <div class="ta-pipeline__step"><strong>feature card</strong><span>+ compiled extractor</span></div>
-  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
-  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabSynth</strong><span>label-preserving paraphrases</span></div>
-  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
-  <div class="ta-pipeline__step ta-pipeline__step--key"><strong>TabHead</strong><span>CatBoost over the card</span></div>
-  <div class="ta-pipeline__arrow" aria-hidden="true">→</div>
-  <div class="ta-pipeline__step"><strong>decision</strong><span>top-k / label / route</span></div>
-</div>
-
-<div class="ta-steps" markdown>
-
-1. **TabSchema** reads your agent's own logs and, with an LLM, proposes behavior-grounded features, writes and
-   sandbox-tests the code that extracts them, and keeps only those a judge ensemble accepts. The output is a
-   *feature card* plus a reusable, reviewed extractor. It runs once per agent and catalog.
-2. **TabSynth** adds deterministic, label-preserving paraphrases of the free-text state where trajectories are
-   scarce.
-3. **TabHead** scores every candidate of a decision in one pass (CatBoost), with an optional confidence gate that
-   defers uncertain decisions back to the original LLM.
-
-</div>
-
-<figure class="ta-figure" markdown="span">
-  ![TabSchema: feature analyzer, code extractor and validator, feature aggregator, three judges and a meta-judge produce the feature schema](assets/tabschema.png){ loading=lazy decoding=async }
-  <figcaption>TabSchema compiles trajectory-derived schema, state, and dependency signals into tabular features.</figcaption>
-</figure>
-
-<figure class="ta-figure" markdown="span">
-  ![TabHead: numerical, categorical and textual features plus the tool catalog go into one tabular-textual unit that outputs a ranked shortlist](assets/tabhead.png){ loading=lazy decoding=async }
-  <figcaption>TabHead consumes features and candidates to output per-candidate probabilities.</figcaption>
-</figure>
-
-## Results at a glance
-
-<div class="ta-results" markdown>
-
-| Decision | Benchmark | Metric | Best baseline | TabAgent | Reproducible here |
-|---|---|---|---:|---:|:---:|
-| Tool shortlisting | AppWorld, five apps | P@R | 56–92 | **66–96** | traces not released |
-| Tool shortlisting | τ²-bench, three domains, 38 tools | P@R | 42 | **78** | ✓ |
-| Skill shortlisting | SkillsBench, 195 skills | P@R | 74 | **80** | ✓ |
-| Application selection | AppWorld, multi-label | macro&#8209;F1 | 92 | **97** | traces not released |
-| Operation selection | Mind2Web, three-way | macro&#8209;F1 | 84 | **92** | ✓ |
-| GUI element selection | Mind2Web, three domains | R@3 | 15–23 | **68–74** | ✓ |
-| Model routing | LLMRouterBench, 12 models | route@1 | 70 | **71**&nbsp;(on&nbsp;par) | ✓ opt-in download |
-
-</div>
-
-Percentages from the paper's Table 1 and, for AppWorld, its full per-method table. TabAgent is the better of
-its real-only and +synth variants. Best baseline is the strongest of BM25, DSR (zero-shot and fine-tuned; on
-AppWorld also fine-tuned on the same TabSynth rows, where TabAgent's lead is significant only on Gmail) and the
-few-shot LLM in each row; on model routing it is the best single model applied to every task. A fine-tuned 8B small LLM, a reference at about
-10²–10⁴× TabAgent's cost, is excluded as in the paper; it scores higher on four of the five AppWorld apps. The
-AppWorld rows use the CUGA agent's own trajectories, which are not released. The paper's table also covers the
-OAK and BPO enterprise benchmarks, where the small trajectory pools leave TabAgent behind or level with the best
-baseline, and sub-agent routing and skill gating, where it is on par with the best fixed default.
-[Reproducing the paper](reproducing.md) recomputes every public row.
-{ .ta-note }
-
-The reproducible rows run on the feature cards bundled with each public dataset, not on a new TabSchema run, so
-reproducing them calls no LLM. A card is *frozen* when its feature list was taken from the paper's experiment
-code for that benchmark and fixed, every feature recomputed by the release's code (a few frozen cards are
-variants; each card's `provenance` note says how), and *hand-authored* when it was written for the release from
-the paper's description of the benchmark's features (`provenance.kind` in each card). The released TabSchema
-implementation has not yet been validated against a paper number.
-{ .ta-note }
-
-<div class="ta-findings" markdown>
-
-<figure class="ta-figure" markdown="span">
-  ![Per-decision latency against shortlisting quality: TabAgent is the fastest and cheapest point, near the top on quality](assets/pareto.png){ loading=lazy decoding=async }
-  <figcaption>Per-decision latency (x, log ms) against shortlisting quality P@R (y). TabAgent (star) is the fastest and cheapest point while remaining near the top on quality; filled circles are fine-tuned small LLMs, open circles the same models few-shot. Figure from the paper.</figcaption>
-</figure>
-
-<div markdown>
-
-What the paper finds, across three decision families and seven agent benchmarks:
-
-- **Set retrieval.** On AppWorld tool shortlisting, TabAgent recovers essentially all of the tools the GPT-5.4
-  shortlister used on its successful runs (Recall@9) at far lower latency and cost.
-- **Classification and policy.** It ranks first on the classification decisions and is on par with a strong
-  fixed default on the harder routing and gating decisions, where a costly generative router does worse.
-- **Representation, not model.** A discriminative head over raw text or embeddings alone collapses; the
-  trace-derived features make it accurate.
-- **In the loop.** Placed on a live agent's critical path, TabAgent drives AppWorld tasks to completion about
-  as often as the GPT-5.4 shortlister it replaces.
-- **Few traces.** The head reaches 90% of its full-pool P@R from 118 successful trajectories on AppWorld and
-  from 37 to 51 on the four τ²-bench agents.
-
-</div>
-
-</div>
-
-## Install
-
-```bash
-pip install tabagent                    # core: tables, TabSynth, TabHead, evaluation
-# until the PyPI release: pip install "tabagent @ git+https://github.com/dolev31/TabAgent"
-pip install "tabagent[tabschema]"       # + onboarding from agent logs (OpenAI and OpenAI-compatible LLMs)
-pip install "tabagent[llm]"             # + Anthropic, Gemini and other LLM providers through LiteLLM
-pip install "tabagent[embed]"           # + e5 context-candidate similarity features
-pip install "tabagent[serve]"           # + HTTP decision service
-```
-
-`pip` resolves the newest dependency releases. For the exact versions pinned in `uv.lock`, clone the
-repository and run `uv sync --extra embed`.
-
-## Try it
-
-<!-- named -->
-[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb)
-<!-- /named -->
-
-```bash
-git clone https://github.com/dolev31/TabAgent && cd TabAgent
-pip install -e ".[embed]"
-python examples/01_quickstart_skillsbench.py
-```
-
-The first run downloads the pinned SkillsBench release (3.5 MB, SHA-256 verified) and the e5-small-v2 encoder
-from Hugging Face (about 128 MB), then runs the paper's five-fold task-level cross-validation on CPU (about
-ten minutes on a laptop). It prints P@R ≈ 0.80 and Recall@9 ≈ 0.90 with 95% bootstrap intervals, then the
-five skills TabAgent would hand the agent for a held-out task. The paper reports P@R 80 and Recall@9 91;
-[docs/reproducing.md](reproducing.md) compares every reproducible cell with the paper's.
-
-<div class="ta-examples" markdown>
-
-| Example | What it shows | Needs |
-|---|---|---|
-| [01_quickstart_skillsbench.py](https://github.com/dolev31/TabAgent/blob/main/examples/01_quickstart_skillsbench.py) | the paper's components on a public benchmark, cross-validated | CPU; network on first run (3.5 MB of data, 128 MB encoder) |
-| [02_bring_your_own_table.py](https://github.com/dolev31/TabAgent/blob/main/examples/02_bring_your_own_table.py) | scikit-learn estimators on your own decision table | CPU, offline |
-| [03_onboard_agent_logs.py](https://github.com/dolev31/TabAgent/blob/main/examples/03_onboard_agent_logs.py) | onboarding a decision from your own agent logs | an LLM API key |
-| [04_deploy.py](https://github.com/dolev31/TabAgent/blob/main/examples/04_deploy.py) | live decisions in-process, the HTTP service, a tool filter in front of your LLM | a saved head (from 02 or 03) |
-| [05_tau2_cross_agent_transfer.py](https://github.com/dolev31/TabAgent/blob/main/examples/05_tau2_cross_agent_transfer.py) | training on one agent's traces and deploying on another's (paper Table 2) | CPU; network on first run (about 600 MB) |
-
-</div>
+<p class="ta-eyebrow">The paper</p>
 
 ## Abstract
 
@@ -316,6 +325,8 @@ embeddings alone collapses, and trace-derived features make it accurate.
 <div><dt>P@R (R-precision)</dt><dd>The share of a task's ground-truth tools that appear in the top R of the ranking, where R is the task's relevant-set size, averaged over tasks. It equals Recall@R and captures completeness.</dd></div>
 <div><dt>Recall@k</dt><dd>The share of a task's ground-truth tools recovered in the top k of the ranking, averaged over tasks: recovery at a fixed budget.</dd></div>
 </dl>
+
+<p class="ta-eyebrow">FAQ</p>
 
 ## Questions
 
@@ -414,6 +425,8 @@ embeddings alone collapses, and trace-derived features make it accurate.
 </div>
 
 <!-- named -->
+<p class="ta-eyebrow">Cite</p>
+
 ## Citation
 
 If you use TabAgent, please cite the paper:
@@ -429,6 +442,7 @@ If you use TabAgent, please cite the paper:
   eprint = {2602.16429},
   archivePrefix = {arXiv},
   primaryClass  = {cs.CL},
+  doi    = {10.48550/arXiv.2602.16429},
   url    = {https://arxiv.org/abs/2602.16429}
 }
 ```

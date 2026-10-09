@@ -38,6 +38,11 @@ catboost_info/
 
 /site/
 
+# mkdocs-material privacy plugin: fonts downloaded at build time
+.cache/
+# the explainer video, downloaded from a GitHub Release by the Pages workflow (docs/releasing.md)
+/docs/assets/video/
+
 # Local outputs of the examples and launch material kept outside the repository
 /my_head/
 /peo/
