@@ -57,7 +57,8 @@ private.
 
 ## The explainer video
 
-The landing page plays a 73-second explainer video, and the README links to it. The MP4 (about 6 MB), the WebM
+The landing page plays a 73-second explainer video (muted, looping, from when it scrolls into view; paused for readers
+who ask for reduced motion), and the README embeds it as GitHub's inline player. The MP4 (about 6 MB), the WebM
 and the captions (VTT) are not committed, because the repository caps files at 500 KB: they are assets of a GitHub
 Release, which the `pages` workflow downloads into `docs/assets/video/` before it builds the site. It takes the
 newest release tagged `media-v*` that has the MP4, else any release that has it. Without one, the landing page shows

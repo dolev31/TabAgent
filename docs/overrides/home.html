@@ -48,7 +48,7 @@
     <figure class="ta-frame">
       <div class="ta-frame__bar" aria-hidden="true"><span></span><span></span><span></span></div>
       {%- if ex.explainer_video %}
-      <video class="ta-frame__media" controls muted playsinline preload="none" width="1920" height="1080"
+      <video class="ta-frame__media" data-autoplay controls muted loop playsinline preload="metadata" width="1920" height="1080"
              {%- if ex.explainer_poster %} poster="{{ ex.explainer_poster | url }}"{% endif %}
              aria-label="TabAgent explainer video: how an agent's successful runs become a classifier that replaces an LLM decision">
         {%- if ex.explainer_webm %}
@@ -60,6 +60,22 @@
         {%- endif %}
         <a href="{{ ex.explainer_video | url }}">Download the explainer video (MP4)</a>
       </video>
+      <script>
+        // Autoplay muted (the video is silent), as soon as the player is in view; stay paused for readers who
+        // ask for reduced motion, and pause while the player is off screen.
+        (function () {
+          var v = document.querySelector("video[data-autoplay]");
+          if (!v || !("IntersectionObserver" in window)) return;
+          if (window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+          v.muted = true;
+          new IntersectionObserver(function (entries) {
+            entries.forEach(function (e) {
+              if (e.isIntersecting) { var p = v.play(); if (p && p.catch) p.catch(function () {}); }
+              else if (!v.paused) { v.pause(); }
+            });
+          }, { threshold: 0.35 }).observe(v);
+        })();
+      </script>
       {%- else %}
       <picture>
         <source media="(prefers-reduced-motion: reduce)" srcset="{{ 'assets/pipeline.svg' | url }}" width="1200" height="560">

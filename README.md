@@ -26,13 +26,10 @@ Code for the paper **TabAgent: Distilling LLM Agent Components into Cheap Classi
 </div>
 
 <!-- named -->
-<!-- EXPLAINER VIDEO (launch day): put the video's GitHub user-attachments URL on its own line here
-     (https://github.com/user-attachments/assets/<id>); GitHub renders that line as an inline player. Then delete
-     the thumbnail below, which links to the video on the documentation site until then (docs/releasing.md). -->
-<p align="center">
-  <a href="https://dolev31.github.io/TabAgent/#explainer"><img src="docs/assets/explainer-thumb.webp" width="720"
-     alt="Play the 73-second TabAgent explainer video on the documentation site"></a>
-</p>
+<!-- The 73-second explainer, uploaded to GitHub: a URL on its own line renders as an inline player. -->
+
+https://github.com/user-attachments/assets/90edf81c-efc6-4a6b-b0b6-8e51c249fecc
+
 <!-- /named -->
 
 <p align="center">
