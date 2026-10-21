@@ -26,8 +26,8 @@
 <!-- /named -->
 
 <!-- named -->
-<a href="https://dolev31.github.io/TabAgent/#explainer"><img src="docs/assets/hero-loop.webp" width="100%" alt="TabAgent in eight seconds: an agent's successful runs go to TabSchema, which discovers features, then TabSynth, which augments the rows, then TabHead, a classifier that ranks the candidates in milliseconds"></a>
-<sub>▶ <a href="https://dolev31.github.io/TabAgent/#explainer"><b>Watch the 73-second explainer</b></a></sub>
+<a href="https://dolev31.github.io/TabAgent/#explainer"><img src="docs/assets/explainer-teaser.webp" width="100%" alt="The TabAgent explainer, condensed: an agent asks a frontier LLM again and again; its successful runs become a table; TabSchema discovers features, TabSynth grows the training rows, TabHead ranks every candidate in one pass and defers unsure cases to the LLM, at about 10³× lower latency and 10⁵× lower cost per decision"></a>
+<sub>▶ <a href="https://dolev31.github.io/TabAgent/#explainer"><b>Watch the full 73-second explainer, with captions</b></a></sub>
 <!-- /named -->
 
 **[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Results](#results)** · **[Use it in your agent](#use-it-in-your-agent)** · **[Docs](https://dolev31.github.io/TabAgent/)** · **[Cite](#citation)**
