@@ -529,10 +529,7 @@ catalog = catalog[["skill_name", "skill_desc"]].drop_duplicates()
 head.decide(catalog.assign(task_text="Recover the missing cells of a damaged Excel workbook."), k=5)
 ```
 
-The [TabAgent skill shortlisting Space](https://huggingface.co/spaces/dolev31/tabagent-skill-shortlisting)
-runs the SkillsBench head live: pick a SkillsBench task or type a task description, and it shows the five
-skills handed to the agent with their scores, the decision latency measured on the Space's CPU, and, for a
-SkillsBench task, the task's curated skill bundle. Both heads and the Space accompany the paper
-([arXiv:2602.16429](https://arxiv.org/abs/2602.16429)).
+Both heads accompany the paper ([arXiv:2602.16429](https://arxiv.org/abs/2602.16429)). To try one in the
+browser, open the [Colab quickstart](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb).
 
 <!-- /named -->

@@ -6,7 +6,7 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 Nothing yet.
 
-## 0.1.0: first public release
+## 0.1.0: first public release (2026-10-21)
 
 The code of the paper *TabAgent: Distilling LLM Agent Components into Cheap Classifiers*
 ([arXiv:2602.16429](https://arxiv.org/abs/2602.16429)), as the `tabagent` package (Python 3.10 to 3.13,

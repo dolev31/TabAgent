@@ -24,7 +24,7 @@ from tabagent.tabschema import Feature, FeatureCard, TabSchema, TabSchemaConfig
 from tabagent.tabschema.verify import verify_head
 from tabagent.tabsynth import TabSynth
 
-__version__ = "0.1.0.dev0"
+__version__ = "0.1.0"
 
 logging.getLogger(__name__).addHandler(logging.NullHandler())
 

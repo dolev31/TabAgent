@@ -2,43 +2,37 @@
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/assets/brand/wordmark-dark.svg">
-  <img src="docs/assets/brand/wordmark-light.svg" alt="TabAgent" width="340">
+  <img src="docs/assets/brand/wordmark-light.svg" alt="TabAgent" width="360">
 </picture>
 
 ### Replace an LLM agent's closed-set decisions with a cheap classifier trained from its own logs.
 
 <!-- named -->
-[![arXiv](https://img.shields.io/badge/arXiv-2602.16429-F43F5E?style=flat-square&labelColor=0B1020)](https://arxiv.org/abs/2602.16429)
-[![PyPI](https://img.shields.io/pypi/v/tabagent?style=flat-square&labelColor=0B1020&color=A78BFA&label=PyPI)](https://pypi.org/project/tabagent/)
-[![Python 3.10–3.13](https://img.shields.io/badge/python-3.10%E2%80%933.13-A78BFA?style=flat-square&labelColor=0B1020)](pyproject.toml)
-[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-64748B?style=flat-square&labelColor=0B1020)](LICENSE)
-[![CI](https://img.shields.io/github/actions/workflow/status/dolev31/TabAgent/ci.yml?branch=main&style=flat-square&labelColor=0B1020&label=CI)](https://github.com/dolev31/TabAgent/actions/workflows/ci.yml)
-[![Docs](https://img.shields.io/static/v1?label=docs&message=dolev31.github.io/TabAgent&color=22D3EE&style=flat-square&labelColor=0B1020)](https://dolev31.github.io/TabAgent/)
-[![Open in Colab](https://img.shields.io/badge/Colab-quickstart-F59E0B?style=flat-square&labelColor=0B1020&logo=googlecolab&logoColor=F59E0B)](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb)
-[![Hugging Face](https://img.shields.io/badge/Hugging%20Face-heads%20%2B%20demo-F59E0B?style=flat-square&labelColor=0B1020)](https://huggingface.co/spaces/dolev31/tabagent-skill-shortlisting)
+**TabAgent: Distilling LLM Agent Components into Cheap Classifiers**<br>
+<sub>Ido Levy<sup>1,2</sup> · Segev Shlomov<sup>1</sup> · Avi Yaeli<sup>1</sup> · Nir Mashkif<sup>1</sup> · Asaf Adi<sup>1</sup> · Yinon Goldstein<sup>1</sup> · Eilam Shapira<sup>1</sup> · Leshem Choshen<sup>1,2</sup></sub><br>
+<sub><sup>1</sup>IBM · <sup>2</sup>Weizmann Institute of Science</sub>
 
-Code for the paper **TabAgent: Distilling LLM Agent Components into Cheap Classifiers**<br>
-<sub>Ido Levy<sup>1,2</sup> · Segev Shlomov<sup>1</sup> · Avi Yaeli<sup>1</sup> · Nir Mashkif<sup>1</sup> · Asaf Adi<sup>1</sup> · Yinon Goldstein<sup>1</sup> · Eilam Shapira<sup>1</sup> · Leshem Choshen<sup>1,2</sup> &nbsp;·&nbsp; <sup>1</sup>IBM · <sup>2</sup>Weizmann Institute of Science</sub>
+<p>
+  <a href="https://arxiv.org/abs/2602.16429"><img src="https://img.shields.io/badge/arXiv-2602.16429-F43F5E?style=flat-square&labelColor=0B1020" alt="arXiv"></a>
+  <a href="https://dolev31.github.io/TabAgent/"><img src="https://img.shields.io/badge/docs-website-22D3EE?style=flat-square&labelColor=0B1020" alt="Documentation"></a>
+  <a href="https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb"><img src="https://img.shields.io/badge/Colab-quickstart-F59E0B?style=flat-square&labelColor=0B1020&logo=googlecolab&logoColor=F59E0B" alt="Open in Colab"></a>
+  <a href="https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20heads-Hugging%20Face-F59E0B?style=flat-square&labelColor=0B1020" alt="Pretrained heads on Hugging Face"></a>
+  <br>
+  <a href="https://pypi.org/project/tabagent/"><img src="https://img.shields.io/pypi/v/tabagent?style=flat-square&labelColor=0B1020&color=A78BFA&label=PyPI" alt="PyPI"></a>
+  <a href="pyproject.toml"><img src="https://img.shields.io/badge/python-3.10%E2%80%933.13-A78BFA?style=flat-square&labelColor=0B1020" alt="Python 3.10 to 3.13"></a>
+  <a href="https://github.com/dolev31/TabAgent/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/dolev31/TabAgent/ci.yml?branch=main&style=flat-square&labelColor=0B1020&label=CI" alt="CI"></a>
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-Apache--2.0-64748B?style=flat-square&labelColor=0B1020" alt="License: Apache-2.0"></a>
+</p>
 <!-- /named -->
-
-[Quick start](#quick-start) · [How it works](#how-it-works) · [Results](#results) · [Use it in your agent](#use-it-in-your-agent) · [Docs](#documentation) · [Cite](#citation)
-
-</div>
 
 <!-- named -->
-<!-- The 73-second explainer, uploaded to GitHub: a URL on its own line renders as an inline player. -->
-
-https://github.com/user-attachments/assets/90edf81c-efc6-4a6b-b0b6-8e51c249fecc
-
+<a href="https://dolev31.github.io/TabAgent/#explainer"><img src="docs/assets/hero-loop.webp" width="100%" alt="TabAgent in eight seconds: an agent's successful runs go to TabSchema, which discovers features, then TabSynth, which augments the rows, then TabHead, a classifier that ranks the candidates in milliseconds"></a>
+<sub>▶ <a href="https://dolev31.github.io/TabAgent/#explainer"><b>Watch the 73-second explainer</b></a></sub>
 <!-- /named -->
 
-<p align="center">
-  <picture>
-    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/pipeline.svg">
-    <img src="docs/assets/pipeline-animated.svg" width="100%"
-         alt="How TabAgent works: the agent's successful runs go to TabSchema, which discovers features, then TabSynth, which adds label-preserving paraphrases, then TabHead, a CatBoost classifier that decides in milliseconds and returns a ranked shortlist in one pass.">
-  </picture>
-</p>
+**[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Results](#results)** · **[Use it in your agent](#use-it-in-your-agent)** · **[Docs](https://dolev31.github.io/TabAgent/)** · **[Cite](#citation)**
+
+</div>
 
 ## Why
 
@@ -54,6 +48,14 @@ https://github.com/user-attachments/assets/90edf81c-efc6-4a6b-b0b6-8e51c249fecc
 
 ## How it works
 
+<p align="center">
+  <picture>
+    <source media="(prefers-reduced-motion: reduce)" srcset="docs/assets/pipeline.svg">
+    <img src="docs/assets/pipeline-animated.svg" width="760"
+         alt="How TabAgent works: the agent's successful runs go to TabSchema, which discovers features, then TabSynth, which adds label-preserving paraphrases, then TabHead, a CatBoost classifier that scores every candidate in one pass; at inference the head replaces the LLM call">
+  </picture>
+</p>
+
 | | |
 |---|---|
 | <img src="docs/assets/brand/chip-tabschema.svg" height="28" alt="Phase 1: TabSchema"> | **Discovers features.** LLM agents analyze the successful trajectories, write and sandbox-test the extraction code, and a judge ensemble keeps the features that matter. |
@@ -67,7 +69,6 @@ agent is unchanged. [Components](docs/components.md) covers each phase in detail
 
 ```bash
 pip install tabagent
-# until the PyPI release: pip install "tabagent @ git+https://github.com/dolev31/TabAgent"
 ```
 
 **See it work** on a public benchmark, in a few minutes on a laptop CPU (it downloads 3.5 MB of data and a 128 MB
@@ -229,7 +230,7 @@ Onboarding sends trajectories to your LLM provider; `redact=` (CLI: `--redact mo
 The guides are also a searchable site at [dolev31.github.io/TabAgent](https://dolev31.github.io/TabAgent/). Pretrained
 heads for [SkillsBench skill selection](https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection) and
 [τ²-bench tool shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) load with
-`tabagent.load("hf://...")`, and a [demo Space](https://huggingface.co/spaces/dolev31/tabagent-skill-shortlisting) runs one live.
+`tabagent.load("hf://...")`, and the [Colab quickstart](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb) runs one in the browser.
 <!-- /named -->
 
 <!-- named -->
