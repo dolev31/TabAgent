@@ -45,6 +45,15 @@ jobs:
           done
           ls -l docs/assets/video
       - run: uv run --group docs mkdocs build --strict
+      - name: The README's high-resolution teaser (1280 px, too large to commit) from the media release
+        # The README's hero loads site/assets/explainer-teaser-hd.webp; without it, the committed 720 px teaser
+        # (docs/assets/explainer-teaser.webp) is what the site serves under that name.
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release download media-v1 -R "$GITHUB_REPOSITORY" -p explainer-teaser-hd.webp -D site/assets --clobber \
+            || cp docs/assets/explainer-teaser.webp site/assets/explainer-teaser-hd.webp
+          ls -l site/assets/explainer-teaser-hd.webp
       - name: The paper's PDF beside the page (Google Scholar attaches a PDF only from the page's own directory)
         # Pinned to the version whose title the page carries; until it is listed, the Scholar PDF tag is dropped.
         run: |

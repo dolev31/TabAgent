@@ -58,11 +58,11 @@ private.
 ## The explainer video
 
 The landing page plays a 73-second explainer video (muted, looping, from when it scrolls into view; paused for readers
-who ask for reduced motion), and the README embeds it as GitHub's inline player. The MP4 (about 6 MB), the WebM
+who ask for reduced motion), and the README opens with an animated cut of it. The MP4 (about 6 MB), the WebM
 and the captions (VTT) are not committed, because the repository caps files at 500 KB: they are assets of a GitHub
 Release, which the `pages` workflow downloads into `docs/assets/video/` before it builds the site. It takes the
 newest release tagged `media-v*` that has the MP4, else any release that has it. Without one, the landing page shows
-the animated pipeline in the video's place, and the README's thumbnail links to that.
+the animated pipeline in the video's place.
 
 **At launch**, once the repository is public and Pages is enabled:
 
@@ -81,15 +81,15 @@ the animated pipeline in the video's place, and the README's thumbnail links to 
     `--latest=false` keeps the package's version release as the repository's latest release, and the tag does
     not match `v*`, so nothing is published to PyPI. When the `pages` run is green, its log lists the three files
     and the landing page plays the video.
-3. **Put the player in the README.** Open the pull request that makes this change and drag
-   `tabagent-explainer.mp4` into its description: GitHub uploads it (10 MB at most on a free plan) and inserts a
-   `https://github.com/user-attachments/assets/...` URL. In `README.md`, put that URL on its own line at the
-   `EXPLAINER VIDEO` comment and delete the thumbnail block below the comment; GitHub renders the line as a video
-   player.
+3. **The README's hero.** GitHub never autoplays a video in a README, so the README opens with an animated cut
+   of the explainer instead: `explainer-teaser-hd.webp` (1280x720, 12 fps, about 1 MB), also an asset of
+   `media-v1`. The `pages` workflow copies it to `site/assets/`, and the README loads it from the site, so it
+   never enters git. A 720 px copy is committed as `docs/assets/explainer-teaser.webp` and is what the site
+   serves under that name when the release has none.
 
 A new cut of the video replaces the assets of the same release
-(`gh release upload media-v1 media/explainer/out/tabagent-explainer.{mp4,webm,vtt} --clobber`), followed by
-another run of `pages.yml`, and a new upload for the README.
+(`gh release upload media-v1 media/explainer/out/tabagent-explainer.{mp4,webm,vtt} --clobber`, and the teaser
+rebuilt from the new frames), followed by another run of `pages.yml`.
 
 ## Moving the repository
 

@@ -27,7 +27,7 @@
 <!-- /named -->
 
 <!-- named -->
-<a href="https://dolev31.github.io/TabAgent/#explainer"><img src="docs/assets/explainer-teaser.webp" width="100%" alt="The TabAgent explainer, condensed: an agent asks a frontier LLM again and again; its successful runs become a table; TabSchema discovers features, TabSynth grows the training rows, TabHead ranks every candidate in one pass and defers unsure cases to the LLM, at about 10³× lower latency and 10⁵× lower cost per decision"></a>
+<a href="https://dolev31.github.io/TabAgent/#explainer"><img src="https://dolev31.github.io/TabAgent/assets/explainer-teaser-hd.webp" width="100%" alt="The TabAgent explainer, condensed: an agent asks a frontier LLM again and again; its successful runs become a table; TabSchema discovers features, TabSynth grows the training rows, TabHead ranks every candidate in one pass and defers unsure cases to the LLM, at about 10³× lower latency and 10⁵× lower cost per decision"></a>
 <sub>▶ <a href="https://dolev31.github.io/TabAgent/#explainer"><b>Watch the full 73-second explainer, with captions</b></a></sub>
 <!-- /named -->
 
