@@ -4,10 +4,14 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+## 0.1.1 (2026-10-22)
+
 - **Citation at hand.** `tabagent.cite()` and `tabagent cite` print the paper's BibTeX (or APA, or one line of
   text). A head saved by `onboard` records the citation in its `head.json`, `tabagent serve` reports it at
   `GET /version`, and `tabagent onboard` mentions it in one line, on stderr, when it saves a head. Nothing is
   printed at import time. `AGENTS.md` tells coding agents how to work in the repository and how to cite it.
+- **An archived, citable release.** Each GitHub release is archived on Zenodo with a DOI; `.zenodo.json`
+  gives the record its authors, license and a link to the paper.
 - **Documentation site restructured.** Top-level sections (Get started, Guides, Concepts, API reference, Reproduce
   the paper, Changelog, Project), a quickstart, an API reference generated from the docstrings and a command-line
   reference generated from the CLI. The old pages (`onboarding`, `deployment`, `components`, `bring_your_own_data`)

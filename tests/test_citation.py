@@ -65,3 +65,14 @@ def test_import_prints_nothing():
 def test_record_is_json_ready():
     r = citation.record()
     assert json.loads(json.dumps(r)) == r and r["doi"] == citation.DOI and r["bibtex"] == tabagent.cite()
+
+
+def test_zenodo_record_has_the_same_authors_and_links_the_paper():
+    path = ROOT / ".zenodo.json"
+    if not path.exists():  # the sdist ships no .zenodo.json
+        pytest.skip("no .zenodo.json")
+    z = json.loads(path.read_text())
+    assert [c["name"] for c in z["creators"]] == [f"{last}, {first}" for first, last in citation.AUTHORS]
+    assert z["upload_type"] == "software" and z["license"] == "Apache-2.0"
+    paper = z["related_identifiers"][0]
+    assert paper["identifier"] == citation.DOI and paper["relation"] == "isSupplementTo"
