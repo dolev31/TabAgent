@@ -223,7 +223,7 @@ Onboarding sends trajectories to your LLM provider; `redact=` (CLI: `--redact mo
 ## Documentation
 
 [Get started](docs/get-started/index.md) · [Guides](docs/guides/index.md) · [Concepts](docs/concepts/index.md) ·
-[API reference](docs/reference/index.md) · [Command line](docs/reference/cli.md) · [Datasets](docs/datasets.md) ·
+[API reference](docs/reference/index.md) · [Command line](https://dolev31.github.io/TabAgent/reference/cli/) · [Datasets](docs/datasets.md) ·
 [Reproducing the paper](docs/reproducing.md)
 
 <!-- named -->
