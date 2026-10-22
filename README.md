@@ -14,6 +14,7 @@
 
 <p>
   <a href="https://arxiv.org/abs/2602.16429"><img src="https://img.shields.io/badge/arXiv-2602.16429-F43F5E?style=flat-square&labelColor=0B1020" alt="arXiv"></a>
+  <a href="https://doi.org/10.5281/zenodo.23552568"><img src="https://img.shields.io/badge/DOI-10.5281/zenodo.23552568-38BDF8?style=flat-square&labelColor=0B1020" alt="DOI 10.5281/zenodo.23552568"></a>
   <a href="https://dolev31.github.io/TabAgent/"><img src="https://img.shields.io/badge/docs-website-22D3EE?style=flat-square&labelColor=0B1020" alt="Documentation"></a>
   <a href="https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb"><img src="https://img.shields.io/badge/Colab-quickstart-F59E0B?style=flat-square&labelColor=0B1020&logo=googlecolab&logoColor=F59E0B" alt="Open in Colab"></a>
   <a href="https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection"><img src="https://img.shields.io/badge/%F0%9F%A4%97%20heads-Hugging%20Face-F59E0B?style=flat-square&labelColor=0B1020" alt="Pretrained heads on Hugging Face"></a>
@@ -237,7 +238,8 @@ heads for [SkillsBench skill selection](https://huggingface.co/dolev31/tabagent-
 ## Citation
 
 If TabAgent or its pretrained heads help your work, please cite the paper. `tabagent cite` prints this entry
-(`--format apa` for APA), and GitHub's "Cite this repository" button reads [CITATION.cff](CITATION.cff).
+(`--format apa` for APA), and GitHub's "Cite this repository" button reads [CITATION.cff](CITATION.cff). Each
+release of the code is archived on Zenodo, [doi:10.5281/zenodo.23552568](https://doi.org/10.5281/zenodo.23552568) (all versions).
 
 ```bibtex
 @misc{levy2026tabagent,

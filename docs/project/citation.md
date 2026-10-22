@@ -46,6 +46,9 @@ A head saved by `onboard` records the citation in its `head.json`, so it travels
 and `tabagent serve` reports it at `GET /version`. `tabagent onboard` mentions it in one line when it saves a
 head; nothing is printed at import time.
 
+Each release of the code is archived on Zenodo with its own DOI; [doi:10.5281/zenodo.23552568](https://doi.org/10.5281/zenodo.23552568)
+always resolves to the latest one. Cite it, next to the paper, when you need the exact version of the code.
+
 The repository also carries a [`CITATION.cff`](https://github.com/dolev31/TabAgent/blob/main/CITATION.cff), which
 GitHub reads for its "Cite this repository" button, and an
 [`AGENTS.md`](https://github.com/dolev31/TabAgent/blob/main/AGENTS.md) that tells coding agents how to cite
