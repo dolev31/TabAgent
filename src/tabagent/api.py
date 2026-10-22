@@ -31,7 +31,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from tabagent import auto, hub
+from tabagent import auto, citation, hub
 from tabagent.agent import TabAgent
 from tabagent.tabhead import confidence, decode
 from tabagent.table import DecisionTable
@@ -519,9 +519,9 @@ class TabAgentHead:
     def save(self, path: str | Path) -> Path:
         """Write the head to the directory ``path``: the model artifact (``model/``), ``extract.py`` and its
         golden tests (``extractor_tests.json``, trajectory snippets), ``head.json`` (with the adapter and its
-        prefix settings, and the redaction function's import path, when known) and, when present, the
-        evaluation and discovery reports. A card that pins no hash for the extractor gets the hash of
-        ``extract.py`` before it is written, so :meth:`load` can check the code."""
+        prefix settings, the redaction function's import path, when known, and the paper's citation) and,
+        when present, the evaluation and discovery reports. A card that pins no hash for the extractor gets
+        the hash of ``extract.py`` before it is written, so :meth:`load` can check the code."""
         from tabagent.adapters import describe_adapter
         from tabagent.tabschema.verify import TESTS_FILE
 
@@ -547,6 +547,7 @@ class TabAgentHead:
             meta["candidate_function"] = True  # extract.py defines extract_candidate_features
         if self.relative_features is not None:  # the recipe search's choice (opt-in by validation)
             meta["relative_features"] = bool(self.relative_features)
+        meta["citation"] = citation.record()  # travels with every shared head
         atomic_write(out / "head.json", json.dumps(meta, indent=1))
         if self.report is not None:
             self.report.save(out)

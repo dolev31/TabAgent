@@ -15,6 +15,7 @@
     tabagent datasets                             list the public benchmark datasets
     tabagent datasets NAME [--download]           describe one dataset, or build it
     tabagent datasets --all --download            fetch and build every public dataset
+    tabagent cite [--format bibtex|apa|text]      print how to cite TabAgent
 
 A user error (a missing file, an unknown dataset, a license to accept, a missing extra, ...) prints one
 message and exits with status 2. A run that stopped and can be resumed from its run directory (a spent
@@ -32,6 +33,7 @@ import re
 import sys
 import traceback
 
+from tabagent import citation
 from tabagent.tabschema.llm import BudgetExceeded, LLMUnavailable, MissingCredentials
 
 #: Exceptions that describe a problem with the user's input or environment, not a bug.
@@ -281,6 +283,7 @@ def _onboard(args) -> int:
         result.redact = result.redact or args.redact
         result.save(args.out)
         print(f"saved to {args.out}")
+        print(citation.notice(), file=sys.stderr)
     return 0
 
 
@@ -438,6 +441,11 @@ def _datasets(args) -> int:
     if not args.download:
         return _describe_dataset(args.name)
     print(_build_dataset(args.name, args))
+    return 0
+
+
+def _cite(args) -> int:
+    print(citation.cite(args.format))
     return 0
 
 
@@ -821,6 +829,15 @@ def build_parser() -> argparse.ArgumentParser:
         "--accept-license", action="store_true", help="confirm the upstream terms of datasets that ask for it"
     )
     p.set_defaults(fn=_datasets)
+
+    p = sub.add_parser(
+        "cite",
+        help="print how to cite TabAgent",
+        description="Print the citation of the TabAgent paper: BibTeX (the default), APA or a line of text.",
+        formatter_class=_FORMATTER,
+    )
+    p.add_argument("--format", default="bibtex", choices=citation.FORMATS, help="the citation style")
+    p.set_defaults(fn=_cite)
     return ap
 
 

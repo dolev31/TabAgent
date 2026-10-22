@@ -201,8 +201,9 @@ def test_sandbox_selection(trained):
     assert out["deferred"] is True and "docker" in out["error"]
 
 
-def test_cli_onboarded_head_records_its_adapter_and_redaction(tmp_path, monkeypatch):
-    """`tabagent onboard --redact` records the adapter and the redaction import path in head.json."""
+def test_cli_onboarded_head_records_its_adapter_and_redaction(tmp_path, monkeypatch, capsys):
+    """`tabagent onboard --redact` records the adapter and the redaction import path in head.json, and the
+    citation, which the command also mentions once, on stderr, when the head is saved."""
     logs = write_openai_logs(tmp_path / "logs", n=24)
     monkeypatch.setattr(llm_module, "auto_llm", lambda model=None: llm_module.ScriptedLLM(responder))
     onboard, cfg = tabagent.onboard, TabSchemaConfig(n_analyze=2, workers=2, pair_embeddings=False)
@@ -212,8 +213,12 @@ def test_cli_onboarded_head_records_its_adapter_and_redaction(tmp_path, monkeypa
     run = ["--run-dir", str(tmp_path / "run")]
     assert main(["onboard", str(logs), "--redact", "copy:deepcopy", "--out", str(out), *run]) == 0
 
+    printed = capsys.readouterr()
+    assert "tabagent cite" in printed.err and "tabagent cite" not in printed.out  # stdout stays the report
+
     meta = json.loads((out / "head.json").read_text())
     assert meta["adapter"]["class"] == "OpenAIMessagesAdapter" and meta["redact"] == "copy:deepcopy"
+    assert meta["citation"]["doi"] == "10.48550/arXiv.2602.16429"
     with pytest.warns(UserWarning, match="redact"):
         head = tabagent.load(out)
     assert head.adapter["class"] == "OpenAIMessagesAdapter"

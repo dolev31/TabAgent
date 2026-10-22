@@ -17,7 +17,7 @@ fastapi = pytest.importorskip("fastapi")
 from fastapi.testclient import TestClient  # noqa: E402
 
 import tabagent  # noqa: E402
-from tabagent import TabAgent, TabHead  # noqa: E402
+from tabagent import TabAgent, TabHead, citation  # noqa: E402
 from tabagent.api import TabAgentHead  # noqa: E402
 from tabagent.cli import main  # noqa: E402
 from tabagent.drift import DriftMonitor  # noqa: E402
@@ -172,6 +172,8 @@ def test_version_identifies_the_library_and_the_head(head_dir):
         "artifact_tabagent_version": tabagent.__version__,
     }
     assert v["serving"] == {"extractor": "warm", "workers": 2, "request_timeout_s": 3, "drift": "on"}
+    # the citation travels with the head and is part of what the service reports
+    assert v["citation"] == json.loads((head_dir / "head.json").read_text())["citation"] == citation.record()
 
 
 # --------------------------------------------------------------------------- logs and metrics

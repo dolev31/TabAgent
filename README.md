@@ -236,6 +236,9 @@ heads for [SkillsBench skill selection](https://huggingface.co/dolev31/tabagent-
 <!-- named -->
 ## Citation
 
+If TabAgent or its pretrained heads help your work, please cite the paper. `tabagent cite` prints this entry
+(`--format apa` for APA), and GitHub's "Cite this repository" button reads [CITATION.cff](CITATION.cff).
+
 ```bibtex
 @misc{levy2026tabagent,
   title  = {TabAgent: Distilling LLM Agent Components into Cheap Classifiers},

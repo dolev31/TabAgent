@@ -22,13 +22,13 @@ error status: ``candidates`` lists the request's candidate ids in their input or
 a single-class head), ``scores`` is empty, ``confidence`` is None and ``error`` starts with
 ``TimeoutError``.
 
-Operations: ``GET /health`` (liveness: the process answers), ``GET /ready`` (readiness: the head is loaded
-and its warm extractor pool runs at least ``min_ready`` workers and can run the extractor; 503 otherwise,
-with the reason), ``GET /version`` (the library version and the head's manifest: card, decision, extractor
-and model hashes, creation time), ``GET /card``, ``GET /metrics`` (Prometheus text: requests, decisions,
-deferrals by reason, errors by class, latency histograms per stage, the worker pool, its restarts and start
-failures, drift gauges) and ``GET /drift`` (the per-feature drift report of ``tabagent.drift``). Every
-decision is logged as one structured record (request id, head id, latency breakdown, deferral and its
+Operations: ``GET /health`` (liveness: the process answers), ``GET /ready`` (readiness: the head is loaded and
+its warm extractor pool runs at least ``min_ready`` workers and can run the extractor; 503 otherwise, with the
+reason), ``GET /version`` (the library version, the paper's citation and the head's manifest: card, decision,
+extractor and model hashes, creation time), ``GET /card``, ``GET /metrics`` (Prometheus text: requests,
+decisions, deferrals by reason, errors by class, latency histograms per stage, the worker pool, its restarts
+and start failures, drift gauges) and ``GET /drift`` (the per-feature drift report of ``tabagent.drift``).
+Every decision is logged as one structured record (request id, head id, latency breakdown, deferral and its
 reason, error class) without the request's content unless ``log_content``. Requires ``pip install
 "tabagent[serve]"``; ``RemoteHead`` is its client, standard library only.
 """
@@ -597,6 +597,7 @@ class Service:
 
     def version(self) -> dict[str, Any]:
         import tabagent
+        from tabagent.citation import record
 
         names = {
             "WarmSandbox": "warm",
@@ -619,6 +620,7 @@ class Service:
                 "request_timeout_s": self.request_timeout,
                 "drift": "on" if self.drift is not None else "off",
             },
+            "citation": record(),
         }
 
     def drift_report(self) -> dict[str, Any]:

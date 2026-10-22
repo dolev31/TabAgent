@@ -26,8 +26,18 @@ from tabagent.tabschema.llm import ScriptedLLM
 GOLDEN = Path(__file__).parents[1] / "fixtures" / "golden_single_function_head.json"
 #: Files of the saved head that onboarding again must reproduce byte for byte. The fitted model's files are
 #: not among them: a CatBoost fit can differ between CPU architectures (the golden was built on arm64). The
-#: card is compared without the relative features added since (``card.with_relative``).
+#: card is compared without the relative features added since (``card.with_relative``), and ``head.json``
+#: without the ``citation`` record added since (metadata only: loading and deciding never read it).
 SAME_BYTES = ("extract.py", "extractor_tests.json", "head.json")
+
+
+def _as_golden(name: str, data: bytes) -> bytes:
+    """``data`` of the re-onboarded head's file ``name`` without what was added to it since the golden."""
+    if name != "head.json":
+        return data
+    meta = json.loads(data)
+    assert set(meta.pop("citation")) == {"text", "bibtex", "doi", "url"}
+    return json.dumps(meta, indent=1).encode()
 
 
 def build_golden(dest: Path, tmp: Path, **config) -> dict:
@@ -150,9 +160,8 @@ def test_onboarding_again_reproduces_the_golden_head(golden, tmp_path):
     extractor, tests, head.json and card, byte for byte."""
     rec = build_golden(tmp_path / "again", tmp_path, last_step_text=False, relative_features=False)
     for name in (*SAME_BYTES, "model/card.yaml"):
-        assert (tmp_path / "again" / "head" / name).read_bytes() == (golden / "head" / name).read_bytes(), (
-            name
-        )
+        again = _as_golden(name, (tmp_path / "again" / "head" / name).read_bytes())
+        assert again == (golden / "head" / name).read_bytes(), name
     assert not has_relative(FeatureCard.load(tmp_path / "again" / "head" / "model"))
     saved = json.loads((golden / "decisions.json").read_text())
     assert [d["features"] for d in rec["decisions"]] == [d["features"] for d in saved["decisions"]]

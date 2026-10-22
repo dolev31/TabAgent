@@ -4,6 +4,10 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **Citation at hand.** `tabagent.cite()` and `tabagent cite` print the paper's BibTeX (or APA, or one line of
+  text). A head saved by `onboard` records the citation in its `head.json`, `tabagent serve` reports it at
+  `GET /version`, and `tabagent onboard` mentions it in one line, on stderr, when it saves a head. Nothing is
+  printed at import time. `AGENTS.md` tells coding agents how to work in the repository and how to cite it.
 - **Documentation site restructured.** Top-level sections (Get started, Guides, Concepts, API reference, Reproduce
   the paper, Changelog, Project), a quickstart, an API reference generated from the docstrings and a command-line
   reference generated from the CLI. The old pages (`onboarding`, `deployment`, `components`, `bring_your_own_data`)

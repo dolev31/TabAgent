@@ -84,7 +84,7 @@ packages = ["src/tabagent"]
 # tests/experiments imports it; docs/ (the site and its images), .github/ and uv.lock stay out.
 include = [
   "/src/tabagent", "/tests", "/experiments", "/examples",
-  "/README.md", "/LICENSE", "/NOTICE", "/CITATION.cff", "/pyproject.toml",
+  "/README.md", "/AGENTS.md", "/LICENSE", "/NOTICE", "/CITATION.cff", "/pyproject.toml",
 ]
 
 # PyPI's long description is README.md with its repository-relative links made absolute, so the one file renders

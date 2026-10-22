@@ -27,5 +27,26 @@ Tabular-Textual Classifiers".
 }
 ```
 
+## From the package
+
+The installed package prints the same entry, so it is at hand where the work is done:
+
+```bash
+tabagent cite                 # BibTeX
+tabagent cite --format apa    # APA; --format text gives one line for a README or a model card
+```
+
+```python
+import tabagent
+
+print(tabagent.cite())  # also tabagent.__citation__
+```
+
+A head saved by `onboard` records the citation in its `head.json`, so it travels with every head you share,
+and `tabagent serve` reports it at `GET /version`. `tabagent onboard` mentions it in one line when it saves a
+head; nothing is printed at import time.
+
 The repository also carries a [`CITATION.cff`](https://github.com/dolev31/TabAgent/blob/main/CITATION.cff), which
-GitHub reads for its "Cite this repository" button.
+GitHub reads for its "Cite this repository" button, and an
+[`AGENTS.md`](https://github.com/dolev31/TabAgent/blob/main/AGENTS.md) that tells coding agents how to cite
+TabAgent in the projects they build with it.

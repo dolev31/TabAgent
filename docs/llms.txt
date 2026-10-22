@@ -4,7 +4,7 @@
 
 The paper: "TabAgent: Distilling LLM Agent Components into Cheap Classifiers", by Ido Levy (IBM, Weizmann Institute of Science), Segev Shlomov (IBM), Avi Yaeli (IBM), Nir Mashkif (IBM), Asaf Adi (IBM), Yinon Goldstein (IBM), Eilam Shapira (IBM) and Leshem Choshen (IBM, Weizmann Institute of Science), 2026. Preprint on arXiv: https://arxiv.org/abs/2602.16429.
 
-On AppWorld tool shortlisting, the TabAgent head decides in 2.682 ms for $2.0×10⁻⁷ per decision, against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces. Install with `pip install "tabagent @ git+https://github.com/dolev31/TabAgent"` until the PyPI release (extras: `tabschema`, `embed`, `serve`). Python 3.10+, Apache-2.0.
+On AppWorld tool shortlisting, the TabAgent head decides in 2.682 ms for $2.0×10⁻⁷ per decision, against 7.50 s and $0.052 for the GPT-5.4 shortlister it replaces. Install with `pip install tabagent` (extras: `tabschema`, `embed`, `serve`, `hub`). Python 3.10+, Apache-2.0.
 
 ## What is this paper about?
 
@@ -57,6 +57,10 @@ Seven agent benchmarks (AppWorld with the CUGA agent, τ²-bench, OAK, BPO, Skil
 - Section 4 gives the benchmarks, baselines and evaluation metrics.
 - Section 5 holds the results: Table 1 for every decision, Table 2 for cross-agent transfer, the efficiency Pareto figure, and the in-the-loop study.
 - The appendices cover scope and limitations, the TabSchema prompts, statistics, cost and efficiency, TabSynth, error analysis, and the live hot-swap.
+
+## How to cite
+
+If you use TabAgent or its pretrained heads, cite the paper: Levy et al. (2026), "TabAgent: Distilling LLM Agent Components into Cheap Classifiers", arXiv:2602.16429, doi:10.48550/arXiv.2602.16429. `tabagent.cite()` in Python and `tabagent cite` on the command line print the BibTeX (key `levy2026tabagent`); every head saved by `onboard` records the citation in its `head.json`.
 
 ## Publication status
 
