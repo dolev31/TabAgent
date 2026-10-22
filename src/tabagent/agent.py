@@ -67,6 +67,18 @@ class TabAgent:
     After ``fit``: ``card_`` (the fitted card), ``head_`` (the fitted head), ``n_synthetic_`` and
     ``feature_stats_`` (the training distribution of the head's inputs, for drift monitoring; see
     ``tabagent.drift``).
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabAgent, TabHead, TabSynth, datasets
+
+    name = "skillsbench/skill-select"
+    table = datasets.load(name, download=True)
+    agent = TabAgent(datasets.card(name), head=TabHead("ranking"), synth=TabSynth(k=2))
+    agent.fit(table)
+    agent.decide(table.subset(table.groups[:1]).drop_labels(), k=5)  # top-5 candidates of the first task
+    ```
     """
 
     def __init__(self, card: CardLike, head: TabHead | None = None, synth: Any = None, seed: int = 0):

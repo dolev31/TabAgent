@@ -54,7 +54,7 @@ The explainer video, its poster and the README's video thumbnail (`docs/assets/e
 | Python 3.10 to 3.13 | README badge, landing pip tab | `pyproject.toml` classifiers and the CI matrix |
 | `pip install tabagent` and the extras `tabschema`, `llm`, `embed`, `serve` | README, landing | `pyproject.toml` optional dependencies; the package is published to PyPI at launch |
 | `tabagent scan`, `onboard --dry-run`, `onboard --out`, `serve`, `verify-head`, `check-logs`, `components` | README, landing CLI tab | `tabagent --help`, each subcommand run with `--help` on 2026-10-08 |
-| log formats: OpenAI, Anthropic, LangChain, τ²-bench, CUGA, generic JSON | README, landing | [Onboard an agent](onboarding.md#log-formats) |
-| `tabagent serve`: `POST /decide`, warm sandboxed workers, deferral on late extraction, readiness, Prometheus metrics, drift monitoring | README, landing | [Deploy](deployment.md#production-runbook) |
-| `ToolFilter` sends only the shortlisted tools, and the full list when the head defers | README, landing | [Deploy](deployment.md#live-prefixes) |
-| `TabAgentRanker` infers the card and picks TabSynth and the prior by nested validation | README, landing | [Bring your own table](bring_your_own_data.md); `examples/02_bring_your_own_table.py`, run on 2026-10-08 |
+| log formats: OpenAI, Anthropic, LangChain, τ²-bench, CUGA, generic JSON | README, landing | [Onboard an agent](guides/check-and-debug-logs.md#log-formats) |
+| `tabagent serve`: `POST /decide`, warm sandboxed workers, deferral on late extraction, readiness, Prometheus metrics, drift monitoring | README, landing | [Deploy](guides/production-runbook.md) |
+| `ToolFilter` sends only the shortlisted tools, and the full list when the head defers | README, landing | [Deploy](guides/deploy-and-serve.md#live-prefixes) |
+| `TabAgentRanker` infers the card and picks TabSynth and the prior by nested validation | README, landing | [Bring your own table](guides/bring-your-own-table.md); `examples/02_bring_your_own_table.py`, run on 2026-10-08 |

@@ -448,6 +448,343 @@
   max-width: 38rem;
 }
 
+/* ================================================================ documentation pages (not the landing page) */
+
+/* The announcement banner. */
+.md-banner {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ta-schema) 14%, var(--ta-bg-2)), color-mix(in srgb, var(--ta-synth) 16%, var(--ta-bg-2)), color-mix(in srgb, var(--ta-head) 14%, var(--ta-bg-2)));
+  border-bottom: 1px solid var(--ta-border);
+  color: var(--ta-fg);
+}
+
+.md-banner__inner {
+  font-size: 0.68rem;
+  margin: 0 auto;
+  padding: 0.45rem 0.8rem;
+  text-align: center;
+}
+
+.md-banner__button {
+  color: var(--ta-muted);
+}
+
+.ta-announce {
+  align-items: center;
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+  justify-content: center;
+}
+
+.ta-announce__tag {
+  background: var(--ta-ink);
+  border-radius: 99px;
+  color: #ffffff;
+  font-size: 0.56rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 0.12rem 0.55rem;
+  text-transform: uppercase;
+}
+
+[data-md-color-scheme="slate"] .ta-announce__tag {
+  background: var(--ta-synth);
+  color: var(--ta-ink);
+}
+
+.md-banner a {
+  color: var(--ta-link);
+  font-weight: 600;
+  text-decoration: underline;
+  text-underline-offset: 0.2em;
+}
+
+[data-md-color-scheme="slate"] .md-banner a {
+  color: #c4b5fd;
+}
+
+/* Top navigation tabs. */
+.md-tabs {
+  background-color: color-mix(in srgb, var(--ta-bg) 82%, transparent);
+  border-bottom: 1px solid var(--ta-border);
+  color: var(--ta-fg);
+}
+
+.md-tabs__link {
+  font-size: 0.68rem;
+  font-weight: 550;
+  opacity: 0.72;
+}
+
+.md-tabs__link:hover,
+.md-tabs__item--active .md-tabs__link {
+  color: var(--ta-fg);
+  opacity: 1;
+}
+
+.md-tabs__item--active {
+  box-shadow: inset 0 -2px 0 var(--ta-synth);
+}
+
+/* The page header: kind label, title, lead, and what you need. */
+.md-typeset .ta-kicker {
+  margin: 0 0 0.35rem;
+}
+
+.ta-kicker__kind {
+  align-items: center;
+  color: var(--ta-synth-text);
+  display: inline-flex;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  font-weight: 600;
+  gap: 0.5rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.ta-kicker__kind::before {
+  background: linear-gradient(90deg, var(--ta-schema), var(--ta-synth), var(--ta-head));
+  border-radius: 1px;
+  content: "";
+  height: 2px;
+  width: 1.2rem;
+}
+
+.md-typeset .ta-kicker + h1 {
+  font-size: 1.9rem;
+  margin-bottom: 0.4rem;
+}
+
+.md-typeset .ta-lead {
+  color: var(--ta-muted);
+  font-size: 0.86rem;
+  line-height: 1.55;
+  margin: 0 0 0.9rem;
+  max-width: 38rem;
+}
+
+.md-typeset .ta-needs {
+  align-items: baseline;
+  background-color: var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: var(--ta-radius-sm);
+  display: inline-flex;
+  flex-wrap: wrap;
+  font-size: 0.68rem;
+  gap: 0.2rem 0.6rem;
+  margin: 0 0 1.4rem;
+  padding: 0.35rem 0.7rem;
+}
+
+.md-typeset .ta-needs span {
+  color: var(--ta-head-text);
+  font-family: var(--md-code-font-family);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+/* Section index pages: cards. */
+.md-typeset .grid.ta-cards {
+  gap: 0.8rem;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.5rem), 1fr));
+  margin: 1.2rem 0;
+}
+
+.md-typeset .ta-cards > ul > li {
+  position: relative;
+}
+
+.md-typeset .ta-cards > ul > li:hover,
+.md-typeset .ta-cards > ul > li:focus-within {
+  border-color: color-mix(in srgb, var(--ta-synth) 60%, var(--ta-border));
+  transform: translateY(-2px);
+}
+
+.md-typeset .ta-cards > ul > li > p:first-child {
+  align-items: center;
+  color: var(--ta-fg);
+  display: flex;
+  font-size: 0.8rem;
+  font-weight: 650;
+  gap: 0.6rem;
+  margin: 0 0 0.45rem;
+}
+
+.md-typeset .ta-cards > ul > li > p:first-child .twemoji {
+  align-items: center;
+  background-color: color-mix(in srgb, var(--ta-synth) 12%, transparent);
+  border-radius: 0.5rem;
+  color: var(--ta-synth-text);
+  display: inline-flex;
+  flex: none;
+  height: 1.8rem;
+  justify-content: center;
+  width: 1.8rem;
+}
+
+.md-typeset .ta-cards > ul > li > p:first-child .twemoji svg {
+  height: 1.05rem;
+  width: 1.05rem;
+}
+
+.md-typeset .ta-cards > ul > li a {
+  color: var(--ta-fg);
+  text-decoration: none;
+}
+
+.md-typeset .ta-cards > ul > li a::after {
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  position: absolute;
+}
+
+.md-typeset .ta-cards > ul > li:hover a {
+  color: var(--ta-link);
+}
+
+.md-typeset .ta-cards > ul > li > p:last-child {
+  color: var(--ta-muted);
+  font-size: 0.68rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+/* The three phases, as three colored cards. */
+.md-typeset .ta-phases {
+  display: grid;
+  gap: 0.8rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin: 1rem 0 1.2rem;
+}
+
+.md-typeset .ta-phase {
+  background-color: var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: var(--ta-radius);
+  border-top: 3px solid var(--pc);
+  box-shadow: var(--ta-shadow-sm);
+  font-size: 0.7rem;
+  padding: 0.8rem 1rem 0.9rem;
+}
+
+.md-typeset .ta-phase p {
+  margin: 0.2rem 0;
+}
+
+.md-typeset .ta-phase p:first-child strong {
+  color: var(--pt);
+  font-size: 0.85rem;
+}
+
+.md-typeset .ta-phase--schema {
+  --pc: var(--ta-schema);
+  --pt: var(--ta-schema-text);
+}
+
+.md-typeset .ta-phase--synth {
+  --pc: var(--ta-synth);
+  --pt: var(--ta-synth-text);
+}
+
+.md-typeset .ta-phase--head {
+  --pc: var(--ta-head);
+  --pt: var(--ta-head-text);
+}
+
+@media screen and (max-width: 44.984375em) {
+  .md-typeset .ta-phases {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
+/* The API reference (mkdocstrings). */
+.md-typeset .doc-heading {
+  font-family: var(--md-code-font-family);
+  font-size: 0.95rem;
+  font-weight: 650;
+  letter-spacing: -0.01em;
+}
+
+.md-typeset .doc-object {
+  border-top: 1px solid var(--ta-border);
+  margin-top: 2.2rem;
+  padding-top: 0.4rem;
+}
+
+.md-typeset .doc-object .doc-object {
+  border-top-style: dashed;
+  margin-top: 1.4rem;
+}
+
+.md-typeset .doc-symbol {
+  border-radius: 0.3rem;
+  font-family: var(--md-code-font-family);
+  font-size: 0.55rem;
+  font-weight: 700;
+  padding: 0.1em 0.45em;
+}
+
+.md-typeset .doc-symbol-class::after,
+.md-typeset .doc-symbol-function::after,
+.md-typeset .doc-symbol-method::after,
+.md-typeset .doc-symbol-attribute::after,
+.md-typeset .doc-symbol-module::after {
+  letter-spacing: 0.04em;
+}
+
+.md-typeset .doc-signature {
+  font-size: 0.68rem;
+  margin: 0.5rem 0 0.8rem;
+}
+
+.md-typeset .doc-signature .highlight,
+.md-typeset .doc-signature pre {
+  margin: 0;
+}
+
+.md-typeset .doc-contents table:not([class]) td:first-child code,
+.md-typeset table:not([class]) td:first-child code {
+  white-space: nowrap;
+}
+
+.md-typeset .doc-contents table:not([class]) {
+  display: table;
+  width: 100%;
+}
+
+.md-typeset .doc-section-title {
+  color: var(--ta-fg);
+  font-size: 0.7rem;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.md-typeset .doc-md-description > p:first-child {
+  margin-top: 0.3rem;
+}
+
+.md-typeset .doc-contents {
+  font-size: 0.74rem;
+}
+
+.md-typeset .doc-contents ul li > p {
+  margin: 0.15em 0;
+}
+
+.md-typeset .doc-contents code {
+  word-break: break-word;
+}
+
+.md-typeset .doc-label {
+  border-radius: 99px;
+  font-size: 0.55rem;
+  font-weight: 600;
+}
+
 /* ================================================================ footer */
 
 .md-footer {

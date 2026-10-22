@@ -3,8 +3,9 @@
     python examples/04_deploy.py my_head                    # a head saved by tabagent.onboard (03)
     python examples/04_deploy.py /tmp/tabagent_ranker_xyz   # a TabAgent artifact (the path 02 prints)
 
-The two kinds take different inputs (docs/deployment.md). An onboarded head carries the compiled TabSchema
-extractor, so it decides from the raw trajectory prefix; it also backs the HTTP service and the tool filter.
+The two kinds take different inputs (docs/guides/deploy-and-serve.md). An onboarded head carries the
+compiled TabSchema extractor, so it decides from the raw trajectory prefix; it also backs the HTTP service
+and the tool filter.
 A TabAgent artifact has no extractor, so it decides on rows that already carry the columns it was trained on.
 """
 

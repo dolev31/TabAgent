@@ -3,6 +3,7 @@ site_description: Replace an LLM agent's closed-set decisions with a cheap class
 site_url: https://dolev31.github.io/TabAgent/
 repo_url: https://github.com/dolev31/TabAgent
 repo_name: TabAgent
+edit_uri: edit/main/docs/
 copyright: Copyright &copy; 2026 The TabAgent authors. Code released under the Apache-2.0 license.
 
 # Theme overrides live under docs/ but are templates, not pages. releasing.md is for maintainers (linked from
@@ -11,6 +12,7 @@ exclude_docs: |
   /overrides/
   /hooks/
   /releasing.md
+  /_pages/
 
 # Built and searchable by link, but kept out of the navigation: the source of every number on the README and the
 # landing page.
@@ -20,6 +22,12 @@ not_in_nav: |
 hooks:
   - docs/hooks/faq.py
   - docs/hooks/media.py
+  - docs/hooks/release.py
+  - docs/hooks/page_header.py
+  - docs/hooks/project_files.py
+  - docs/hooks/cli_reference.py
+  - docs/hooks/redirect_anchors.py
+  - docs/hooks/llms_check.py
 
 # Fonts are served from the site itself: the privacy plugin downloads Inter and JetBrains Mono (SIL OFL 1.1) from
 # Google Fonts at build time, so a visitor's browser never contacts Google. Nothing else external is fetched.
@@ -29,6 +37,39 @@ plugins:
       assets_include:
         - fonts.googleapis.com/*
         - fonts.gstatic.com/*
+  # The pages that moved when the guides were split: each old address forwards to its new page. The anchors of
+  # the old pages are forwarded to the page that now holds them (docs/hooks/redirect_anchors.py).
+  - redirects:
+      redirect_maps:
+        onboarding.md: guides/onboard-from-logs.md
+        deployment.md: guides/deploy-and-serve.md
+        components.md: concepts/three-phases.md
+        bring_your_own_data.md: guides/bring-your-own-table.md
+  # The API reference is generated from the docstrings (NumPy style; docs/hooks/numpy_params.py reads the
+  # package's `name: description` parameter lists).
+  - mkdocstrings:
+      handlers:
+        python:
+          paths: [src]
+          options:
+            extensions:
+              - docs/hooks/numpy_params.py
+            docstring_style: numpy
+            docstring_section_style: table
+            show_root_heading: true
+            show_root_full_path: false
+            show_root_toc_entry: true
+            show_source: false
+            show_symbol_type_heading: true
+            show_symbol_type_toc: true
+            show_signature_annotations: true
+            separate_signature: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            members_order: source
+            filters: ["!^_"]
+            heading_level: 2
+            line_length: 100
 
 theme:
   name: material
@@ -37,6 +78,8 @@ theme:
   favicon: assets/brand/favicon.svg
   icon:
     repo: fontawesome/brands/github
+    edit: material/pencil-outline
+    view: material/eye-outline
   # Inter and JetBrains Mono load in docs/overrides/main.html (variable weights 400-800), self-hosted by `privacy`.
   font: false
   palette:
@@ -55,15 +98,24 @@ theme:
         icon: material/weather-sunny
         name: Switch to light mode
   features:
+    - navigation.instant
+    - navigation.instant.progress
+    - navigation.tracking
+    - navigation.tabs
     - navigation.sections
+    - navigation.indexes
     - navigation.top
     - navigation.footer
-    - navigation.instant
+    - toc.follow
     - search.suggest
     - search.highlight
     - content.code.copy
     - content.code.annotate
-    - toc.follow
+    - content.tabs.link
+    - content.action.edit
+    - content.action.view
+    - announce.dismiss
+    - announce.dismiss
 
 extra_css:
   - stylesheets/extra.css
@@ -88,6 +140,8 @@ markdown_extensions:
   - tables
   - attr_list
   - md_in_html
+  - def_list
+  - footnotes
   - toc:
       permalink: true
   - pymdownx.emoji:
@@ -109,10 +163,52 @@ markdown_extensions:
 
 nav:
   - Home: index.md
-  - Concepts: concepts.md
-  - Components: components.md
-  - Onboard an agent: onboarding.md
-  - Bring your own table: bring_your_own_data.md
-  - Deploy: deployment.md
-  - Datasets: datasets.md
-  - Reproducing the paper: reproducing.md
+  - Get started:
+      - get-started/index.md
+      - Installation: get-started/installation.md
+      - Quickstart (5 minutes): get-started/quickstart.md
+      - Onboard your agent: get-started/onboard-your-agent.md
+      - Core concepts: get-started/core-concepts.md
+  - Guides:
+      - guides/index.md
+      - Build a head:
+          - Onboard from logs: guides/onboard-from-logs.md
+          - Bring your own table: guides/bring-your-own-table.md
+          - Choose and evaluate a head: guides/choose-and-evaluate-a-head.md
+      - Check and debug:
+          - Check and debug logs: guides/check-and-debug-logs.md
+          - When onboarding goes wrong: guides/when-onboarding-goes-wrong.md
+          - Verify the generated code: guides/verify-generated-code.md
+      - Deploy:
+          - Deploy and serve: guides/deploy-and-serve.md
+          - Hot-swap into an agent: guides/hot-swap-into-an-agent.md
+          - Production runbook: guides/production-runbook.md
+  - Concepts:
+      - concepts/index.md
+      - The three phases: concepts/three-phases.md
+      - Decision kinds: concepts/decision-kinds.md
+      - Per-candidate features: concepts/per-candidate-features.md
+      - Leakage safety: concepts/leakage-safety.md
+      - The confidence gate: concepts/confidence-gate.md
+  - API reference:
+      - reference/index.md
+      - Onboarding and heads: reference/onboarding.md
+      - scikit-learn estimators: reference/estimators.md
+      - Tables and cards: reference/tables.md
+      - TabSchema, TabSynth, TabHead: reference/phases.md
+      - Evaluation: reference/evaluation.md
+      - Logs and adapters: reference/logs.md
+      - Serving and integrations: reference/serving.md
+      - Datasets: reference/datasets.md
+      - Command line: reference/cli.md
+  - Reproduce the paper:
+      - Reproducing the paper: reproducing.md
+      - Public datasets: datasets.md
+  - Changelog: changelog.md
+  - Project:
+      - project/index.md
+      - Citation: project/citation.md
+      - Contributing: project/contributing.md
+      - Security policy: project/security.md
+      - Code of conduct: project/code-of-conduct.md
+      - License: project/license.md

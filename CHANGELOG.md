@@ -4,7 +4,10 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
-Nothing yet.
+- **Documentation site restructured.** Top-level sections (Get started, Guides, Concepts, API reference, Reproduce
+  the paper, Changelog, Project), a quickstart, an API reference generated from the docstrings and a command-line
+  reference generated from the CLI. The old pages (`onboarding`, `deployment`, `components`, `bring_your_own_data`)
+  were split into guides and concept pages with no change to their content; their addresses redirect.
 
 ## 0.1.0: first public release (2026-10-21)
 
@@ -48,7 +51,7 @@ The sections below record what changed during the release's development, after t
   estimate counts the new sections. **Rerunning a ranking or multi-label onboarding in an existing run
   directory asks the analyzer (and the aggregator and the judges) again**, since their prompts changed; a
   single-class decision's stored answers are replayed as before.
-- **A public measurement of the per-candidate pipeline** (`experiments/tabschema_tau2.py`; components.md,
+- **A public measurement of the per-candidate pipeline** (`experiments/tabschema_tau2.py`; concepts/per-candidate-features.md,
   "Evidence"). On the public τ²-bench GPT-4.1 logs (next tool call as a ranking decision; 3,226 decisions),
   one onboarding per pipeline version with Claude Opus 5.5 (GPT-6 Sol writing the code): without the
   FeatureAnalyzer's section the card had no per-candidate feature; with it, 19 of 119 proposed features of a
@@ -192,7 +195,7 @@ The sections below record what changed during the release's development, after t
   decision instead of an interpreter start-up. `--sandbox subprocess` keeps one interpreter per decision.
 - The service has readiness (`/ready`), versioning (`/version`), Prometheus metrics (`/metrics`), feature drift
   monitoring (`/drift`), batch decisions (`/decide_batch`), structured JSON logs without request content, and
-  a request timeout that defers instead of failing. See the production runbook in `docs/deployment.md`.
+  a request timeout that defers instead of failing. See the production runbook in `docs/guides/production-runbook.md`.
 - `TabAgent.fit` records the training distribution of the head's inputs (`model/feature_stats.json`), which
   drift monitoring compares live decisions with.
 

@@ -1,154 +1,19 @@
-# Deployment
+---
+title: "Production runbook"
+description: "Run tabagent serve in production: deploy, scale, the warm extractor pool, timeouts and the fallback policy, metrics and alerts, feature drift, upgrading and the security model."
+lead: "The service is built to answer fast and to step aside when it should: whatever it cannot decide well comes back deferred."
+kind: Guide
+needs: "tabagent[serve]"
+---
 
-A saved model is a directory with no pickle: `card.yaml`, fitted statistics (`fitted.json`, `fitted.npz`),
-`featurizer.json`, CatBoost's `model.cbm`, the training distribution of the head's inputs for drift monitoring
-(`feature_stats.json`), and a `manifest.json` with the SHA-256 of every file (a modified artifact is refused). A
-head saved by `onboard` adds the compiled extractor `extract.py`, its golden tests `extractor_tests.json`
-(snapshots of onboarding prefixes; `tabagent verify-head` re-runs them, see
-[How the generated code is verified](onboarding.md#how-the-generated-code-is-verified)) and `head.json` (the
-decision, the gate threshold and, when the head knows them, the log adapter with its prefix settings and the
-redaction function's import path). The card pins the SHA-256 of `extract.py`, and loading refuses code that
-does not match it, or a card that pins none. For a head saved by an earlier version, `allow_unpinned=True`
-(`tabagent serve --allow-unpinned`) overrides the latter with a warning, and saving the head again pins the
-hash. `tabagent.load(path)` reads both kinds, and the kind decides what a decision takes as input:
-
-| saved by | `tabagent.load` returns | decide from | call |
-|---|---|---|---|
-| `tabagent.onboard(..., out=...)` or `tabagent onboard --out` | an onboarded head (with `extract.py`, the compiled TabSchema extractor) | the decision's trajectory prefix, as the log adapter built it in training; or the live run, from which the head builds that prefix | `head.decide(prefix, candidates, k=9)` or `head.decide(run=run, candidates=..., k=9)` → `{"candidates", "scores", "confidence", "deferred", "error"}` (`"choice"` instead of `"candidates"` for a single-class head) |
-| `TabAgent.save` (also `ranker.agent_.save(...)` from the scikit-learn estimators) | a `TabAgent` (no extractor) | rows that already carry the columns it was trained on, one per candidate, with the decision and candidate ids in the columns its spec names | `agent.decide(rows, k=9)`, with `rows` a `DecisionTable` or a DataFrame of one decision's candidate rows → a DataFrame (decision, candidate, score, rank) |
-
-The HTTP service and the tool filter below need an onboarded head, since they receive raw prefixes. Calling
-`decide(prefix, candidates, ...)` on a `TabAgent` raises a `TypeError` that says so.
-
-```python
-import tabagent
-
-head = tabagent.load("my_head", trust_extractor=True)  # onboarded; trust only an extractor you have reviewed
-head.decide(prefix, candidates, k=9)
-```
-
-```python
-import tabagent
-from tabagent import DecisionTable
-
-agent = tabagent.load("my_tool_ranker")  # a TabAgent artifact
-spec = agent.card_.spec  # the scikit-learn estimators name the id columns __group__ and __candidate__
-rows = new_decision.merge(tools, how="cross")  # one row per candidate, with the training columns
-rows = rows.assign(**{spec.group: rows["task_id"], spec.candidate: rows["tool"]})
-agent.decide(DecisionTable(rows, spec, has_labels=False), k=5)
-```
-
-[`examples/04_deploy.py`](https://github.com/dolev31/TabAgent/blob/main/examples/04_deploy.py) runs either
-kind.
-
-## Live prefixes
-
-An onboarded head scores the prefix its log adapter produced in training (`DecisionPoint.prefix`), not the raw
-log. For chat-message logs that is the run-level task fields the logs carry next to the messages (`instruction`,
-`domain`, ...; never the task id, which only names the cross-validation group) and the messages normalized to
-`{"name", "content", "tool_calls", "tool_name"}` steps; for CUGA and generic step logs, the trajectory so far
-without its outcome fields. A live decision must reach the extractor in the same shape:
-
-```python
-run = {"instruction": goal, "messages": messages_so_far}  # the logged run's fields, up to the decision
-head.live_prefix(run)  # the prefix exactly as in training (tabagent.adapters.live_prefix)
-head.decide(run=run, candidates=tools, k=9)  # the same, in one call
-```
-
-`candidates` takes the tool schemas as the agent holds them (OpenAI function tools, the Anthropic Messages API
-format, MCP tool listings), read exactly as the adapters read a training catalog, so their descriptions and
-parameter names reach the head as in training; tool ids or `{"id", "description", "args"}` records work too.
-
-`live_prefix` uses the adapter recorded in `head.json`. `tabagent onboard` records it; for a head onboarded from
-Python, set `head.adapter = adapter` (the adapter that read the logs) before `save`, or pass `adapter=` to
-`TabAgentHead.load` or `live_prefix`.
-
-**When the extractor fails** on a prefix (a field the training prefixes had is missing, the extractor raises,
-the sandbox cannot start), the head does not crash: the extractor's features are left empty (None, exactly as
-for a training decision point it failed on), the decision is `deferred` to the original LLM whatever its
-confidence, and `error` says why. When the extractor read a top-level field the prefix lacks, `error` names it
-and points to the run-level fields to pass.
-
-**HTTP service** (`pip install "tabagent[serve]"`): `tabagent serve my_head --port 8077`, then
-`POST /decide {"prefix": {...}, "candidates": [...], "k": 9}`, or `{"run": {...}, ...}` to have the head build
-the prefix from the run. A failed extraction is answered with `"deferred": true` and its `"error"`; an invalid
-request (a ranking head without candidates, both a prefix and a run, a candidate without a name) with status 400.
-The [production runbook](#production-runbook) below covers readiness, timeouts, metrics, logs and drift.
-
-**In front of a tool-calling LLM**: `ToolFilter` sends the model only the tools the head shortlists, and the
-full list when the head defers (unsure, or its extractor failed). Start a session per conversation: it keeps
-every tool the agent already called (`keep_used`) and every tool it once showed (`sticky`), appending newly
-shown tools at the end in catalog order, so the list only grows; a `ToolFilter` itself keeps no state between
-calls. Pass the run-level fields the training logs carried as `task`, once (`ToolFilter(..., task={"domain":
-"airline"})`), per conversation (`session(task=...)`) or per call. The head may also be the URL of a `tabagent
-serve` service (`ToolFilter("http://host:8077", ...)`), for an agent whose environment cannot host it.
-
-```python
-from tabagent.integrations.openai_tools import ToolFilter
-
-tool_filter = ToolFilter("my_head", k=7)
-session = tool_filter.session(task={"instruction": goal})  # one per conversation
-client.chat.completions.create(model=..., messages=messages, tools=session(messages, tools))
-```
-
-**Sandbox**: an onboarded head runs its extractor in resource-limited `python -I -S` worker processes with
-an empty environment by default (`sandbox="warm"`, a `WarmSandbox`; on POSIX, and a fresh interpreter per
-decision on Windows). The workers start once, compile
-`extract.py` once and then serve every decision, so the sandbox adds well under a millisecond to a decision
-instead of an interpreter start-up (45 to 65 ms on our benchmark machine); `"warm:<N>"` sets the number of workers (default
-`min(4, CPUs)`). `sandbox="subprocess"` starts a fresh interpreter per decision, as onboarding does for its
-batches. `trust_extractor=True` (`--trust-extractor`) runs the extractor in-process, for an extractor you have
-reviewed; `sandbox="docker"` (`tabagent serve --sandbox docker`; also `docker:<image>`, or a sandbox instance)
-runs it in Docker with no network and a read-only filesystem. `TabAgentHead.load`, `tabagent.load` and
-`ToolFilter` take `sandbox=` (see `SECURITY.md`). A head's warm workers start at its first decision
-(`head.warm()` starts them now) and stop with `head.close()`, when the head is garbage-collected, or when the
-process exits.
-
-**Redaction**: `onboard(..., redact=fn)` (`--redact module:function`) scrubs the trajectories before
-discovery. A head applies the same function to live runs only when it is passed again:
-`TabAgentHead.load(..., redact=fn)`, `ToolFilter(..., redact=fn)` or `tabagent serve --redact module:function`.
-`head.json` records the function's import path when it is known, and loading such a head without `redact=`
-warns. A head never imports it by itself, and `decide(prefix, ...)` takes the prefix as given.
-
-**Confidence gate**: `onboard(..., gate_coverage=0.9)` calibrates a threshold so that 90% of decisions stay
-with the head and the least confident 10% go back to the LLM (paper App. N.3, "Confidence-gated fallback";
-App. O.2 runs the gate in the loop).
-
-### Does filtering the tool list pay?
-
-Measured on τ²-bench (v1.0.1) with GPT-4.1 as agent and user simulator: 49 held-out airline and retail tasks,
-5 trials, paired by task, a `NextToolCall` head trained on the other tasks' runs, top 7 of 14 to 16 tools plus
-the tools already used, before every call ([details](https://github.com/dolev31/TabAgent/blob/main/experiments/live/README.md)):
-
-| | pass rate vs. every tool | prompt tokens per call | agent cost per run |
-|---|---|---|---|
-| re-ranked at every call (`sticky=False`) | −6.9 points [−13.9, −0.4] | −18.5% | +21% |
-| `sticky` (3 trials)¹ | +0.0 points [−9.5, +8.8] | −13.8% | +11% |
-
-¹ Measured before `ToolSession`, with the same tools at every call but in catalog order; the session appends
-newly shown tools instead, which leaves more of the list's prefix unchanged.
-
-Both cost more than sending every tool, for two reasons. A tool list that changes between calls defeats the
-provider's prompt caching (the share of prompt tokens served from the cache fell from 80% to 55%, and to 66%
-with `sticky`). And τ²-bench's tool schemas are a small share of its prompts: hiding about half of them saved
-620 to 1,050 of about 4,950 prompt tokens per call. Without `sticky`, the agent also lost tasks when a tool it
-needed was not shown: it used another tool or planned around the missing one.
-
-So filtering is likely to pay where those two effects reverse; we did not measure these cases:
-
-* large catalogs whose schemas dominate the prompt;
-* providers or self-hosted models without prefix caching;
-* replacing a separate LLM component outright, as the paper's tool shortlister does: there the head removes
-  a whole LLM call rather than shortening one.
-
-## Production runbook
+# Production runbook
 
 `tabagent serve` runs one head per process. The head replaces one LLM call of a live agent, so the service
 is built to answer fast and to step aside when it should: any decision it cannot make well comes back
 `"deferred": true`, and the agent then calls its original LLM component. This section covers deploying,
 scaling, timeouts, monitoring, drift and the security model.
 
-### Deploy
+## Deploy
 
 ```bash
 pip install "tabagent[serve]"
@@ -188,7 +53,7 @@ On SIGTERM (or Ctrl+C) the service stops accepting connections, lets in-flight d
 `--graceful-timeout` seconds, then stops its decision threads and its extractor workers. The process then
 exits with the signal's status (uvicorn re-raises it), which process managers treat as a normal stop.
 
-### Scale
+## Scale
 
 One decision runs three stages: building the prefix from a `run` (when the request sends one), the extractor
 in a warm worker, and the head's scoring (the card's features, TF-IDF and CatBoost). On the benchmark head
@@ -208,7 +73,7 @@ serves on the order of a hundred decisions per second.
   nothing, and each one has its own `/ready`, metrics and drift window. Give each replica about 4 vCPUs for
   scoring plus one per extractor worker that is busy at the same time.
 
-### The warm extractor pool
+## The warm extractor pool
 
 By default (`--sandbox warm`) a served head runs its extractor in a pool of persistent sandboxed
 interpreters (`tabagent.tabschema.warm.WarmSandbox`). Each worker compiles `extract.py` once and runs it on
@@ -243,7 +108,7 @@ Workers exit on their own within a second when the serving process dies, even in
 to 65 ms more per decision on the benchmark machine, nothing persistent), `--trust-extractor` runs a reviewed
 extractor in the serving process, and `--sandbox docker` runs each extraction in a container.
 
-### Timeouts and the fallback policy
+## Timeouts and the fallback policy
 
 `--request-timeout T` (default 10 s; 0 turns it off; otherwise a positive number) is the time the extractor
 gets per decision. The wait for a free worker counts against it. When it runs out, the decision is still
@@ -268,7 +133,7 @@ The agent's side of the contract:
 Deferral never makes the agent worse than it was before the head: it falls back to the component the head
 replaced. Watch the deferral rate, because deferred decisions cost what the LLM costs.
 
-### Monitoring and alerts
+## Monitoring and alerts
 
 `GET /metrics` uses the Prometheus text format and has no dependency. When `prometheus_client` is
 installed, its default registry is appended (process CPU, memory, open files, garbage collection).
@@ -327,7 +192,7 @@ ERROR with its stack frames. The request's content (prefix, run, candidates), th
 message are logged only with `--log-content`, since they are the agent's data and an error message can
 quote it.
 
-### Drift, and when to re-onboard
+## Drift, and when to re-onboard
 
 When a head is fitted, `TabAgent.fit` records the training distribution of every input feature of the head
 (`model/feature_stats.json`, covered by the manifest hash; see `tabagent.drift`): the null rate, the
@@ -394,7 +259,7 @@ Re-onboard when quality on recent labeled runs drops, and plan it whenever the a
 its log format change. Drift tells you when to check; it does not measure quality, which needs labels. Serve the
 new head next to the old one, compare their deferral rates and `/drift` reports, then switch over.
 
-### Upgrading
+## Upgrading
 
 What changes for a head served by an earlier version of tabagent:
 
@@ -419,7 +284,7 @@ What changes for a head served by an earlier version of tabagent:
 - **A decision past its deadline** keeps the response's shape: every candidate id in input order, empty
   `scores`, null `confidence`.
 
-### Security model
+## Security model
 
 The service has no authentication and no TLS: bind it to localhost or a private network, or put it behind an
 authenticated proxy. Never expose it to the internet. An untrusted extractor runs in warm workers with an empty
@@ -430,7 +295,7 @@ could observe later prefixes and forge later answers, and the static checks do n
 interpreter per decision) or `--sandbox docker`. `SECURITY.md` explains the model and what stays out of the
 logs.
 
-### Benchmark
+## Benchmark
 
 `experiments/efficiency/serving.py` measures the extraction stage and the HTTP service on a representative
 synthetic head: a 30-tool shortlisting decision over chat prefixes of about 2 KB, a stdlib extractor of about 60
@@ -461,75 +326,3 @@ out near 115 decisions per second for this head. Its scoring is mostly Python (t
 decoding; CatBoost's own pass takes about 1 ms) that holds the interpreter lock, so further clients only wait
 longer. Add replicas for more throughput. The full tables, with the in-process mode and the server's time per
 stage, are in [`experiments/efficiency/README.md`](https://github.com/dolev31/TabAgent/blob/main/experiments/efficiency/README.md#serving-servingpy).
-
-## CUGA
-
-Heads onboarded from CUGA trajectories plug back into CUGA where its LLM calls were
-(`tabagent.integrations.cuga`; the paper's in-loop hot swap). Both helpers take the run so far as CUGA's
-`ActivityTracker` holds it, which is the shape of the trajectory files the heads learned from, and return None
-when the head defers, so CUGA keeps its own LLM call:
-
-```python
-from tabagent.integrations.cuga import CugaAppMatcher, CugaShortlister, run_so_far
-
-shortlister = CugaShortlister("shortlister_head", k=9)  # a directory, hf://OWNER/REPO, or a serve URL
-app_matcher = CugaAppMatcher("app_head")
-
-# cuga/backend/cuga_graph/nodes/api/shortlister_agent/shortlister_agent.py, in ShortlisterAgent.run
-result = shortlister.shortlist(run_so_far(tracker), input_variables.api_shortlister_all_filtered_apis)
-if result is not None:
-    return AIMessage(content=ShortListerOutput(thoughts=[], result=result).model_dump_json())
-
-# cuga/backend/cuga_graph/nodes/task_decomposition_planning/analyze_task.py, in TaskAnalyzer.match_apps
-offered = [{"name": a.name, "description": a.description} for a in apps]
-names = app_matcher.match(run_so_far(tracker), offered)
-if names is not None:
-    res = AppMatch(thoughts="", relevant_apps=names)
-```
-
-On CUGA's AppWorld runs, the prefix and candidates the helpers build from the tracker equal the training
-ones for every shortlisting and app-selection decision. After a swap, CUGA records the
-shortlister's step without the LLM's prompts, so later decisions in the same run see steps unlike the training
-ones; measure the swapped agent on held-out tasks before relying on it. With a served head
-(`tabagent serve`), CUGA needs only the core package.
-
-## Pretrained heads and the demo
-
-`tabagent.load` also takes a Hugging Face Hub repository: `hf://OWNER/REPO`, or `hf://OWNER/REPO@REVISION` with
-a commit, tag or branch (pin one for a reproducible deployment). It needs the hub extra
-(`pip install "tabagent[hub]"`), downloads the repository with `huggingface_hub.snapshot_download` into the
-Hub's local cache, and then loads it exactly as a local directory: every file is checked against
-`manifest.json`, nothing is unpickled, and `trust_code` and `trust_extractor` mean the same.
-`TabAgent.load`, `TabAgentHead.load`, `ToolFilter` and `tabagent serve` accept the same URIs. To share a head,
-upload the directory that `save` wrote to a model repository (`hf upload OWNER/REPO my_head .`).
-
-<!-- named -->
-
-Two heads trained with the released code on public data are on the Hub. Each is a `TabAgent` artifact (no
-extractor), so it decides from candidate rows:
-
-| Hub repository | decision | fitted on | paper, 5-fold task-level CV | released code, same protocol |
-|---|---|---|---|---|
-| [dolev31/tabagent-skillsbench-skill-selection](https://huggingface.co/dolev31/tabagent-skillsbench-skill-selection) | skill selection over the 195 SkillsBench skills | all 87 SkillsBench tasks | P@R 80, Recall@9 91 | P@R 79.6, Recall@9 90.5 |
-| [dolev31/tabagent-tau2-tool-shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) | tool shortlisting over the 38 agent tools of τ²-bench airline, retail and telecom | all 326 tau2-sft-final trajectories | P@R 78, Recall@9 97 (+synth head) | P@R 77.6, Recall@9 97.3 |
-
-Both were fitted once on their full table with the paper's settings: the bundled card, CatBoost with 300
-iterations, learning rate 0.08 and depth 6, the first of the paper's three seeds, and for τ²-bench the TabSynth
-configuration that the paper's inner cross-validation chooses. The quality columns estimate the recipe on
-held-out tasks; a checkpoint fitted on all tasks has no held-out score of its own. The model cards give the
-data revisions, usage and limitations.
-
-```python
-import tabagent
-from tabagent import datasets
-
-head = tabagent.load("hf://dolev31/tabagent-skillsbench-skill-selection")  # pip install "tabagent[embed,hub]"
-catalog = datasets.load("skillsbench/skill-select", download=True).df
-catalog = catalog[["skill_name", "skill_desc"]].drop_duplicates()
-head.decide(catalog.assign(task_text="Recover the missing cells of a damaged Excel workbook."), k=5)
-```
-
-Both heads accompany the paper ([arXiv:2602.16429](https://arxiv.org/abs/2602.16429)). To try one in the
-browser, open the [Colab quickstart](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb).
-
-<!-- /named -->

@@ -16,6 +16,17 @@
   <style>:root{--md-text-font:"Inter";--md-code-font:"JetBrains Mono"}</style>
 {% endblock %}
 
+{#- The announcement banner, on every page. The version is read from the package (docs/hooks/release.py). Dismissing
+    it is remembered by the theme; a new version changes the text, so it comes back once. -#}
+{% block announce %}
+  <span class="ta-announce">
+    <span class="ta-announce__tag">New</span>
+    TabAgent {{ config.extra.release }} is out:
+    <code>pip install tabagent</code>
+    <a href="{{ 'get-started/quickstart/' | url }}">Quickstart &rarr;</a>
+  </span>
+{% endblock %}
+
 {% block htmltitle %}
   {%- if page and page.is_homepage %}
   <title>TabAgent: Distilling LLM Agent Components into Cheap Classifiers</title>

@@ -1,71 +1,11 @@
-# TabSchema, TabSynth, TabHead
+---
+title: "Per-candidate features"
+description: "How TabSchema relates a decision's context to each candidate: the per-candidate extractor function, within-decision relative features, dependency features and discovery inside each fold."
+lead: "A feature that relates the context to a candidate has nowhere to go in a function of the prefix alone. This page is how the release gives it one, and the public evidence."
+kind: Concept
+---
 
-## TabSchema: feature discovery from traces
-
-`TabSchema(llm).discover(trajectories, target)` runs the paper's FeatureOrchestrator (Sec. 3.1, App. D):
-
-1. **FeatureAnalyzer** proposes features from sampled decision points (pre-decision prefix only). The sample
-   (`n_analyze`, 20 by default) takes each task once before repeating one, and covers the onboarding data's
-   sources, positions in the run, prefix lengths and decision labels (`sample_strategy="coverage"`, the
-   release's choice; the paper does not say how its decision points were sampled).
-2. **CodeExtractor → CodeExecutor** write extraction code and run it in a sandbox, retrying up to three times
-   with the error and the failed code in the prompt.
-3. **CodeValidator** checks that the executed code reads real fields and implements the plan (an LLM judge plus
-   deterministic checks for hallucinated fields, outcome fields, forbidden calls and imports).
-4. **FeatureAggregator** merges the proposals of all decision points.
-5. **Relevance, Generality, Impact & Uniqueness judges** score each feature (1–5) concurrently; the
-   **MetaJudge** accepts, conditionally accepts or rejects it. Accepted and conditionally accepted features go
-   on (the paper does not say which outcomes enter the card; the release keeps both because the conditional
-   ones clearly helped the head in its experiments), and `TabSchemaConfig(accept=("accept",))` keeps only
-   accepted ones.
-6. **Compile**: one reusable extractor for the accepted features, run and quality-checked on every onboarding
-   decision point; the result is a feature card plus `extract.py`. The library appends two fixed, non-LLM
-   functions: the decision's context as text (`context_text`), so every card can match the context against the
-   candidates' text, and the text of the prefix's last step (`last_step_text`, below).
-
-The release adds four checks of the values the compiled extractor computes. **They are not in the paper**, and
-each can be turned off in `TabSchemaConfig` ([details](onboarding.md#how-the-generated-code-is-verified)):
-
-* **Verification** (`tabagent.tabschema.verify`, in the compile step): determinism on every decision point
-  (fresh interpreters, shuffled order) and invariance to the run's outcome fields; columns that fail are
-  dropped. Invariance of the adapter's prefixes to the run's future (rebuilt from changed runs): a failure stops
-  onboarding. Robustness on short or incomplete prefixes is only reported.
-* **OutputAuditor** (`tabagent.tabschema.audit`, stage `auditor`): an LLM judges each feature's value on 12
-  coverage-sampled decision points as correct, incorrect or cannot tell; a feature is dropped only when its
-  incorrect rate is confidently above the threshold (a Wilson lower bound). Its prompt, `output_auditor.txt`,
-  is the release's.
-* **Usefulness** (`tabagent.tabschema.usefulness`): drop-feature importance (a feature's columns dropped
-  together, plus every LLM-written feature at once) by task-grouped cross-validation on the onboarding rows,
-  CAAFE-style (Hollmann et al., 2023), with Holm-adjusted paired t-test p-values. It is a report, or prunes
-  features harmful under two seeds with `prune_harmful=True`.
-* **Golden tests** (`extractor_tests.json`, saved with the head): `tabagent verify-head` re-runs them before
-  deployment.
-
-The seven prompts the paper prints (FeatureAnalyzer, CodeExtractor, FeatureAggregator, the three judges and the
-MetaJudge, App. D.2 and D.3) are reproduced verbatim and hash-pinned in the tests. The paper prints no
-CodeValidator prompt: the release wrote one from the validator's description (App. D.1). The OutputAuditor's
-prompt is the release's too, for a stage the paper does not have; both are hash-pinned as well. The paper describes the
-CodeExecutor's retries but not the text added to the CodeExtractor prompt after a failed attempt; the wording of
-that retry block is the release's too. The release's other additions are sections appended after a rendered
-prompt, never inside it (`prompts.ADDITIONS`, hash-pinned): the CodeExtractor is asked to emit each text feature
-once, as plain text, and, for a decision with candidates, told about the optional per-candidate function
-described next, which the CodeValidator and the OutputAuditor are told about too; the FeatureAnalyzer is told
-that it may propose features of a candidate, and the FeatureAggregator, judges and MetaJudge that such
-features are obtainable. That function keeps the
-paper's entry point, `extract_features_for_classification(trajectory_data)`, and writes the paper's examples of
-features that relate the context to a candidate as stateless code over the prefix and one candidate.
-Every LLM call is cached in a run directory (a resumed run costs
-nothing), priced by a cost meter with a budget stop, and the extractor runs in a subprocess sandbox with an empty
-environment (`DockerSandbox` adds no network and a read-only filesystem; see `SECURITY.md`).
-
-The paper ran TabSchema with GPT-5.4 and found open models unreliable for this loop. The release calls OpenAI,
-Azure OpenAI, and any OpenAI-compatible server through `OPENAI_BASE_URL`, and Anthropic, Gemini and others
-through LiteLLM (`pip install "tabagent[llm]"`). The reproduced paper numbers do not run TabSchema: they use the
-frozen or hand-authored cards bundled with the public datasets ([Reproducing the paper](reproducing.md)), and
-the released TabSchema has not yet been validated against a paper number. One public onboarding with an LLM
-compares versions of the release's own pipeline (Evidence, under per-candidate features below).
-
-### Per-candidate features
+# Per-candidate features
 
 A ranking or multi-label decision table has one row per candidate of a decision. The paper's extractor is one
 function of the prefix, so a feature that relates the context to a candidate (the words of the request in the
@@ -77,7 +17,9 @@ of a decision and do not describe the candidate the row scores. In one internal 
 interval), most of the kept columns were positional, the judges' best-rated features were per-candidate ideas,
 and computing them per candidate improved ranking.
 
-**Evidence.** The per-candidate prompt sections (the FeatureAnalyzer's, the CodeExtractor's and the
+### Evidence
+
+The per-candidate prompt sections (the FeatureAnalyzer's, the CodeExtractor's and the
 CodeValidator's, and the note to the aggregator and the judges) and the positional guard below are on by
 default. One public measurement onboards with an LLM: the GPT-4.1 agent's logs of τ²-bench (sierra-research/
 tau2-bench at `cf71a80`, the airline, retail and telecom `default` result files, four trials per task), its
@@ -209,7 +151,9 @@ def extract_candidate_features(trajectory_data: dict, candidate: dict) -> dict: 
 * A saved head's golden tests (`extractor_tests.json`) record three candidates per snapshot, catalog entries
   included: check what the catalog holds before you upload a head to the Hub.
 
-**Within-decision relative features.** The head scores each (decision, candidate) row on its own, so it cannot
+### Within-decision relative features
+
+The head scores each (decision, candidate) row on its own, so it cannot
 see that a candidate has the best overlap among the candidates of its decision. For a ranking or multi-label
 decision, `card.with_relative` gives every numeric per-candidate feature, and the context-candidate
 similarities (`context_candidate_lex`, `context_candidate_sim`), the candidate prior and co-usage, two
@@ -241,7 +185,9 @@ differences are paired bootstrap 95% intervals over tasks):
 | τ²-bench GPT-4.1 tool shortlist | 0.786 | 0.790 | +0.004 [−0.002, +0.010] | +0.003 [−0.002, +0.009] | −0.003 [−0.009, +0.003] |
 | SkillsBench skill selection | 0.800 | 0.790 | −0.011 [−0.036, +0.016] | −0.008 [−0.022, +0.005] | −0.001 [−0.016, +0.013] |
 
-**One form per text feature.** The head represents text itself (TF-IDF or LSA), so a text feature emitted in
+### One form per text feature
+
+The head represents text itself (TF-IDF or LSA), so a text feature emitted in
 several forms (the text, its tokens, its bag of words, its n-grams) only adds columns. The CodeExtractor's
 additional rules ask that a planned feature that is a tokenized, bag-of-words or n-gram form of a text be
 emitted once, as the plain text, under the feature's name, unless another planned feature already emits the
@@ -251,7 +197,9 @@ list or dict, or its words sorted and de-duplicated. The longer form, plain text
 an ordered sequence next to a set are always kept, and columns of different features are never compared this
 way.
 
-**Accepted features without a column.** When the compiled code produces no column for an accepted feature,
+### Accepted features without a column
+
+When the compiled code produces no column for an accepted feature,
 the compile step's repair round (one call, with the CodeValidator's objections and the positional features)
 gives the CodeExtractor the feature's plan and asks it to add the feature, or to list it in a global
 `NOT_EXTRACTED` dict as merged into the feature that already carries the same information, or declined with a
@@ -260,7 +208,9 @@ added column goes through the usual gates. `compile.json` (`not_produced`) and t
 features by reason (merged into another feature, declined, not produced) and list them; they also list the
 kept columns per decision and per candidate separately.
 
-**The last step's text.** `context_text` joins every step and keeps the first 1,000 and the last 3,000
+### The last step's text
+
+`context_text` joins every step and keeps the first 1,000 and the last 3,000
 characters, so the step that handed control to the decision can be diluted by long payloads. The library
 appends a second fixed function, `last_step_text`: the `content`, `text`, `thoughts`, `intent` and `data`
 strings of the prefix's last step with text (steps named `system` skipped, outcome fields never read, the
@@ -271,47 +221,19 @@ and the context-candidate similarities use it). It is on by default. On the publ
 interval) it improved ranking.
 `TabSchemaConfig(last_step_text=False)` (`--no-last-step-text`) leaves it out.
 
-**Dependency features** are not code the LLM writes: a card references the library's fitted statistics
+### Dependency features
+
+These are not code the LLM writes: a card references the library's fitted statistics
 (`fitted:<name>`), which are fitted on the training rows of each fold. They are the candidate prior
 (`candidate_prior`), the context-candidate embedding similarity (`embedding_cosine`), the outcome of each
 candidate on the most similar training tasks (`knn_outcome`) and co-usage (`co_usage`): for a column listing the
 candidates used before the decision (an extractor feature with the tools the agent called earlier in the run, for
 example), how often the training runs chose the candidate after them, smoothed toward its prior.
 
-**Discovery inside each fold.** `onboard` discovers the card once, on all onboarding trajectories, so the
+### Discovery inside each fold
+
+`onboard` discovers the card once, on all onboarding trajectories, so the
 cross-validation in its report estimates the head on a fixed card. `tabagent.cross_validate_discovery(logs,
 target, ...)` runs `discover` on each training fold's trajectories only, applies that fold's extractor to its
 held-out decisions and reports the usual cross-validated metrics, at the LLM cost of one discovery per fold (one
 budget covers all folds; each fold's run directory is cached, so a rerun is free).
-
-## TabSynth: label-preserving augmentation
-
-`TabSynth(k)` implements Algorithm 1 (App. H): for each real training row, `k` deterministic rule-based
-paraphrases of the free-text state columns, with the candidate, the label and every other feature copied
-verbatim, and duplicates of real rows dropped. It never creates a new (context, candidate) relationship.
-Use it where it helps: the automatic recipe selection adopts it only when nested validation says so.
-
-The extended operators the paper adds on τ²-bench (App. H) are options of the same class:
-`recompute=True` builds each variant from the raw row with the paraphrased text and applies the fitted card,
-so text-derived features (length, lexical and embedding similarity) follow the paraphrase; `entity_swap=True`
-replaces names, identifiers, codes, contact details and amounts with other well-formed values before
-paraphrasing; `allocation="inverse_sqrt_frequency"` gives each decision variants in proportion to `1/sqrt(f)`
-of its rarest relevant candidate (mean `k`, between 1 and 12). The τ² cells choose among no synthesis and four
-of these configurations by a task-grouped 4-fold inner cross-validation on each training fold.
-
-## TabHead: the classifier
-
-`TabHead(kind, preset=...)` is CatBoost over a fold-fitted featurizer (TF-IDF for text, codes for categoricals,
-medians for numbers). A card with more than six text columns (an LLM-written extractor can return one text in
-several forms) gets a dense text representation instead (`text_repr="auto"`, the release's addition): TF-IDF
-over each column's distinct texts reduced by truncated SVD to 64 dimensions. In one internal API-shortlisting
-run with many text columns (no interval) it improved ranking over per-column TF-IDF, in less than half the
-time; the automatic recipe search also tries the other representation and keeps it when it scores strictly
-better.
-Cards with fewer text columns, the paper's among them, keep TF-IDF. The default preset, `paper`, is the one configuration the paper uses for every decision
-(Sec. 4.2: 300 iterations, learning rate 0.08, depth 6, CatBoost's defaults otherwise); `catboost-default` is
-CatBoost's own schedule (1000 iterations, automatic learning rate). Any sklearn-style classifier plugs in with
-`estimator=` (the head ablation of Fig. 3 and App. K.3).
-
-`confidence(...)` gives the paper's gate signal (the margin at R, or the cutoff-free largest score gap; App.
-N.3); `TabAgent.decide(..., defer_below=τ, fallback=llm)` defers uncertain decisions to the original LLM.

@@ -29,7 +29,8 @@ KINDS: tuple[str, ...] = ("ranking", "multilabel", "single", "policy")
 
 
 class LeakageError(RuntimeError):
-    """Raised when post-decision information could reach the features or a held-out fold."""
+    """Raised when post-decision information could reach the features or a held-out fold: a feature that
+    reproduces the label, an outcome column used as a feature, or a score computed from labels."""
 
 
 @dataclass(frozen=True)

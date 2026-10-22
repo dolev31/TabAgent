@@ -235,7 +235,24 @@ class _TabAgentBase(BaseEstimator):
 
 
 class TabAgentRanker(_TabAgentBase):
-    """Rank the candidates of each decision (tool, skill, API, GUI element shortlisting)."""
+    """Rank the candidates of each decision (tool, skill, API, GUI element shortlisting).
+
+    The three estimators share their constructor parameters (``group_col``, ``candidate_col``, ``synth``,
+    ``prior``, ``preset``, ``search``, ``threshold``, ...; see ``_TabAgentBase``). ``predict`` decodes a
+    multi-label decision (every candidate at or above ``threshold``, backing off to the best one); ``rank``
+    returns the top ``k`` per decision.
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabAgentRanker
+
+    ranker = TabAgentRanker(group_col="task_id", candidate_col="tool")
+    ranker.fit(X, y)  # X: one row per (decision, candidate); y: 1 if the agent chose the candidate
+    ranker.rank(X_new, k=5)  # decision, candidate, score, rank
+    ranker.selection_  # every recipe the nested validation tried, with its score
+    ```
+    """
 
     _kind = "ranking"
 
@@ -263,7 +280,21 @@ class TabAgentRanker(_TabAgentBase):
 
 
 class TabAgentRouter(_TabAgentBase):
-    """Route each decision to one arm (model, sub-agent, skill on/off). ``y`` is the arm's success (0/1)."""
+    """Route each decision to one arm (model, sub-agent, skill on/off). ``y`` is the arm's success (0/1).
+
+    ``route`` returns the chosen arm per decision (the arm with the highest predicted success); ``score`` is
+    route@1, the mean realized reward of the chosen arm (App. B.7).
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabAgentRouter
+
+    router = TabAgentRouter(group_col="task_id", candidate_col="model")
+    router.fit(X, y)  # one row per (task, model); y: 1 if that model solved the task
+    router.route(X_new)  # the chosen model per task
+    ```
+    """
 
     _kind = "policy"
 
@@ -287,7 +318,21 @@ class TabAgentRouter(_TabAgentBase):
 
 
 class TabAgentClassifier(ClassifierMixin, _TabAgentBase):
-    """Single-class decisions (e.g. operation type): a standard sklearn classifier."""
+    """Single-class decisions (e.g. operation type): a standard sklearn classifier.
+
+    One row per decision and no candidate column: ``y`` is the class (operation type, task category). It
+    follows the scikit-learn contract (``classes_``, ``predict``, ``predict_proba``, ``decision_function``).
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabAgentClassifier
+
+    clf = TabAgentClassifier(group_col="task_id")
+    clf.fit(X, y)  # X: one row per decision; y: its class
+    clf.predict(X_new)
+    ```
+    """
 
     _kind = "single"
 

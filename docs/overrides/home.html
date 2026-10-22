@@ -8,7 +8,12 @@
   institutions, the repository or the arXiv listing sits in a named block, which the anonymous copy strips.
 -#}
 
+{#- The tab bar sits under the header and above the hero, as on every other page, so the base template's own tabs
+    block (which comes after the hero) is emptied. -#}
+{% block tabs %}{% endblock %}
+
 {% block hero %}
+{% include "partials/tabs.html" %}
 <section class="ta-hero" aria-labelledby="ta-hero-title">
   <div class="ta-hero__bg" aria-hidden="true"></div>
   <div class="ta-hero__inner md-grid">
@@ -23,7 +28,7 @@
     <p class="ta-hero__pitch">Replace an LLM agent's closed&#8209;set decisions with a cheap classifier trained from its own&nbsp;logs.</p>
     <p class="ta-hero__sub">Tool shortlisting, routing, skill and application selection: learned from the agent's successful runs, decided in milliseconds, with the rest of the agent left unchanged.</p>
     <div class="ta-hero__actions">
-      <a class="ta-btn ta-btn--primary" href="#quick-start">Get started <span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/arrow-right.svg" %}</span></a>
+      <a class="ta-btn ta-btn--primary" href="{{ 'get-started/' | url }}">Get started <span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/arrow-right.svg" %}</span></a>
       {# named #}
       <a class="ta-btn ta-btn--ghost" href="{{ config.repo_url }}" data-goatcounter-click="code"><span class="ta-btn__icon" aria-hidden="true">{% include ".icons/fontawesome/brands/github.svg" %}</span> GitHub</a>
       {# /named #}
@@ -103,21 +108,21 @@
         <h3>TabSchema</h3>
         <p class="ta-flow__what">Discovers features</p>
         <p>LLM agents analyze the trajectories, write and sandbox-test the extraction code, and a judge ensemble keeps the features that matter.</p>
-        <a href="{{ 'components/' | url }}#tabschema-feature-discovery-from-traces">TabSchema in detail</a>
+        <a href="{{ 'concepts/three-phases/' | url }}#tabschema-feature-discovery-from-traces">TabSchema in detail</a>
       </li>
       <li class="ta-flow__phase ta-flow__phase--synth">
         <span class="ta-flow__num" aria-hidden="true">2</span>
         <h3>TabSynth</h3>
         <p class="ta-flow__what">Augments the rows</p>
         <p>Deterministic, label-preserving paraphrases of the free-text state, where trajectories are scarce.</p>
-        <a href="{{ 'components/' | url }}#tabsynth-label-preserving-augmentation">TabSynth in detail</a>
+        <a href="{{ 'concepts/three-phases/' | url }}#tabsynth-label-preserving-augmentation">TabSynth in detail</a>
       </li>
       <li class="ta-flow__phase ta-flow__phase--head">
         <span class="ta-flow__num" aria-hidden="true">3</span>
         <h3>TabHead</h3>
         <p class="ta-flow__what">Decides in milliseconds</p>
         <p>A CatBoost classifier scores every candidate of a decision in one pass, with an optional confidence gate.</p>
-        <a href="{{ 'components/' | url }}#tabhead-the-classifier">TabHead in detail</a>
+        <a href="{{ 'concepts/three-phases/' | url }}#tabhead-the-classifier">TabHead in detail</a>
       </li>
       <li class="ta-flow__end ta-flow__end--out">
         <span class="ta-glyph ta-glyph--out" aria-hidden="true"><i class="hi"></i><i class="hi"></i><i></i><i></i></span>
@@ -155,11 +160,11 @@
     </div>
     <nav class="ta-footer__col" aria-label="Guides">
       <h2>Guides</h2>
+      <a href="{{ 'get-started/' | url }}">Get started</a>
+      <a href="{{ 'guides/' | url }}">Guides</a>
       <a href="{{ 'concepts/' | url }}">Concepts</a>
-      <a href="{{ 'components/' | url }}">Components</a>
-      <a href="{{ 'onboarding/' | url }}">Onboard an agent</a>
-      <a href="{{ 'bring_your_own_data/' | url }}">Bring your own table</a>
-      <a href="{{ 'deployment/' | url }}">Deploy</a>
+      <a href="{{ 'reference/' | url }}">API reference</a>
+      <a href="{{ 'reference/cli/' | url }}">Command line</a>
     </nav>
     <nav class="ta-footer__col" aria-label="Research">
       <h2>Research</h2>
@@ -168,6 +173,7 @@
       {# /named #}
       <a href="{{ 'reproducing/' | url }}">Reproducing the paper</a>
       <a href="{{ 'datasets/' | url }}">Datasets</a>
+      <a href="{{ 'changelog/' | url }}">Changelog</a>
       <a href="#citation">Cite</a>
       <a href="{{ 'llms.txt' | url }}">llms.txt</a>
     </nav>
@@ -177,10 +183,10 @@
       <a href="{{ config.repo_url }}">GitHub</a>
       <a href="https://pypi.org/project/tabagent/">PyPI</a>
       <a href="https://huggingface.co/dolev31">Hugging Face</a>
-      <a href="{{ config.repo_url }}/blob/main/CHANGELOG.md">Changelog</a>
-      <a href="{{ config.repo_url }}/blob/main/CONTRIBUTING.md">Contributing</a>
-      <a href="{{ config.repo_url }}/blob/main/CODE_OF_CONDUCT.md">Code of Conduct</a>
-      <a href="{{ config.repo_url }}/blob/main/SECURITY.md">Security</a>
+      <a href="{{ 'project/contributing/' | url }}">Contributing</a>
+      <a href="{{ 'project/code-of-conduct/' | url }}">Code of Conduct</a>
+      <a href="{{ 'project/security/' | url }}">Security</a>
+      <a href="{{ 'project/license/' | url }}">License</a>
     </nav>
     {# /named #}
   </div>

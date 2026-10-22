@@ -86,7 +86,10 @@ def bootstrap_ci(
 
 
 def paired_bootstrap(a, b, **kw) -> Interval:
-    """CI of mean(a - b) over paired units (the paper's paired task-level bootstrap)."""
+    """CI of mean(a - b) over paired units (the paper's paired task-level bootstrap, 2,000 resamples).
+
+    Units where either value is NaN are dropped. An improvement is claimed only when the interval excludes 0
+    (``Interval.excludes_zero``)."""
     a, b = np.asarray(a, dtype=float), np.asarray(b, dtype=float)
     if a.shape != b.shape:
         raise ValueError("paired vectors must have the same length")
@@ -104,7 +107,8 @@ def bootstrap_pvalue(diffs, *, n_resamples: int = DEFAULT_RESAMPLES, seed: int =
 
 
 def holm(pvalues) -> np.ndarray:
-    """Holm-Bonferroni adjusted p-values (monotone step-down), in the input order."""
+    """Holm-Bonferroni adjusted p-values (monotone step-down), in the input order. The paper controls the
+    family-wise error of a metric across applications this way (App. M)."""
     p = np.asarray(pvalues, dtype=float)
     m = len(p)
     order = np.argsort(p)

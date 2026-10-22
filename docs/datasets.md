@@ -1,3 +1,10 @@
+---
+title: "Public datasets"
+description: "Every public dataset TabAgent can build: its pinned source, license, download size and the paper result it backs."
+kind: "Reproduce"
+lead: "TabAgent ships no benchmark data. Each table is rebuilt from the upstream release at a pinned revision."
+---
+
 # Public datasets
 
 TabAgent ships no benchmark data. `tabagent.datasets.load(name, download=True)` rebuilds each table from

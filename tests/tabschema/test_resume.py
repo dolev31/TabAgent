@@ -269,7 +269,8 @@ CHILD = textwrap.dedent(
 
 
     # one call at a time when killing: a call that another thread completed in the instant of the kill, paid
-    # but not yet written, would be paid again (the one window a kill leaves; see docs/onboarding.md)
+    # but not yet written, would be paid again (the one window a kill leaves; see
+    # docs/guides/onboard-from-logs.md)
     workers = 1 if mode == "kill" else 2
     schema(root, Slow(role or None, n, mode), workers=workers).discover(R.runs(), R.TARGET)
     print("done")

@@ -70,13 +70,24 @@ Preprint on arXiv (2602.16429, first posted 2026-02-18). Its first version carri
 ## Docs
 
 - [Home](https://dolev31.github.io/TabAgent/): overview, results at a glance, install, quickstart, the abstract, key terms, questions and answers, and citation
-- [Concepts](https://dolev31.github.io/TabAgent/concepts/): the decision table, the four decision kinds, leakage safety, the evaluation protocol
-- [Components](https://dolev31.github.io/TabAgent/components/): TabSchema, TabSynth and TabHead in detail
-- [Onboard an agent](https://dolev31.github.io/TabAgent/onboarding/): log formats, privacy and cost controls, reviewing the generated extractor
-- [Bring your own table](https://dolev31.github.io/TabAgent/bring_your_own_data/): the scikit-learn estimators and automatic recipe selection
-- [Deploy](https://dolev31.github.io/TabAgent/deployment/): saved heads, the HTTP service and its production runbook (warm sandbox workers, timeouts that defer to the LLM, readiness, Prometheus metrics, structured logs, feature drift), the tool filter, the confidence gate
+- [Get started](https://dolev31.github.io/TabAgent/get-started/): installation, a five-minute quickstart, onboarding an agent from its logs, the core concepts
+- [Guides](https://dolev31.github.io/TabAgent/guides/): task-oriented guides, from onboarding to production
+- [Onboard from logs](https://dolev31.github.io/TabAgent/guides/onboard-from-logs/): privacy and cost controls, LLM providers, stopping and resuming a run
+- [Bring your own table](https://dolev31.github.io/TabAgent/guides/bring-your-own-table/): the scikit-learn estimators and automatic recipe selection
+- [Choose and evaluate a head](https://dolev31.github.io/TabAgent/guides/choose-and-evaluate-a-head/): metrics per decision kind, task-grouped cross-validation, paired intervals, other classifiers, discovery inside each fold
+- [Check and debug logs](https://dolev31.github.io/TabAgent/guides/check-and-debug-logs/): tabagent scan, the supported log formats, how files are read, tabagent check-logs
+- [When onboarding goes wrong](https://dolev31.github.io/TabAgent/guides/when-onboarding-goes-wrong/): the checks before any LLM call and the failure modes during discovery
+- [Verify the generated code](https://dolev31.github.io/TabAgent/guides/verify-generated-code/): the four value checks, golden tests, reviewing the extractor
+- [Deploy and serve](https://dolev31.github.io/TabAgent/guides/deploy-and-serve/): saved heads, live prefixes, the HTTP service, the sandbox, pretrained heads on the Hugging Face Hub
+- [Hot-swap into an agent](https://dolev31.github.io/TabAgent/guides/hot-swap-into-an-agent/): the tool filter in front of a tool-calling LLM and the CUGA helpers
+- [Production runbook](https://dolev31.github.io/TabAgent/guides/production-runbook/): warm sandbox workers, timeouts that defer to the LLM, readiness, Prometheus metrics, structured logs, feature drift
+- [Concepts](https://dolev31.github.io/TabAgent/concepts/): the three phases, decision kinds, per-candidate features, leakage safety, the confidence gate
+- [API reference](https://dolev31.github.io/TabAgent/reference/): the Python API generated from the docstrings
+- [Command line](https://dolev31.github.io/TabAgent/reference/cli/): every tabagent command and flag
 - [Datasets](https://dolev31.github.io/TabAgent/datasets/): every public dataset, its pinned source, license and the paper result it backs
 - [Reproducing the paper](https://dolev31.github.io/TabAgent/reproducing/): each paper cell, the command that recomputes it, paper vs released values
+- [Changelog](https://dolev31.github.io/TabAgent/changelog/): what changed in each release
+- [Citation](https://dolev31.github.io/TabAgent/project/citation/): how to cite the paper
 
 ## Code
 

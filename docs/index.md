@@ -183,7 +183,7 @@ hide:
 `tabagent onboard` reads the agent's own logs (OpenAI, Anthropic, LangChain, τ²-bench, CUGA or generic JSON),
 discovers the features with TabSchema, and saves a head with a reviewed, hash-pinned extractor.
 
-[Onboard an agent](onboarding.md)
+[Onboard your agent](get-started/onboard-your-agent.md)
 </div>
 
 <div class="ta-use" markdown>
@@ -193,7 +193,7 @@ discovers the features with TabSchema, and saves a head with a reviewed, hash-pi
 `tabagent serve` answers `POST /decide` from warm, sandboxed workers, defers a decision whose extraction runs late,
 and exposes readiness, Prometheus metrics and feature-drift monitoring.
 
-[Deploy and operate](deployment.md#production-runbook)
+[Deploy and operate](guides/production-runbook.md)
 </div>
 
 <div class="ta-use" markdown>
@@ -203,7 +203,7 @@ and exposes readiness, Prometheus metrics and feature-drift monitoring.
 `ToolFilter` sends your tool-calling LLM only the tools the head shortlists, and the full list whenever the head
 defers. The surrounding agent is unchanged.
 
-[The tool filter](deployment.md#live-prefixes)
+[Hot-swap into an agent](guides/hot-swap-into-an-agent.md)
 </div>
 
 </div>
@@ -248,39 +248,39 @@ Across three decision families and seven agent benchmarks:
 
 <p class="ta-eyebrow">Go deeper</p>
 
-## Guides { #guides }
+## Documentation { #guides }
 
 <div class="grid cards ta-guides" markdown>
 
--   :material-lightbulb-on-outline: [Concepts](concepts.md)
+-   :material-rocket-launch-outline: [Get started](get-started/index.md)
 
-    The decision table, the four decision kinds, leakage safety, the evaluation protocol.
+    Install, a five-minute quickstart, onboard your agent, and the core ideas.
 
--   :material-puzzle-outline: [Components](components.md)
+-   :material-book-open-variant-outline: [Guides](guides/index.md)
 
-    TabSchema, TabSynth and TabHead in detail.
+    Onboard from logs, bring your own table, evaluate a head, deploy and serve, hot-swap into an agent.
 
--   :material-robot-outline: [Onboard an agent](onboarding.md)
+-   :material-lightbulb-on-outline: [Concepts](concepts/index.md)
 
-    Log formats, privacy and cost controls, reviewing the generated extractor.
+    The three phases, decision kinds, per-candidate features, leakage safety, the confidence gate.
 
--   :material-table-large: [Bring your own table](bring_your_own_data.md)
+-   :material-code-braces: [API reference](reference/index.md)
 
-    The scikit-learn estimators and automatic recipe selection.
-
--   :material-rocket-launch-outline: [Deploy](deployment.md)
-
-    Saved heads, the HTTP service, the tool filter, the confidence gate.
-
--   :material-database-outline: [Datasets](datasets.md)
-
-    Every public dataset, its pinned source, license and the paper result it backs.
+    Signatures, parameters and examples from the docstrings, and every command-line flag.
 
 -   :material-flask-outline: [Reproducing the paper](reproducing.md)
 
     Each paper cell, the command that recomputes it, paper vs released values.
 
--   :material-code-braces: [Examples](https://github.com/dolev31/TabAgent/tree/main/examples)
+-   :material-database-outline: [Datasets](datasets.md)
+
+    Every public dataset, its pinned source, license and the paper result it backs.
+
+-   :material-history: [Changelog](changelog.md)
+
+    What changed in each release.
+
+-   :material-console: [Examples](https://github.com/dolev31/TabAgent/tree/main/examples)
 
     Five runnable scripts, from the public-benchmark quickstart to cross-agent transfer.
 

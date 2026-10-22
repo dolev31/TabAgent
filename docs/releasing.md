@@ -111,7 +111,7 @@ It changes these files (`git grep -lIF -e "$OLD" -e "$OLD_SITE"` lists them):
 | `mkdocs.yml` | `site_url` and `repo_url`, from which the site's canonical URLs, Scholar tags, JSON-LD and GitHub links follow |
 | `CITATION.cff` | `repository-code` and `url` |
 | `.github/ISSUE_TEMPLATE/config.yml` | the reproduction guide and the private vulnerability report |
-| `docs/index.md`, `docs/deployment.md`, `docs/claims-map.md`, `docs/llms.txt` | clone commands and links to the repository and the site |
+| `docs/index.md`, `docs/guides/*.md`, `docs/claims-map.md`, `docs/llms.txt` | clone commands and links to the repository and the site |
 | `notebooks/quickstart.ipynb` | the Colab badge and the install cell |
 | `experiments/tabschema_tau2.py` | the pull requests that its pipeline versions cite |
 | `media/explainer/config.json`, `media/explainer/claims.md` | `repo_url`, shown on the video's end card, poster and thumbnail |

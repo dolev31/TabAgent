@@ -1,35 +1,11 @@
-# Concepts
+---
+title: "Leakage safety"
+description: "Every data-dependent stage is fitted inside the training portion of each fold: how TabAgent enforces it by construction, what it tests, and the evaluation protocol."
+lead: "Why a cross-validated number from TabAgent can be trusted, and the one place it cannot without extra work."
+kind: Concept
+---
 
-## One reduction for every closed-set decision
-
-An agent repeatedly makes decisions whose answer comes from a fixed set: shortlist tools or skills, pick an
-application or an operation, route to a model or a sub-agent, activate a skill or not. TabAgent casts all of
-them as one pointwise problem (paper Sec. 3): **a row is a (decision context, candidate) pair**, its columns
-are behavior-grounded features, and its label says whether the agent's successful run chose that candidate.
-
-| kind | examples | decoding | metric |
-|---|---|---|---|
-| `ranking` | tool, skill, API, GUI-element shortlisting | top-k by score | P@R (R-precision), Recall@k |
-| `multilabel` | application selection | score ≥ threshold, back off to the best one | example-based precision / recall / F1 |
-| `single` | operation type, task category | argmax class | accuracy, macro-F1 |
-| `policy` | model routing, sub-agent routing, skill gating | argmax predicted success (optionally cost-aware) | route@1 = reward of the chosen arm |
-
-When a method gives several candidates the same score, the metrics order the tied candidates uniformly at
-random and report the exact expected value, for every method (paper Sec. 4.3 and App. L); a deployed head
-breaks ties by candidate id so that its decisions are deterministic.
-
-## The decision table
-
-`DecisionTable` pairs a DataFrame with a `DecisionSpec` naming the structural columns:
-
-* `group`: the task id. Cross-validation never splits a group across folds.
-* `decision`: the columns identifying one decision (one candidate slate); by default the group.
-* `candidate`, `label`, and, for policies, `reward`.
-* `eval`: post-decision columns kept for scoring only.
-
-Outcome columns (label, reward, eval) can never be features, and models score *label-free* views of the table.
-
-## Leakage safety by construction
+# Leakage safety
 
 The paper requires every data-dependent stage to be fitted inside the training portion of each fold (Sec. 4.3),
 the TabSchema loop included. In TabAgent the fitted stages are in-fold by construction; TabSchema discovery is
@@ -47,7 +23,7 @@ in-fold when you run it through `cross_validate_discovery`:
   head on a fixed card, and `cross_validate_discovery` estimates the whole pipeline: it runs discovery on each
   training fold's trajectories only and applies that fold's extractor to its held-out decisions. The bundled
   cards of the public datasets are fixed in advance (frozen or hand-authored, see
-  [Reproducing the paper](reproducing.md)), so only their fitted statistics are refit per fold.
+  [Reproducing the paper](../reproducing.md)), so only their fitted statistics are refit per fold.
 
 The test suite proves these properties (scrambling held-out labels does not change held-out scores; scoring is
 not transductive; fitted statistics only see training groups; each fold's discovery sees only training tasks).

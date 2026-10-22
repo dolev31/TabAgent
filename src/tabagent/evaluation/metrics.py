@@ -104,7 +104,9 @@ def _top_k_hits(g: pd.DataFrame, k: int, tie_break: str) -> float:
 
 
 def recall_at_k(table: DecisionTable, scores: np.ndarray, k: int, tie_break: str = "expected") -> pd.Series:
-    """Per-decision Recall@k. Decisions with an empty relevant set are skipped."""
+    """Per-decision Recall@k: the share of the decision's relevant candidates in the top ``k`` of the ranking.
+    Decisions with an empty relevant set are skipped. ``tie_break="expected"`` (the default) orders tied
+    candidates uniformly at random and returns the exact expected value (App. L)."""
     r = _rows(table, scores, tie_break)
 
     def fn(g: pd.DataFrame):
@@ -115,7 +117,9 @@ def recall_at_k(table: DecisionTable, scores: np.ndarray, k: int, tie_break: str
 
 
 def p_at_r(table: DecisionTable, scores: np.ndarray, tie_break: str = "expected") -> pd.Series:
-    """Per-decision R-precision (P@R): precision of the top-R_t candidates, R_t = |G(t)|."""
+    """Per-decision R-precision (P@R): precision of the top-R_t candidates, R_t = |G(t)|, the size of the
+    decision's relevant set. It equals Recall@R_t. ``tie_break="expected"`` (the default) orders tied
+    candidates uniformly at random and returns the exact expected value (App. L)."""
     r = _rows(table, scores, tie_break)
 
     def fn(g: pd.DataFrame):

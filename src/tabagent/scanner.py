@@ -131,7 +131,28 @@ class ComponentScan:
 
 @dataclass
 class ScanReport:
-    """The ranked components of a :func:`scan`: ``summary()``, ``to_markdown()``, ``to_json()``."""
+    """The ranked components of a :func:`scan`: ``summary()``, ``to_markdown()``, ``to_json()``.
+
+    Attributes
+    ----------
+    components: every component of the agent that calls an LLM, ranked by ``ranked_by`` (cost, else tokens,
+        latency or calls, whichever the logs record first). Each is a ``ComponentScan`` with a verdict
+        (``closed-set``, ``unknown``, ``open values`` or ``free text``), its evidence and the ``onboard``
+        command that replaces it.
+    candidates: the closed-set components, best first.
+    n_runs, n_successful, n_calls: the scanned runs, the successful ones and the LLM calls.
+    notes: how the logs record usage, and what could not be counted.
+
+    Examples
+    --------
+    ```python
+    import tabagent
+
+    report = tabagent.scan("./agent_logs", prices=(PRICE_IN, PRICE_OUT))
+    print(report.summary())
+    report.candidates[0].next_steps  # the onboard command for the top closed-set component
+    ```
+    """
 
     logs: str
     adapter: str
@@ -693,7 +714,26 @@ class DecisionCheck:
 @dataclass
 class LogCheck:
     """The diagnosis of a log folder (see :func:`check_logs`): ``ok`` when nothing would stop onboarding;
-    ``summary()``, ``to_dict()``, ``to_json()``."""
+    ``summary()``, ``to_dict()``, ``to_json()``.
+
+    Attributes
+    ----------
+    ok: False when a finding of level ``error`` would stop an onboarding.
+    findings: what is wrong, where and how to fix it, each with a level (``error``, ``warning``, ``info``).
+    decisions: one ``DecisionCheck`` per decision the adapter builds candidates and labels for.
+    components: the LLM-calling components found, with their call counts.
+    files, runs, successful: how many files were read, runs found and runs that succeeded.
+
+    Examples
+    --------
+    ```python
+    import tabagent
+
+    check = tabagent.check_logs("./agent_logs", decision="ToolShortlist")
+    print(check.summary())
+    assert check.ok  # the CLI exits with status 1 when this is False
+    ```
+    """
 
     logs: str
     adapter: str | None

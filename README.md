@@ -63,7 +63,7 @@
 | <img src="docs/assets/brand/chip-tabhead.svg" height="28" alt="Phase 3: TabHead"> | **Decides in milliseconds.** A CatBoost classifier scores every candidate in one pass; a confidence gate can defer unsure decisions back to the LLM. |
 
 The three phases run once per agent and catalog. At inference the head replaces the LLM call, and the rest of the
-agent is unchanged. [Components](docs/components.md) covers each phase in detail.
+agent is unchanged. [The three phases](docs/concepts/three-phases.md) covers each phase in detail.
 
 ## Quick start
 
@@ -183,7 +183,7 @@ tabagent onboard ./agent_logs --decision ToolShortlist --out ./my_head
 ```
 
 **2. Serve** it: `tabagent serve ./my_head --port 8077` answers `POST /decide` from warm, sandboxed workers, with
-readiness, Prometheus metrics and drift monitoring ([production runbook](docs/deployment.md#production-runbook)).
+readiness, Prometheus metrics and drift monitoring ([production runbook](docs/guides/production-runbook.md)).
 
 **3. Hot-swap** the LLM call: `ToolFilter` sends your tool-calling LLM only the tools the head shortlists, and the full
 list whenever the head defers.
@@ -222,8 +222,8 @@ Onboarding sends trajectories to your LLM provider; `redact=` (CLI: `--redact mo
 
 ## Documentation
 
-[Concepts](docs/concepts.md) · [Components](docs/components.md) · [Onboard an agent](docs/onboarding.md) ·
-[Bring your own table](docs/bring_your_own_data.md) · [Deploy](docs/deployment.md) · [Datasets](docs/datasets.md) ·
+[Get started](docs/get-started/index.md) · [Guides](docs/guides/index.md) · [Concepts](docs/concepts/index.md) ·
+[API reference](docs/reference/index.md) · [Command line](docs/reference/cli.md) · [Datasets](docs/datasets.md) ·
 [Reproducing the paper](docs/reproducing.md)
 
 <!-- named -->

@@ -239,6 +239,15 @@ class TabHead:
     threshold: the multi-label decision threshold (App. J).
     seed: the model seed.
     catboost_overrides: CatBoost parameters that replace the preset's (not allowed with ``estimator``).
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabHead
+
+    TabHead("ranking")  # CatBoost, the paper's configuration (300 iterations, learning rate 0.08, depth 6)
+    TabHead("ranking", preset="catboost-default")  # CatBoost's own schedule
+    ```
     """
 
     def __init__(

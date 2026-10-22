@@ -60,7 +60,7 @@ Documentation = "https://dolev31.github.io/TabAgent/"
 Issues = "https://github.com/dolev31/TabAgent/issues"
 
 [dependency-groups]
-docs = ["mkdocs-material>=9.5"]
+docs = ["mkdocs-material>=9.5", "mkdocstrings[python]>=0.26", "mkdocs-redirects>=1.2"]
 # Paper reproduction (experiments/): with the `embed` extra. GPU baselines need a CUDA build of torch.
 repro = ["matplotlib>=3.7", "scipy>=1.10", "peft>=0.10", "threadpoolctl>=3.1", "packaging>=23"]
 # Optional alternative heads for the head-ablation figure.

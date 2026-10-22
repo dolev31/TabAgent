@@ -216,7 +216,7 @@ class TabSchemaConfig:
         inner validation. The discovered card never holds them, so the usefulness estimate and a
         ``TabAgent`` built on the card directly do not use them; the saved head records the choice.
 
-    The release's checks beyond the paper (see ``docs/onboarding.md``, "How the generated code is verified"):
+    The release's checks beyond the paper (see ``docs/guides/verify-generated-code.md``):
 
     verify: run the compiled extractor, sandboxed, on ``verify_samples`` decision points and drop the columns
         that are nondeterministic or change when outcome fields or the run's future change; report how it
@@ -763,6 +763,18 @@ class TabSchema:
 
     With ``config.max_cost_usd`` set, the model needs a price in ``config.prices``; otherwise the budget
     could not be enforced and the constructor raises ``ValueError``.
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabSchema, TabSchemaConfig
+    from tabagent.adapters import detect_adapter
+
+    adapter = detect_adapter("./agent_logs")
+    schema = TabSchema(config=TabSchemaConfig(n_analyze=20), adapter=adapter)  # the LLM comes from env keys
+    result = schema.discover("./agent_logs", "ToolShortlist")
+    result.card  # the discovered FeatureCard; the run directory holds extract.py and the reports
+    ```
     """
 
     def __init__(

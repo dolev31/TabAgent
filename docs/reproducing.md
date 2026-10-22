@@ -1,3 +1,10 @@
+---
+title: "Reproducing the paper"
+description: "Every public result of the TabAgent paper: the command that recomputes it, what it needs, the released value next to the paper's, and the differences."
+kind: "Reproduce"
+lead: "Recompute each public cell of the paper with the released code, under the paper's protocol, with no LLM call."
+---
+
 # Reproducing the paper
 
 `experiments/paper_cells.yaml` lists every result of the paper that public data can reproduce, with the value
@@ -53,14 +60,14 @@ card with an embedding-similarity feature also downloads the e5-small-v2 encoder
 | Fig. 3, TabSTAR | `experiments.figures.head_ablation --heads tabstar` | GPU | hours | TabSTAR weights | public |
 | Table 15 and Fig. 4 (cost formulas and the reported points) | `experiments.efficiency.cost`, `experiments.efficiency.pareto --paper` | CPU | seconds | none | public |
 | per-decision latency on public data | `experiments.efficiency.latency` | CPU | 5 min | 8.2 MB | public |
-| the release's within-decision relative features on public data ([Components](components.md)) | `experiments.relative_features` | CPU | 6 min | 604 MB + 3.5 MB (shared) | public |
-| the release's TabSchema, onboarded with an LLM on public τ²-bench logs ([Components](components.md), "Evidence") | `experiments.tabschema_tau2 download`; `... commands` prints the three onboardings; `... evaluate --previous RUN --run1 RUN --run2 RUN` | CPU; the onboardings need an LLM API | evaluation 39 min; an onboarding takes about 32 min and about $12 to $13 of LLM calls | 68 MB | public; an onboarding asks an LLM, so its card and numbers vary with the model and from run to run |
+| the release's within-decision relative features on public data ([Components](concepts/three-phases.md)) | `experiments.relative_features` | CPU | 6 min | 604 MB + 3.5 MB (shared) | public |
+| the release's TabSchema, onboarded with an LLM on public τ²-bench logs ([Components](concepts/three-phases.md), "Evidence") | `experiments.tabschema_tau2 download`; `... commands` prints the three onboardings; `... evaluate --previous RUN --run1 RUN --run2 RUN` | CPU; the onboardings need an LLM API | evaluation 39 min; an onboarding takes about 32 min and about $12 to $13 of LLM calls | 68 MB | public; an onboarding asks an LLM, so its card and numbers vary with the model and from run to run |
 | every result on the CUGA agent's AppWorld trajectories: AppWorld tool shortlisting and application selection (Table 1, Tables 5–10, 12–14, 19; Figs. 5–7), the in-loop hot swap (Tables 3, 23), Table 16, Figs. 8a, 9–14, Tables 17, 21 and 22 (AppWorld rows), Tables 18, 24 and 25 | none | | | | not released |
 | OAK and BPO rows of Table 1 | none (the benchmarks are public; loaders are not included yet) | | | | public |
 
 The AppWorld benchmark itself is public; the results above use the CUGA agent's own trajectories on it, which
 are not released. The CUGA trajectory adapter (both decisions, `ShortlisterAgent` and `TaskAnalyzerAgent`) and
-the hot-swap helpers (`tabagent.integrations.cuga`, see [Deployment](deployment.md#cuga)) are included, so the
+the hot-swap helpers (`tabagent.integrations.cuga`, see [Deployment](guides/hot-swap-into-an-agent.md#cuga)) are included, so the
 pipeline runs on your own CUGA traces and the heads plug back into CUGA. Table 15's and Fig. 4's TabAgent latency was measured on those trajectories;
 `experiments.efficiency.latency` measures the same quantity on public data (see
 `experiments/efficiency/README.md`). The candidate-overload and head-ablation figures and the efficiency
@@ -124,7 +131,7 @@ prints the onboarding of each pipeline version (Claude Opus 5.5, GPT-6 Sol writi
 decision points, accepted features only), and `evaluate` cross-validates the three run directories' cards
 and their variants on identical rows and folds, writing results/tabschema_tau2.json. The evaluation of given
 run directories is deterministic; a new onboarding gives another card, so its numbers differ from those in
-[Components](components.md).
+[Components](concepts/three-phases.md).
 
 ## Differences from the paper
 

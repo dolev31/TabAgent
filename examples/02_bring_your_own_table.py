@@ -59,7 +59,7 @@ print(ranker.rank(new, k=2))
 
 # A portable, pickle-free artifact. Reloaded, it is a TabAgent: it decides on rows that carry the columns it
 # was trained on, with the decision and candidate ids in the columns its spec names (the estimators call them
-# __group__ and __candidate__). See docs/deployment.md.
+# __group__ and __candidate__). See docs/guides/deploy-and-serve.md.
 out = tempfile.mkdtemp(prefix="tabagent_ranker_")
 ranker.agent_.save(out)
 agent = tabagent.load(out)

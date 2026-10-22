@@ -183,6 +183,15 @@ class TabSynth:
 
     After ``augment``: ``stats_`` (counts and the source groups), ``k_`` (the ``k`` used), ``source_rows_``
     and ``source_groups_`` (see ``augment``).
+
+    Examples
+    --------
+    ```python
+    from tabagent import TabAgent, TabSynth, datasets
+
+    card = datasets.card("skillsbench/skill-select")
+    agent = TabAgent(card, synth=TabSynth(k=2))  # two paraphrases per real training row, inside each fit
+    ```
     """
 
     def __init__(
