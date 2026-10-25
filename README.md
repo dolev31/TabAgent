@@ -31,6 +31,23 @@
 <sub>▶ <a href="https://dolev31.github.io/TabAgent/#explainer"><b>Watch the full 73-second explainer, with captions</b></a></sub>
 <!-- /named -->
 
+<!-- named -->
+<table>
+  <tr>
+    <td width="132" valign="middle">
+      <a href="https://dolev31.github.io/TabAgent/#podcast"><img src="docs/assets/podcast/podcast-cover-320.webp" width="120" height="120" alt="TabAgent podcast cover"></a>
+    </td>
+    <td valign="middle">
+      <sub><b>PODCAST</b> · 23 min</sub><br>
+      <b><a href="https://dolev31.github.io/TabAgent/#podcast">Distilling LLM Agent Decisions into Cheap Classifiers</a></b><br>
+      <sub>The paper in conversation: the problem, the three phases, the results, the honest limits and how to start.</sub><br>
+      <a href="https://dolev31.github.io/TabAgent/#podcast"><img src="https://img.shields.io/badge/%E2%96%B6%20Listen-episode%201-A78BFA?style=flat-square&labelColor=0B1020" alt="Listen to episode 1"></a>
+      <a href="https://dolev31.github.io/TabAgent/podcast/transcript/"><img src="https://img.shields.io/badge/transcript-read-64748B?style=flat-square&labelColor=0B1020" alt="Read the transcript"></a>
+    </td>
+  </tr>
+</table>
+<!-- /named -->
+
 **[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Results](#results)** · **[Use it in your agent](#use-it-in-your-agent)** · **[Docs](https://dolev31.github.io/TabAgent/)** · **[Cite](#citation)**
 
 </div>

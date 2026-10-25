@@ -92,6 +92,7 @@ Preprint on arXiv (2602.16429, first posted 2026-02-18). Its first version carri
 - [Reproducing the paper](https://dolev31.github.io/TabAgent/reproducing/): each paper cell, the command that recomputes it, paper vs released values
 - [Changelog](https://dolev31.github.io/TabAgent/changelog/): what changed in each release
 - [Citation](https://dolev31.github.io/TabAgent/project/citation/): how to cite the paper
+- [Podcast transcript](https://dolev31.github.io/TabAgent/podcast/transcript/): a 23-minute AI-generated audio overview of the paper (NotebookLM), as text; the paper is the authoritative source
 
 ## Code
 

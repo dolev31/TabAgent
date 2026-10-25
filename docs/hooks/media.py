@@ -5,7 +5,8 @@ The video is not in the repository. The Pages workflow downloads ``tabagent-expl
 docs/overrides/home.html plays ``extra.explainer_video`` (the MP4), with the WebM and the captions beside it
 when they exist and ``extra.explainer_poster`` as its poster. A relative ``explainer_video`` whose file is
 missing is cleared, and the page shows the animated pipeline instead (the static one under reduced motion).
-A full URL is kept as it is.
+A full URL is kept as it is. ``extra.podcast_audio`` (the podcast episode, an M4A from the same release) is
+cleared the same way, and the landing page then leaves its podcast section out.
 """
 
 from __future__ import annotations
@@ -32,4 +33,8 @@ def on_config(config):
     poster = extra.get("explainer_poster") or ""
     if _local(poster) and not (docs / poster).is_file():
         extra["explainer_poster"] = ""
+    # the podcast episode, downloaded like the video; the landing page shows its section only when it is there
+    podcast = extra.get("podcast_audio") or ""
+    if _local(podcast) and not (docs / podcast).is_file():
+        extra["podcast_audio"] = ""
     return config

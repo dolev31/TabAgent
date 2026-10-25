@@ -4,6 +4,10 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **A podcast episode.** The landing page plays *Distilling LLM Agent Decisions into Cheap Classifiers*, a
+  23-minute audio overview of the paper (AI-generated voices, NotebookLM), with chapters and a transcript page; the
+  README links it. The audio is an asset of the media release, like the explainer video.
+
 ## 0.1.1 (2026-10-22)
 
 - **Citation at hand.** `tabagent.cite()` and `tabagent cite` print the paper's BibTeX (or APA, or one line of

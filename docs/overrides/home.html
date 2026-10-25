@@ -142,6 +142,78 @@
     </div>
   </div>
 </section>
+
+{#- docs/hooks/media.py keeps podcast_audio only when its file is there at build time (the Pages workflow downloads
+    it from the GitHub Release media-v1); without it the section is not rendered. -#}
+{%- if ex.podcast_audio %}
+<section class="ta-podcast md-typeset" id="podcast" aria-labelledby="ta-podcast-title">
+  <div class="md-grid ta-podcast__inner">
+    <p class="ta-eyebrow">Podcast</p>
+    <h2 class="ta-section-title" id="ta-podcast-title">The paper, in conversation.</h2>
+    <p class="ta-section-lead">A 23-minute audio overview for engineers who build agents: the problem, the three phases, the results, the honest limits and how to start. Listen while you commute; the paper stays one click away.</p>
+    <div class="ta-pod" data-pod>
+      <img class="ta-pod__cover" src="{{ 'assets/podcast/podcast-cover-640.webp' | url }}" width="640" height="640" loading="lazy" decoding="async"
+           alt="Podcast cover: TabAgent. Distilling LLM agent decisions into cheap classifiers, with a waveform in the colors of TabSchema, TabSynth and TabHead">
+      <div class="ta-pod__body">
+        <p class="ta-pod__kicker"><span class="ta-pod__dot" aria-hidden="true"></span>Episode 1 · 22:51</p>
+        <h3 class="ta-pod__title">Distilling LLM Agent Decisions into Cheap Classifiers</h3>
+        <div class="ta-pod__player">
+          <button class="ta-pod__play" type="button" aria-label="Play the episode" data-pod-play>
+            <svg class="ta-pod__icon ta-pod__icon--play" viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5.5v13a1 1 0 0 0 1.52.85l10.4-6.5a1 1 0 0 0 0-1.7L9.52 4.65A1 1 0 0 0 8 5.5Z"/></svg>
+            <svg class="ta-pod__icon ta-pod__icon--pause" viewBox="0 0 24 24" aria-hidden="true"><rect x="6.5" y="5" width="4" height="14" rx="1.2"/><rect x="13.5" y="5" width="4" height="14" rx="1.2"/></svg>
+          </button>
+          <div class="ta-pod__track">
+            <input class="ta-pod__seek" type="range" min="0" max="1371" step="1" value="0" aria-label="Position in the episode" data-pod-seek>
+            <div class="ta-pod__times"><span data-pod-now>0:00</span><span>22:51</span></div>
+          </div>
+          <button class="ta-pod__rate" type="button" aria-label="Playback speed" data-pod-rate>1×</button>
+        </div>
+        <audio preload="none" data-pod-audio>
+          <source src="{{ ex.podcast_audio | url }}" type="audio/mp4">
+        </audio>
+        <ol class="ta-pod__chapters" aria-label="Chapters">
+          <li><button type="button" data-t="0"><span>0:00</span>The 2.682 ms decision</button></li>
+          <li><button type="button" data-t="80"><span>1:20</span>The problem: multiple-choice calls</button></li>
+          <li><button type="button" data-t="214"><span>3:34</span>The idea: learn from successful runs</button></li>
+          <li><button type="button" data-t="334"><span>5:34</span>TabSchema, TabSynth, TabHead</button></li>
+          <li><button type="button" data-t="652"><span>10:52</span>The results</button></li>
+          <li><button type="button" data-t="921"><span>15:21</span>The honest limits</button></li>
+          <li><button type="button" data-t="1132"><span>18:52</span>What it takes</button></li>
+          <li><button type="button" data-t="1224"><span>20:24</span>Try it today</button></li>
+        </ol>
+        <p class="ta-pod__note">AI-generated voices (NotebookLM) from the paper and the code; the paper is the authoritative source.
+          <a href="{{ ex.podcast_audio | url }}" download>Download (M4A, 17 MB)</a> · <a href="{{ 'podcast/transcript/' | url }}">Transcript</a></p>
+      </div>
+    </div>
+  </div>
+  <script>
+    // A small player over the native <audio>: play/pause, seek, speed and chapters, all keyboard-reachable.
+    (function () {
+      var root = document.querySelector("[data-pod]"); if (!root) return;
+      var a = root.querySelector("[data-pod-audio]"), play = root.querySelector("[data-pod-play]");
+      var seek = root.querySelector("[data-pod-seek]"), now = root.querySelector("[data-pod-now]");
+      var rate = root.querySelector("[data-pod-rate]"), rates = [1, 1.25, 1.5, 1.75, 2], ri = 0, dragging = false;
+      var fmt = function (t) { t = Math.max(0, Math.floor(t)); return Math.floor(t / 60) + ":" + String(t % 60).padStart(2, "0"); };
+      var paint = function () { seek.style.setProperty("--p", (seek.value / seek.max * 100).toFixed(2) + "%"); };
+      var go = function (t, start) { a.currentTime = t; seek.value = t; now.textContent = fmt(t); paint(); if (start) a.play(); };
+      play.addEventListener("click", function () { a.paused ? a.play() : a.pause(); });
+      a.addEventListener("play", function () { root.classList.add("is-playing"); play.setAttribute("aria-label", "Pause the episode"); });
+      a.addEventListener("pause", function () { root.classList.remove("is-playing"); play.setAttribute("aria-label", "Play the episode"); });
+      a.addEventListener("loadedmetadata", function () { if (isFinite(a.duration)) seek.max = Math.round(a.duration); });
+      a.addEventListener("timeupdate", function () {
+        if (dragging) return; seek.value = a.currentTime; now.textContent = fmt(a.currentTime); paint();
+        var cur = -1; root.querySelectorAll(".ta-pod__chapters button").forEach(function (b, i) { if (a.currentTime >= +b.dataset.t) cur = i; });
+        root.querySelectorAll(".ta-pod__chapters li").forEach(function (li, i) { li.classList.toggle("is-current", i === cur && !a.paused); });
+      });
+      seek.addEventListener("input", function () { dragging = true; now.textContent = fmt(seek.value); paint(); });
+      seek.addEventListener("change", function () { dragging = false; go(+seek.value, false); });
+      rate.addEventListener("click", function () { ri = (ri + 1) % rates.length; a.playbackRate = rates[ri]; rate.textContent = rates[ri] + "×"; });
+      root.querySelectorAll(".ta-pod__chapters button").forEach(function (b) { b.addEventListener("click", function () { go(+b.dataset.t, true); }); });
+      paint();
+    })();
+  </script>
+</section>
+{%- endif %}
 {% endblock %}
 
 {% block content %}

@@ -18,6 +18,7 @@ exclude_docs: |
 # landing page.
 not_in_nav: |
   /claims-map.md
+  /podcast/transcript.md
 
 hooks:
   - docs/hooks/faq.py
@@ -134,6 +135,9 @@ extra:
   # when the MP4 is there at build time; otherwise the page shows the animated pipeline.
   explainer_video: assets/video/tabagent-explainer.mp4
   explainer_poster: assets/explainer-poster.webp
+  # The podcast episode (an M4A from the same release, also downloaded by the Pages workflow; the landing page
+  # shows its section only when the file is there). Its cover is committed under docs/assets/podcast/.
+  podcast_audio: assets/video/tabagent-podcast.m4a
 
 markdown_extensions:
   - admonition

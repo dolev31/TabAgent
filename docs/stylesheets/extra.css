@@ -2145,6 +2145,277 @@ video.ta-frame__media {
   }
 }
 
+/* ================================================================ landing: podcast */
+
+.ta-podcast {
+  /* the README's podcast card links to #podcast: keep the section clear of the sticky header */
+  scroll-margin-top: 3rem;
+}
+
+.ta-podcast__inner {
+  padding: 0 0.8rem 1.2rem;
+}
+
+.md-typeset .ta-podcast .ta-eyebrow {
+  margin-top: 3.4rem;
+}
+
+.ta-pod {
+  align-items: center;
+  background:
+    radial-gradient(28rem 18rem at 0% 0%, color-mix(in srgb, var(--ta-schema) 12%, transparent), transparent 70%),
+    radial-gradient(26rem 18rem at 100% 100%, color-mix(in srgb, var(--ta-head) 10%, transparent), transparent 70%),
+    var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: 1.1rem;
+  box-shadow: var(--ta-shadow-md);
+  display: grid;
+  gap: 1.6rem;
+  grid-template-columns: minmax(0, 15rem) minmax(0, 1fr);
+  max-width: 56rem;
+  overflow: hidden;
+  padding: 1.4rem;
+  position: relative;
+}
+
+.ta-pod::before {
+  background: linear-gradient(90deg, transparent, var(--ta-schema), var(--ta-synth), var(--ta-head), transparent);
+  content: "";
+  height: 1px;
+  inset: 0 10% auto;
+  opacity: 0.8;
+  position: absolute;
+}
+
+.md-typeset .ta-pod__cover {
+  aspect-ratio: 1;
+  border-radius: 0.8rem;
+  box-shadow: var(--ta-shadow-lg);
+  display: block;
+  height: auto;
+  width: 100%;
+}
+
+.md-typeset .ta-pod__kicker {
+  align-items: center;
+  color: var(--ta-muted);
+  display: flex;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  font-weight: 600;
+  gap: 0.5rem;
+  letter-spacing: 0.12em;
+  margin: 0;
+  text-transform: uppercase;
+}
+
+.ta-pod__dot {
+  background-color: var(--ta-llm);
+  border-radius: 50%;
+  box-shadow: 0 0 0.6rem var(--ta-llm);
+  height: 0.45rem;
+  width: 0.45rem;
+}
+
+.md-typeset .ta-pod__title {
+  color: var(--ta-fg);
+  font-size: clamp(1rem, 2vw, 1.25rem);
+  font-weight: 800;
+  letter-spacing: -0.025em;
+  line-height: 1.2;
+  margin: 0.45rem 0 1rem;
+  text-wrap: balance;
+}
+
+.ta-pod__player {
+  align-items: center;
+  display: flex;
+  gap: 0.8rem;
+}
+
+.ta-pod__play {
+  align-items: center;
+  background: linear-gradient(135deg, var(--ta-grad-1), var(--ta-grad-2) 55%, var(--ta-grad-3));
+  border: 0;
+  border-radius: 50%;
+  box-shadow: 0 0.4rem 1.2rem color-mix(in srgb, var(--ta-synth) 35%, transparent);
+  color: #ffffff;
+  cursor: pointer;
+  display: flex;
+  flex: none;
+  height: 2.6rem;
+  justify-content: center;
+  transition: transform 0.25s var(--ta-ease), box-shadow 0.25s var(--ta-ease);
+  width: 2.6rem;
+}
+
+.ta-pod__play:hover {
+  box-shadow: 0 0.5rem 1.6rem color-mix(in srgb, var(--ta-synth) 50%, transparent);
+  transform: scale(1.05);
+}
+
+.ta-pod__play:focus-visible,
+.ta-pod__rate:focus-visible,
+.ta-pod__chapters button:focus-visible {
+  outline: 2px solid var(--ta-focus);
+  outline-offset: 2px;
+}
+
+.ta-pod__icon {
+  fill: currentColor;
+  height: 1.15rem;
+  width: 1.15rem;
+}
+
+.ta-pod__icon--play {
+  margin-left: 0.12rem;
+}
+
+.ta-pod__icon--pause,
+.ta-pod.is-playing .ta-pod__icon--play {
+  display: none;
+}
+
+.ta-pod.is-playing .ta-pod__icon--pause {
+  display: block;
+}
+
+.ta-pod__track {
+  flex: 1;
+  min-width: 0;
+}
+
+.ta-pod__seek {
+  --p: 0%;
+  appearance: none;
+  background: linear-gradient(90deg, var(--ta-grad-1), var(--ta-grad-2), var(--ta-grad-3)) 0 / var(--p) 100% no-repeat,
+    var(--ta-border-strong);
+  border-radius: 999px;
+  cursor: pointer;
+  display: block;
+  height: 0.3rem;
+  margin: 0;
+  width: 100%;
+}
+
+.ta-pod__seek::-webkit-slider-thumb {
+  appearance: none;
+  background: var(--ta-fg);
+  border: 2px solid var(--ta-surface);
+  border-radius: 50%;
+  box-shadow: var(--ta-shadow-sm);
+  height: 0.85rem;
+  width: 0.85rem;
+}
+
+.ta-pod__seek::-moz-range-thumb {
+  background: var(--ta-fg);
+  border: 2px solid var(--ta-surface);
+  border-radius: 50%;
+  height: 0.85rem;
+  width: 0.85rem;
+}
+
+.ta-pod__times {
+  color: var(--ta-muted);
+  display: flex;
+  font-family: var(--md-code-font-family);
+  font-size: 0.58rem;
+  justify-content: space-between;
+  margin-top: 0.35rem;
+}
+
+.ta-pod__rate {
+  background: transparent;
+  border: 1px solid var(--ta-border-strong);
+  border-radius: 999px;
+  color: var(--ta-fg-2);
+  cursor: pointer;
+  flex: none;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  font-weight: 600;
+  min-width: 2.6rem;
+  padding: 0.3rem 0.55rem;
+}
+
+.ta-pod__rate:hover {
+  border-color: var(--ta-synth-text);
+  color: var(--ta-synth-text);
+}
+
+[dir] .md-typeset .ta-pod__chapters {
+  border-top: 1px solid var(--ta-border);
+  display: grid;
+  gap: 0 1rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  list-style: none;
+  margin: 1.1rem 0 0;
+  padding: 0.8rem 0 0;
+}
+
+[dir] .md-typeset .ta-pod__chapters li {
+  margin: 0;
+}
+
+.ta-pod__chapters button {
+  background: transparent;
+  border: 0;
+  border-radius: 0.45rem;
+  color: var(--ta-fg-2);
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  font-size: 0.66rem;
+  gap: 0.55rem;
+  line-height: 1.35;
+  padding: 0.32rem 0.4rem;
+  text-align: left;
+  width: 100%;
+}
+
+.ta-pod__chapters button span {
+  color: var(--ta-muted);
+  flex: none;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  min-width: 2.2rem;
+  padding-top: 0.05rem;
+}
+
+.ta-pod__chapters button:hover,
+.ta-pod__chapters li.is-current button {
+  background-color: color-mix(in srgb, var(--ta-synth) 10%, transparent);
+  color: var(--ta-fg);
+}
+
+.ta-pod__chapters li.is-current button span {
+  color: var(--ta-synth-text);
+}
+
+.md-typeset .ta-pod__note {
+  color: var(--ta-muted);
+  font-size: 0.6rem;
+  line-height: 1.55;
+  margin: 0.9rem 0 0;
+}
+
+@media screen and (max-width: 44.984375em) {
+  .ta-pod {
+    gap: 1.1rem;
+    grid-template-columns: minmax(0, 1fr);
+    padding: 1rem;
+  }
+
+  .md-typeset .ta-pod__cover {
+    max-width: 12rem;
+  }
+
+  [dir] .md-typeset .ta-pod__chapters {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+
 /* ================================================================ motion */
 
 @media (prefers-reduced-motion: reduce) {

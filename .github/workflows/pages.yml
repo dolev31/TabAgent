@@ -39,7 +39,7 @@ jobs:
             exit 0
           fi
           mkdir -p docs/assets/video
-          for f in tabagent-explainer.mp4 tabagent-explainer.webm tabagent-explainer.vtt; do
+          for f in tabagent-explainer.mp4 tabagent-explainer.webm tabagent-explainer.vtt tabagent-podcast.m4a; do
             gh release download "$tag" -R "$GITHUB_REPOSITORY" -p "$f" -D docs/assets/video --clobber \
               || { rm -f "docs/assets/video/$f"; echo "$f: not downloaded from $tag"; }
           done
