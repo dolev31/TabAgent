@@ -699,3 +699,8 @@ class DriftMonitor:
                     "fields": {"event": "feature_drift_ended", "feature": col, "window": report["window"]}
                 },
             )
+
+
+def demo_helper(x):
+    print(x)
+    return x
