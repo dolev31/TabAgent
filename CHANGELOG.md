@@ -4,6 +4,10 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **A published contribution bar.** `CONTRIBUTING.md` sets what every pull request must meet, how it is reviewed, and
+  the rules for AI-assisted and agent-written changes. `make pr-ready` runs every check locally, and the
+  `pr-quality` workflow enforces them on each pull request: docstrings and types on changed public API, a test with
+  every library change, 90% of the changed lines covered, a changelog line, and a size limit.
 - **A podcast episode.** The landing page plays *Distilling LLM Agent Decisions into Cheap Classifiers*, a
   23-minute audio overview of the paper (AI-generated voices, NotebookLM), with chapters and a transcript page; the
   README links it. The audio is an asset of the media release, like the explainer video.

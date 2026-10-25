@@ -5,8 +5,25 @@ it too: [CONTRIBUTING.md](CONTRIBUTING.md) is the human version of the first par
 
 ## Working in this repository
 
-- Set up with `uv sync --group dev`. Run `make check` (ruff lint and format, then the CPU test suite) before
-  proposing a change, and `make docs` (the strict documentation build) after touching `docs/` or `mkdocs.yml`.
+**The bar is the same for agents and people.** Pull requests are checked automatically and reviewed against the
+rubric in [CONTRIBUTING.md](CONTRIBUTING.md#the-bar). A change that does not meet it is closed, however it was made.
+Before you write code:
+
+1. **Work from an agreed issue.** Only change what an issue a maintainer agreed on asks for. Do not open pull
+   requests for problems you found yourself; open an issue and let a person decide.
+2. **Keep it small.** One change per pull request, at most 800 changed lines outside `tests/` and `docs/`. Never
+   reformat, rename or restructure code the issue did not need.
+3. **Test first.** Write a test that fails without your change, then make it pass. A test that only calls the code
+   or asserts on a mock does not count. At least 90% of the library lines you change must run in the tests.
+4. **Document and type** every public function, method and class you add or change, in the style of the module.
+5. **Never invent facts.** No made-up numbers, citations or API behavior; run the code to check what it does.
+6. **Run `make pr-ready` and read its output** before handing the change to the person who will open the pull request.
+   They must read every line and tick "AI-written" or "AI-assisted" in the description.
+
+Then:
+
+- Set up with `uv sync --group dev`. `make pr-ready` runs lint, format, the strict docs build, the test suite with
+  coverage and the contribution gate (`scripts/pr_gate.py`), which reports each problem with where and how to fix it.
 - Tests that need the network, a GPU or a long run carry the `network`, `gpu` and `slow` markers; `make test`
   leaves them out. Add a test next to the code you change.
 - Never commit benchmark data, agent trajectories, model weights or API keys. Datasets are downloaded at run

@@ -27,6 +27,8 @@ _REWRITES = [
     (r"\]\(SECURITY\.md\)", "](security.md)"),
     (r"\]\(docs/reproducing\.md\)", "](../reproducing.md)"),
     (r"\]\(docs/releasing\.md\)", f"]({_REPO}/blob/main/docs/releasing.md)"),
+    (r"\]\(AGENTS\.md\)", f"]({_REPO}/blob/main/AGENTS.md)"),
+    (r"\]\(CONTRIBUTING\.md#", "](contributing.md#"),
 ]
 
 

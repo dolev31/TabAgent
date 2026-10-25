@@ -9,7 +9,7 @@ lead: "The episode Distilling LLM Agent Decisions into Cheap Classifiers, as tex
 
 *Distilling LLM Agent Decisions into Cheap Classifiers* (22:51) is an audio overview of the paper, generated with
 NotebookLM from the paper and the code. The two voices are AI-generated; where they paraphrase or speculate, the
-[paper](https://arxiv.org/abs/2602.16429) is the authoritative source. [Listen on the home page](../../#podcast).
+[paper](https://arxiv.org/abs/2602.16429) is the authoritative source. [Listen on the home page](../index.md#podcast).
 
 This transcript was made with speech recognition and lightly corrected (product and benchmark names); timestamps
 mark the start of each passage.

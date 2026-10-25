@@ -1,0 +1,41 @@
+name: Contribution proposal
+description: Propose how you will solve an issue before you write the code (CONTRIBUTING.md#before-you-write-code-agree-on-the-approach)
+labels: [proposal]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for offering to help. A few lines here, and a maintainer's "go ahead", save you from writing a good
+        change in the wrong place. The bar every pull request must meet is in [CONTRIBUTING.md](https://github.com/dolev31/TabAgent/blob/main/CONTRIBUTING.md#the-bar).
+  - type: input
+    id: issue
+    attributes:
+      label: The issue this solves
+      description: "#123, or the roadmap track it belongs to"
+    validations:
+      required: true
+  - type: textarea
+    id: plan
+    attributes:
+      label: Your plan
+      description: Which files you will change or add, the approach, and anything you are unsure about.
+    validations:
+      required: true
+  - type: textarea
+    id: test
+    attributes:
+      label: How you will test it
+      description: The test that will fail before your change and pass after it.
+    validations:
+      required: true
+  - type: dropdown
+    id: ai
+    attributes:
+      label: Will you use AI tools or a coding agent?
+      description: Welcome either way. You stay responsible for every line (CONTRIBUTING.md#ai-assisted-contributions).
+      options:
+        - "No"
+        - "Yes, for suggestions or review"
+        - "Yes, an agent will write most of it, and I will review every line"
+    validations:
+      required: true

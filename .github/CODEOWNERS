@@ -1,0 +1,8 @@
+# Every pull request is reviewed by a maintainer (CONTRIBUTING.md#how-a-pull-request-is-reviewed).
+*                                   @dolev31
+# The method's guarantees: leakage safety, the sandbox, the paper's numbers.
+/src/tabagent/tabschema/            @dolev31
+/tests/leakage/                     @dolev31
+/experiments/paper_cells.yaml       @dolev31
+/scripts/pr_gate.py                 @dolev31
+/.github/                           @dolev31
