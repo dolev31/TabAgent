@@ -48,7 +48,7 @@
 </table>
 <!-- /named -->
 
-**[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Results](#results)** · **[Use it in your agent](#use-it-in-your-agent)** · **[Docs](https://dolev31.github.io/TabAgent/)** · **[Cite](#citation)**
+**[Quick start](#quick-start)** · **[How it works](#how-it-works)** · **[Results](#results)** · **[Use it in your agent](#use-it-in-your-agent)** · **[Docs](https://dolev31.github.io/TabAgent/)** · **[Contribute](#contribute)** · **[Cite](#citation)**
 
 </div>
 
@@ -250,6 +250,22 @@ heads for [SkillsBench skill selection](https://huggingface.co/dolev31/tabagent-
 [τ²-bench tool shortlisting](https://huggingface.co/dolev31/tabagent-tau2-tool-shortlisting) load with
 `tabagent.load("hf://...")`, and the [Colab quickstart](https://colab.research.google.com/github/dolev31/TabAgent/blob/main/notebooks/quickstart.ipynb) runs one in the browser.
 <!-- /named -->
+
+## Contribute
+
+TabAgent is young, and three areas would benefit most from your help. Each track lists tasks that name the file to
+start in and the test that says they are done; the [roadmap](https://github.com/dolev31/TabAgent/discussions/13) is
+the place to ask.
+
+| | Track | Start with |
+|---|---|---|
+| 🔍 | [**Find the bottleneck**](https://github.com/dolev31/TabAgent/issues/10): which LLM call in an agent is worth replacing | [OpenTelemetry traces](https://github.com/dolev31/TabAgent/issues/1) · [LangSmith/Langfuse](https://github.com/dolev31/TabAgent/issues/2) |
+| 🔁 | [**Smoother hot swap**](https://github.com/dolev31/TabAgent/issues/11): from a trained head to production, safely | [LangGraph example](https://github.com/dolev31/TabAgent/issues/4) · [shadow mode](https://github.com/dolev31/TabAgent/issues/5) |
+| 🧩 | [**A better feature card**](https://github.com/dolev31/TabAgent/issues/12): what the classifier looks at | [candidate recency](https://github.com/dolev31/TabAgent/issues/7) · [`card explain`](https://github.com/dolev31/TabAgent/issues/8) |
+
+Every pull request meets [one published bar](CONTRIBUTING.md#the-bar): tested, documented and typed, small enough to
+review, checked automatically, and reviewed against a rubric. `make pr-ready` runs every check locally. AI tools and
+coding agents are welcome; a person stays accountable for every line.
 
 <!-- named -->
 ## Citation

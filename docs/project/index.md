@@ -15,7 +15,8 @@ lead: "How to cite TabAgent, take part in it, and what you may do with it."
 
 -   :material-source-pull: [__Contributing__](contributing.md)
 
-    Set up, the checks to run before a pull request, and the most wanted contributions.
+    The bar every pull request meets, how it is reviewed, AI-assisted contributions, and the
+    [roadmap](https://github.com/dolev31/TabAgent/discussions/13) of open tasks.
 
 -   :material-shield-lock-outline: [__Security policy__](security.md)
 

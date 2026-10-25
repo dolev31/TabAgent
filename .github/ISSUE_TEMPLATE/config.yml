@@ -1,5 +1,8 @@
 blank_issues_enabled: true
 contact_links:
+  - name: The roadmap and open tasks
+    url: https://github.com/dolev31/TabAgent/discussions/13
+    about: Three tracks where help matters most, each with tasks that say where to start and what done means.
   - name: Reproducing a paper result
     url: https://github.com/dolev31/TabAgent/blob/main/docs/reproducing.md
     about: Every reproducible cell, the command that recomputes it, and the value it produces.
