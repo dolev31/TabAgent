@@ -236,44 +236,82 @@
       <a class="ta-btn ta-btn--ghost" href="{{ 'project/citation/' | url }}"><span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/format-quote-close.svg" %}</span> Cite</a>
     </div>
     <div class="ta-paper__viewer">
-      <iframe title="The TabAgent paper (PDF)" loading="lazy" data-src="{{ (config.extra.paper_pdf or 'https://arxiv.org/pdf/2602.16429') | url }}#view=FitH&amp;navpanes=0"></iframe>
+      <div class="ta-paper__skeleton" aria-hidden="true"><span></span><span></span><span></span><span></span><span></span><span></span></div>
+      <iframe title="The TabAgent paper (PDF)" data-src="{{ (config.extra.paper_pdf or 'https://arxiv.org/pdf/2602.16429') | url }}#view=FitH&amp;navpanes=0"></iframe>
       <p class="ta-paper__fallback">Your browser does not show PDFs here. <a href="https://arxiv.org/pdf/2602.16429">Open the PDF</a>.</p>
     </div>
   </aside>
 </div>
 <script>
-  // The paper pill opens the panel; Esc, the close button or a click outside closes it. The PDF loads on the first
-  // open only. Ctrl/Cmd-click and middle-click keep the link's normal behavior (a new tab to arXiv).
+  // The paper pill opens the panel: the pill lifts, the page dims, and the panel glides in from the right while its
+  // content settles a beat behind it. The PDF starts loading only once the motion is over, so the glide never
+  // stutters; a skeleton holds its place until it is ready. Esc, the close button, a click outside or a swipe to
+  // the right closes it. Ctrl/Cmd-click and middle-click keep the link's normal behavior (arXiv in a new tab).
   (function () {
-    var root = document.getElementById("ta-paper"), open = document.querySelector("[data-paper-open]");
-    if (!root || !open) return;
-    var panel = root.querySelector(".ta-paper__panel"), frame = root.querySelector("iframe"), last = null;
+    var root = document.getElementById("ta-paper"), pill = document.querySelector("[data-paper-open]");
+    if (!root || !pill) return;
+    var panel = root.querySelector(".ta-paper__panel"), frame = root.querySelector("iframe"), viewer = root.querySelector(".ta-paper__viewer");
     var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    var last = null, timer = 0, busy = false;
+    function settle(fn, ms) { if (reduce) { fn(); return; } clearTimeout(timer); timer = setTimeout(fn, ms); }
+    function loadPdf() {
+      if (!frame || frame.src) return;
+      // the browser's PDF viewer paints its own gray frame first: fade in once the pages are drawn
+      frame.addEventListener("load", function () { setTimeout(function () { viewer.classList.add("is-ready"); }, 450); }, { once: true });
+      frame.src = frame.dataset.src;
+      setTimeout(function () { viewer.classList.add("is-stalled"); }, 6000);
+    }
     function show(e) {
       if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)) return;
       if (e) e.preventDefault();
-      if (frame && !frame.src) frame.src = frame.dataset.src;
-      last = document.activeElement; root.hidden = false;
+      if (busy || root.classList.contains("is-open")) return;
+      last = pill;
+      pill.classList.add("is-pressed");
+      root.hidden = false;
+      var gap = window.innerWidth - document.documentElement.clientWidth;  // no layout jump when the page stops scrolling
+      document.documentElement.style.setProperty("--ta-scrollbar", gap + "px");
       document.documentElement.classList.add("ta-paper-open");
-      requestAnimationFrame(function () { requestAnimationFrame(function () { root.classList.add("is-open"); }); });
-      root.querySelector(".ta-paper__close").focus({ preventScroll: true });
+      void panel.offsetWidth;  // commit the closed state, so the transition runs from it
+      root.classList.add("is-open");
+      setTimeout(function () { pill.classList.remove("is-pressed"); }, 160);
+      settle(function () { root.querySelector(".ta-paper__close").focus({ preventScroll: true }); loadPdf(); }, 520);
     }
     function hide() {
+      if (!root.classList.contains("is-open")) return;
+      busy = true;
       root.classList.remove("is-open");
-      document.documentElement.classList.remove("ta-paper-open");
-      var done = function () { root.hidden = true; if (last && last.focus) last.focus({ preventScroll: true }); };
-      if (reduce) done(); else panel.addEventListener("transitionend", done, { once: true });
+      root.classList.add("is-closing");
+      settle(function () {
+        root.classList.remove("is-closing");
+        root.hidden = true; busy = false;
+        document.documentElement.classList.remove("ta-paper-open");
+        document.documentElement.style.removeProperty("--ta-scrollbar");
+        if (last && last.focus) last.focus({ preventScroll: true });
+      }, 320);
     }
-    open.addEventListener("click", show);
+    pill.addEventListener("click", show);
+    pill.addEventListener("pointerenter", function () { if (frame && !frame.src) { var l = document.createElement("link"); l.rel = "prefetch"; l.href = frame.dataset.src.split("#")[0]; document.head.appendChild(l); } }, { once: true });
     root.querySelectorAll("[data-paper-close]").forEach(function (b) { b.addEventListener("click", hide); });
     document.addEventListener("keydown", function (e) {
       if (root.hidden) return;
       if (e.key === "Escape") { hide(); return; }
       if (e.key !== "Tab") return;
-      var f = panel.querySelectorAll("a[href], button, iframe");
+      var f = panel.querySelectorAll("a[href], button");
       var first = f[0], end = f[f.length - 1];
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); end.focus(); }
       else if (!e.shiftKey && document.activeElement === end) { e.preventDefault(); first.focus(); }
+    });
+    // swipe right on the panel's header to close it, as on a phone sheet
+    var x0 = null;
+    panel.addEventListener("touchstart", function (e) { if (!e.target.closest(".ta-paper__viewer")) x0 = e.touches[0].clientX; }, { passive: true });
+    panel.addEventListener("touchmove", function (e) {
+      if (x0 === null) return; var dx = Math.max(0, e.touches[0].clientX - x0);
+      panel.style.transition = "none"; panel.style.transform = "translate3d(" + dx + "px,0,0)";
+    }, { passive: true });
+    panel.addEventListener("touchend", function (e) {
+      if (x0 === null) return; var dx = e.changedTouches[0].clientX - x0; x0 = null;
+      panel.style.transition = ""; panel.style.transform = "";
+      if (dx > 90) hide();
     });
   })();
 </script>

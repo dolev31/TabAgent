@@ -2147,8 +2147,17 @@ video.ta-frame__media {
 
 /* ================================================================ landing: the paper panel */
 
-/* The hero's paper pill slides this panel in from the right: the paper's title, authors, links and the PDF itself.
-   The scrim fades while the panel slides, both on the brand's ease; reduced motion opens it at once. */
+/* The hero's paper pill opens this panel. Motion, in order: the pill presses in; the page dims and blurs while
+   the panel glides in from the right on a drawer's ease (500 ms, no overshoot);
+   the panel's content settles in a beat later, one row after another. Closing is quicker (300 ms) and runs on an
+   ease-in, so the panel accelerates away. Only transform and opacity animate, on their own layers, so the
+   browser never re-lays out the page mid-motion; the PDF loads after the glide, never during it. */
+
+:root {
+  /* a drawer's ease: quick to start, settling without a long creep (the curve Vaul and Radix sheets use) */
+  --ta-paper-in: cubic-bezier(0.32, 0.72, 0, 1);
+  --ta-paper-out: cubic-bezier(0.4, 0, 1, 1);
+}
 
 .ta-paper {
   inset: 0;
@@ -2161,41 +2170,45 @@ video.ta-frame__media {
 }
 
 .ta-paper__scrim {
-  backdrop-filter: blur(3px);
-  background-color: color-mix(in srgb, var(--ta-ink) 45%, transparent);
+  backdrop-filter: blur(6px) saturate(115%);
+  background-color: color-mix(in srgb, var(--ta-ink) 42%, transparent);
   inset: 0;
   opacity: 0;
   position: absolute;
-  transition: opacity 0.45s var(--ta-ease);
+  transition: opacity 0.4s var(--ta-paper-in);
+  will-change: opacity;
 }
 
 .ta-paper__panel {
   background-color: var(--ta-bg);
   border-left: 1px solid var(--ta-border);
-  box-shadow: var(--ta-shadow-lg);
+  border-radius: 1.1rem 0 0 1.1rem;
+  box-shadow: -2rem 0 4rem -1rem rgba(11, 16, 32, 0.28), var(--ta-shadow-lg);
   display: flex;
   flex-direction: column;
   gap: 0.75rem;
   height: 100%;
   max-width: 100%;
+  overflow: hidden;
   padding: 1.1rem 1.2rem 1rem;
   position: absolute;
   right: 0;
   top: 0;
-  transform: translateX(104%);
-  transition: transform 0.6s var(--ta-ease);
-  width: min(52rem, 92vw);
+  transform: translate3d(calc(100% + 3rem), 0, 0);
+  transition: transform 0.5s var(--ta-paper-in);
+  width: min(44rem, 62vw);
+  will-change: transform;
 }
 
 .ta-paper__panel::before {
   /* the hero gradient as a hairline down the panel's leading edge */
   background: linear-gradient(180deg, var(--ta-schema), var(--ta-synth) 50%, var(--ta-head));
-  bottom: 0;
+  bottom: 1.1rem;
   content: "";
-  left: -1px;
-  opacity: 0.85;
+  left: 0;
+  opacity: 0.9;
   position: absolute;
-  top: 0;
+  top: 1.1rem;
   width: 2px;
 }
 
@@ -2204,14 +2217,27 @@ video.ta-frame__media {
 }
 
 .ta-paper.is-open .ta-paper__panel {
-  transform: translateX(0);
+  transform: translate3d(0, 0, 0);
 }
 
-/* the content follows the panel in, a beat behind it */
+.ta-paper.is-closing .ta-paper__panel {
+  transition: transform 0.3s var(--ta-paper-out);
+}
+
+.ta-paper.is-closing .ta-paper__scrim {
+  transition: opacity 0.3s ease-in;
+}
+
+html.ta-paper-open {
+  overflow: hidden;
+  padding-right: var(--ta-scrollbar, 0);
+}
+
+/* the content settles in after the panel, one row after another */
 .ta-paper__panel > * {
   opacity: 0;
-  transform: translateX(1.2rem);
-  transition: opacity 0.5s var(--ta-ease), transform 0.5s var(--ta-ease);
+  transform: translate3d(1rem, 0, 0);
+  transition: opacity 0.35s var(--ta-paper-in), transform 0.45s var(--ta-paper-in);
 }
 
 .ta-paper.is-open .ta-paper__panel > * {
@@ -2219,13 +2245,21 @@ video.ta-frame__media {
   transform: none;
 }
 
-.ta-paper.is-open .ta-paper__panel > :nth-child(2) { transition-delay: 0.08s; }
-.ta-paper.is-open .ta-paper__panel > :nth-child(3) { transition-delay: 0.12s; }
-.ta-paper.is-open .ta-paper__panel > :nth-child(4) { transition-delay: 0.16s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(1) { transition-delay: 0.08s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(2) { transition-delay: 0.11s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(3) { transition-delay: 0.14s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(4) { transition-delay: 0.17s; }
 .ta-paper.is-open .ta-paper__panel > :nth-child(5) { transition-delay: 0.2s; }
 
-html.ta-paper-open {
-  overflow: hidden;
+.ta-paper.is-closing .ta-paper__panel > * {
+  transition-delay: 0s;
+  transition-duration: 0.2s;
+}
+
+/* the pill answers the click before anything moves */
+.ta-pill.is-pressed {
+  transform: scale(0.97);
+  transition-duration: 0.12s;
 }
 
 .ta-paper__head {
@@ -2254,7 +2288,7 @@ html.ta-paper-open {
   display: flex;
   height: 1.9rem;
   justify-content: center;
-  transition: transform 0.3s var(--ta-ease), border-color 0.3s var(--ta-ease);
+  transition: transform 0.35s var(--ta-paper-in), border-color 0.3s var(--ta-ease), color 0.3s var(--ta-ease);
   width: 1.9rem;
 }
 
@@ -2280,7 +2314,7 @@ html.ta-paper-open {
 
 .ta-paper__title {
   color: var(--ta-fg);
-  font-size: clamp(1.05rem, 2.2vw, 1.45rem);
+  font-size: clamp(1.05rem, 2vw, 1.35rem);
   font-weight: 800;
   letter-spacing: -0.03em;
   line-height: 1.2;
@@ -2315,25 +2349,82 @@ html.ta-paper-open {
   border: 0;
   height: 100%;
   inset: 0;
+  opacity: 0;
   position: absolute;
+  transition: opacity 0.4s var(--ta-paper-in);
   width: 100%;
 }
 
+.ta-paper__viewer.is-ready iframe {
+  opacity: 1;
+}
+
+/* shown only when the PDF has not loaded after a few seconds (a browser that cannot show PDFs inline) */
 .ta-paper__fallback {
   color: var(--ta-muted);
-  font-size: 0.66rem;
+  display: none;
+  font-size: 0.7rem;
   left: 50%;
   margin: 0;
   position: absolute;
   text-align: center;
   top: 50%;
   transform: translate(-50%, -50%);
-  z-index: -1;
+}
+
+.ta-paper__viewer.is-stalled:not(.is-ready) .ta-paper__fallback {
+  display: block;
+}
+
+.ta-paper__viewer.is-stalled:not(.is-ready) .ta-paper__skeleton {
+  opacity: 0;
+}
+
+/* a page-shaped skeleton holds the PDF's place until it is ready */
+.ta-paper__skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  inset: 0;
+  padding: 2.2rem 12% 0;
+  position: absolute;
+  transition: opacity 0.3s ease;
+}
+
+.ta-paper__viewer.is-ready .ta-paper__skeleton {
+  opacity: 0;
+}
+
+.ta-paper__skeleton span {
+  animation: ta-shimmer 1.4s ease-in-out infinite;
+  background: linear-gradient(90deg, var(--ta-border) 0%, color-mix(in srgb, var(--ta-border) 40%, transparent) 50%, var(--ta-border) 100%);
+  background-size: 200% 100%;
+  border-radius: 0.3rem;
+  display: block;
+  height: 0.6rem;
+}
+
+.ta-paper__skeleton span:nth-child(1) { height: 1.2rem; width: 70%; }
+.ta-paper__skeleton span:nth-child(2) { margin-bottom: 1rem; width: 50%; }
+.ta-paper__skeleton span:nth-child(4) { width: 92%; }
+.ta-paper__skeleton span:nth-child(5) { width: 84%; }
+.ta-paper__skeleton span:nth-child(6) { width: 60%; }
+
+@keyframes ta-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -100% 0; }
+}
+
+@media screen and (max-width: 59.984375em) {
+  .ta-paper__panel {
+    width: min(44rem, 86vw);
+  }
 }
 
 @media screen and (max-width: 44.984375em) {
   .ta-paper__panel {
     border-left: 0;
+    border-radius: 0;
     width: 100vw;
   }
 
@@ -2343,6 +2434,14 @@ html.ta-paper-open {
     padding-left: 0.6rem;
     padding-right: 0.6rem;
     width: auto;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ta-paper__panel,
+  .ta-paper__panel > *,
+  .ta-paper__scrim {
+    transition: none !important;
   }
 }
 
