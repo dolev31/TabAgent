@@ -19,10 +19,12 @@
   <div class="ta-hero__inner md-grid">
     {# named #}
     <a class="ta-pill" href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper" data-paper-open
-       aria-haspopup="dialog" aria-controls="ta-paper">
-      <span class="ta-pill__tag">Paper</span>
+       aria-haspopup="dialog" aria-controls="ta-paper" draggable="false">
+      <span class="ta-pill__track" aria-hidden="true"></span>
+      <span class="ta-pill__tag" data-paper-thumb>Paper</span>
       <span class="ta-pill__text">Distilling LLM Agent Components into Cheap Classifiers</span>
       <span class="ta-pill__arrow" aria-hidden="true">&rarr;</span>
+      <span class="ta-pill__hint" aria-hidden="true">slide to open</span>
     </a>
     {# /named #}
     <h1 class="ta-hero__title" id="ta-hero-title"><span class="ta-wm-tab">Tab</span><span class="ta-wm-agent">Agent</span></h1>
@@ -264,7 +266,8 @@
     function show(e) {
       if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)) return;
       if (e) e.preventDefault();
-      if (busy || root.classList.contains("is-open")) return;
+      if (root.classList.contains("is-open")) return;
+      if (busy) { clearTimeout(timer); root.classList.remove("is-closing"); busy = false; }  // reopen mid-close
       last = pill;
       pill.classList.add("is-pressed");
       root.hidden = false;
@@ -289,7 +292,61 @@
         if (last && last.focus) last.focus({ preventScroll: true });
       }, 320);
     }
-    pill.addEventListener("click", show);
+    pill.addEventListener("click", function (e) { if (dragged) { e.preventDefault(); dragged = false; return; } show(e); });
+
+    // Slide to open: drag the "Paper" tag along the pill. The tag follows the pointer, the pill fills behind it,
+    // and the panel slides in from the edge in step with the drag; release past 55% of the track (or flick) and it
+    // opens the rest of the way, release short of it and everything springs back. A plain click still opens it.
+    var thumb = pill.querySelector("[data-paper-thumb]"), drag = null, dragged = false;
+    // a link is draggable by default: the browser would start dragging the URL and cancel our pointer
+    pill.addEventListener("dragstart", function (e) { e.preventDefault(); });
+    function travel() { return Math.max(1, pill.clientWidth - thumb.offsetWidth - 8); }
+    function follow(k) {  // k: 0 (rest) .. 1 (the end of the track)
+      pill.style.setProperty("--ta-slide", k.toFixed(4));
+      thumb.style.transform = "translate3d(" + (k * travel()).toFixed(1) + "px,0,0)";
+      panel.style.transform = "translate3d(calc((100% + 3rem) * " + (1 - 0.38 * k).toFixed(4) + "),0,0)";
+      root.querySelector(".ta-paper__scrim").style.opacity = (0.55 * k).toFixed(3);
+    }
+    function release(open) {
+      pill.classList.remove("is-dragging"); root.classList.remove("is-dragging");
+      thumb.style.transform = ""; panel.style.transform = ""; root.querySelector(".ta-paper__scrim").style.opacity = "";
+      pill.style.removeProperty("--ta-slide");
+      if (open) { show(); } else { root.hidden = true; document.documentElement.classList.remove("ta-paper-open"); }
+    }
+    // the nudge plays once, on the first hover only
+    pill.addEventListener("pointerenter", function () { if (!reduce) pill.classList.add("is-hinted"); }, { once: true });
+    pill.addEventListener("animationend", function () { pill.classList.remove("is-hinted"); });
+    thumb.addEventListener("pointerdown", function (e) {
+      if (e.button !== 0 || reduce || root.classList.contains("is-open")) return;
+      if (busy) { clearTimeout(timer); root.classList.remove("is-closing"); busy = false; }  // grabbed mid-close
+      pill.classList.add("is-held"); pill.classList.remove("is-hinted");
+      drag = { x: e.clientX, t: performance.now(), k: 0, v: 0, moved: false };
+      thumb.setPointerCapture(e.pointerId);
+    });
+    thumb.addEventListener("pointermove", function (e) {
+      if (!drag) return;
+      var dx = e.clientX - drag.x;
+      if (!drag.moved) {
+        if (Math.abs(dx) < 6) return;  // a click, until it moves
+        drag.moved = true; dragged = true;
+        pill.classList.add("is-dragging"); root.classList.add("is-dragging");
+        root.hidden = false; document.documentElement.classList.add("ta-paper-open");
+        if (frame && !frame.src) { var l = document.createElement("link"); l.rel = "prefetch"; l.href = frame.dataset.src.split("#")[0]; document.head.appendChild(l); }
+      }
+      var now = performance.now(), k = Math.min(1, Math.max(0, dx / travel()));
+      drag.v = (k - drag.k) / Math.max(1, now - drag.t); drag.k = k; drag.t = now;
+      follow(k);
+      e.preventDefault();
+    });
+    function end() {
+      pill.classList.remove("is-held");
+      if (!drag) return;
+      var d = drag; drag = null;
+      if (!d.moved) return;  // a click: the click handler opens it
+      release(d.k > 0.55 || d.v > 0.0025);
+    }
+    thumb.addEventListener("pointerup", end);
+    thumb.addEventListener("pointercancel", function () { pill.classList.remove("is-held"); if (drag && drag.moved) { drag = null; release(false); } else drag = null; });
     pill.addEventListener("pointerenter", function () { if (frame && !frame.src) { var l = document.createElement("link"); l.rel = "prefetch"; l.href = frame.dataset.src.split("#")[0]; document.head.appendChild(l); } }, { once: true });
     root.querySelectorAll("[data-paper-close]").forEach(function (b) { b.addEventListener("click", hide); });
     document.addEventListener("keydown", function (e) {

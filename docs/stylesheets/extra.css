@@ -171,11 +171,19 @@
 .md-typeset a:focus-visible,
 .md-nav__link:focus-visible,
 .ta-btn:focus-visible,
-.ta-pill:focus-visible,
 .ta-footer a:focus-visible {
   border-radius: 0.3rem;
   outline: 2px solid var(--ta-focus);
   outline-offset: 2px;
+}
+
+.ta-pill:focus {
+  outline: none;
+}
+
+.ta-pill:focus-visible {
+  outline: 2px solid var(--ta-focus);
+  outline-offset: 3px;
 }
 
 /* ================================================================ header and navigation */
@@ -909,6 +917,12 @@
 }
 
 .ta-pill {
+  --ta-slide: 0;
+  -webkit-user-drag: none;
+  user-select: none;
+  overflow: hidden;
+  position: relative;
+  touch-action: pan-y;
   align-items: center;
   background-color: color-mix(in srgb, var(--ta-surface) 80%, transparent);
   border: 1px solid var(--ta-border);
@@ -930,7 +944,77 @@
   transform: translateY(-1px);
 }
 
+/* Slide to open: the "Paper" tag is a thumb that drags along the pill. Behind it the track fills with the brand
+   gradient as it moves, the title fades, and a hint takes its place; the paper panel follows the drag in from the
+   right edge (docs/overrides/home.html). */
+.ta-pill__track {
+  background: linear-gradient(90deg, color-mix(in srgb, var(--ta-schema) 22%, transparent),
+    color-mix(in srgb, var(--ta-synth) 26%, transparent) 60%, color-mix(in srgb, var(--ta-head) 30%, transparent));
+  border-radius: inherit;
+  inset: 0;
+  opacity: calc(0.25 + var(--ta-slide) * 0.75);
+  pointer-events: none;
+  position: absolute;
+  transform: scaleX(var(--ta-slide));
+  transform-origin: left center;
+}
+
+/* the hint waits at the far end of the track, where the thumb is heading */
+.ta-pill__hint {
+  color: var(--ta-synth-text);
+  font-family: var(--md-code-font-family);
+  font-size: 0.58rem;
+  font-weight: 600;
+  letter-spacing: 0.14em;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  right: 1rem;
+  text-transform: uppercase;
+  top: 50%;
+  transform: translateY(-50%);
+  white-space: nowrap;
+}
+
+.ta-pill__hint::after {
+  content: " \203A\203A\203A";
+  letter-spacing: 0.05em;
+}
+
+.ta-pill.is-dragging {
+  cursor: grabbing;
+  transition: none;
+}
+
+/* the title is gone by 12% of the drag; the hint arrives after it (from 14% to 34%), never on top of it */
+.ta-pill.is-dragging .ta-pill__text,
+.ta-pill.is-dragging .ta-pill__arrow {
+  opacity: max(0, calc(1 - var(--ta-slide) * 8.5));
+}
+
+.ta-pill.is-dragging .ta-pill__hint {
+  /* in from 14% of the drag, and out again as the thumb reaches it */
+  opacity: min(clamp(0, calc((var(--ta-slide) - 0.14) * 5), 1), clamp(0, calc((0.72 - var(--ta-slide)) * 6), 1));
+}
+
+/* when the drag is released, the thumb and the track spring back (or on into the open panel) */
+.ta-pill:not(.is-dragging) .ta-pill__tag,
+.ta-pill:not(.is-dragging) .ta-pill__track {
+  transition: transform 0.45s cubic-bezier(0.32, 0.72, 0, 1), opacity 0.3s ease;
+}
+
+.ta-paper.is-dragging .ta-paper__panel,
+.ta-paper.is-dragging .ta-paper__scrim {
+  transition: none;
+}
+
 .ta-pill__tag {
+  box-shadow: 0 1px 4px rgba(11, 16, 32, 0.25);
+  cursor: grab;
+  position: relative;
+  touch-action: none;
+  user-select: none;
+  z-index: 1;
   background: linear-gradient(90deg, var(--ta-schema), var(--ta-synth) 55%, var(--ta-head));
   border-radius: 999px;
   color: var(--ta-ink);
@@ -950,6 +1034,17 @@
 .ta-pill__arrow {
   color: var(--ta-muted);
   transition: transform 0.3s var(--ta-ease);
+}
+
+/* a one-time nudge on the first hover says "this moves"; it never plays during a press or a drag */
+.ta-pill.is-hinted:not(.is-held) .ta-pill__tag {
+  animation: ta-nudge 1.4s var(--ta-ease) 0.15s 1;
+}
+
+@keyframes ta-nudge {
+  0%, 100% { transform: translateX(0); }
+  30% { transform: translateX(0.45rem); }
+  60% { transform: translateX(0); }
 }
 
 .ta-pill:hover .ta-pill__arrow {
