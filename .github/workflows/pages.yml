@@ -55,9 +55,9 @@ jobs:
             || cp docs/assets/explainer-teaser.webp site/assets/explainer-teaser-hd.webp
           ls -l site/assets/explainer-teaser-hd.webp
       - name: The paper's PDF beside the page (Google Scholar attaches a PDF only from the page's own directory)
-        # Pinned to the version whose title the page carries; until it is listed, the Scholar PDF tag is dropped.
+        # The latest version (v2 onward carries the page's title); the landing page's paper panel shows it too.
         run: |
-          if curl -fsSL --retry 3 -o site/paper.pdf "https://arxiv.org/pdf/2602.16429v2"; then
+          if curl -fsSL --retry 3 -o site/paper.pdf "https://arxiv.org/pdf/2602.16429"; then
             echo "paper.pdf: $(wc -c < site/paper.pdf) bytes"
           else
             rm -f site/paper.pdf

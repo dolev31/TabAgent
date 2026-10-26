@@ -4,6 +4,9 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **The paper, one click from the home page.** The hero's paper pill slides in a panel with the title, the authors,
+  links to arXiv, the PDF and the citation, and the paper itself. Esc or a click outside closes it; Ctrl/Cmd-click
+  still opens arXiv in a new tab.
 - **A published contribution bar.** `CONTRIBUTING.md` sets what every pull request must meet, how it is reviewed, and
   the rules for AI-assisted and agent-written changes. `make pr-ready` runs every check locally, and the
   `pr-quality` workflow enforces them on each pull request: docstrings and types on changed public API, a test with

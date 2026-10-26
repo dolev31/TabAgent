@@ -2145,6 +2145,207 @@ video.ta-frame__media {
   }
 }
 
+/* ================================================================ landing: the paper panel */
+
+/* The hero's paper pill slides this panel in from the right: the paper's title, authors, links and the PDF itself.
+   The scrim fades while the panel slides, both on the brand's ease; reduced motion opens it at once. */
+
+.ta-paper {
+  inset: 0;
+  position: fixed;
+  z-index: 10;
+}
+
+.ta-paper[hidden] {
+  display: none;
+}
+
+.ta-paper__scrim {
+  backdrop-filter: blur(3px);
+  background-color: color-mix(in srgb, var(--ta-ink) 45%, transparent);
+  inset: 0;
+  opacity: 0;
+  position: absolute;
+  transition: opacity 0.45s var(--ta-ease);
+}
+
+.ta-paper__panel {
+  background-color: var(--ta-bg);
+  border-left: 1px solid var(--ta-border);
+  box-shadow: var(--ta-shadow-lg);
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  height: 100%;
+  max-width: 100%;
+  padding: 1.1rem 1.2rem 1rem;
+  position: absolute;
+  right: 0;
+  top: 0;
+  transform: translateX(104%);
+  transition: transform 0.6s var(--ta-ease);
+  width: min(52rem, 92vw);
+}
+
+.ta-paper__panel::before {
+  /* the hero gradient as a hairline down the panel's leading edge */
+  background: linear-gradient(180deg, var(--ta-schema), var(--ta-synth) 50%, var(--ta-head));
+  bottom: 0;
+  content: "";
+  left: -1px;
+  opacity: 0.85;
+  position: absolute;
+  top: 0;
+  width: 2px;
+}
+
+.ta-paper.is-open .ta-paper__scrim {
+  opacity: 1;
+}
+
+.ta-paper.is-open .ta-paper__panel {
+  transform: translateX(0);
+}
+
+/* the content follows the panel in, a beat behind it */
+.ta-paper__panel > * {
+  opacity: 0;
+  transform: translateX(1.2rem);
+  transition: opacity 0.5s var(--ta-ease), transform 0.5s var(--ta-ease);
+}
+
+.ta-paper.is-open .ta-paper__panel > * {
+  opacity: 1;
+  transform: none;
+}
+
+.ta-paper.is-open .ta-paper__panel > :nth-child(2) { transition-delay: 0.08s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(3) { transition-delay: 0.12s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(4) { transition-delay: 0.16s; }
+.ta-paper.is-open .ta-paper__panel > :nth-child(5) { transition-delay: 0.2s; }
+
+html.ta-paper-open {
+  overflow: hidden;
+}
+
+.ta-paper__head {
+  align-items: center;
+  display: flex;
+  gap: 0.6rem;
+}
+
+.md-typeset .ta-paper__meta,
+.ta-paper__meta {
+  color: var(--ta-muted);
+  flex: 1;
+  font-family: var(--md-code-font-family);
+  font-size: 0.6rem;
+  letter-spacing: 0.06em;
+  margin: 0;
+}
+
+.ta-paper__close {
+  align-items: center;
+  background: transparent;
+  border: 1px solid var(--ta-border-strong);
+  border-radius: 50%;
+  color: var(--ta-fg-2);
+  cursor: pointer;
+  display: flex;
+  height: 1.9rem;
+  justify-content: center;
+  transition: transform 0.3s var(--ta-ease), border-color 0.3s var(--ta-ease);
+  width: 1.9rem;
+}
+
+.ta-paper__close:hover {
+  border-color: var(--ta-synth-text);
+  color: var(--ta-synth-text);
+  transform: rotate(90deg);
+}
+
+.ta-paper__close:focus-visible {
+  outline: 2px solid var(--ta-focus);
+  outline-offset: 2px;
+}
+
+.ta-paper__close svg {
+  fill: none;
+  height: 1rem;
+  stroke: currentColor;
+  stroke-linecap: round;
+  stroke-width: 2;
+  width: 1rem;
+}
+
+.ta-paper__title {
+  color: var(--ta-fg);
+  font-size: clamp(1.05rem, 2.2vw, 1.45rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.2;
+  margin: 0.2rem 0 0;
+  text-wrap: balance;
+}
+
+.ta-paper__authors {
+  color: var(--ta-muted);
+  font-size: 0.66rem;
+  line-height: 1.55;
+  margin: 0;
+}
+
+.ta-paper__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+.ta-paper__viewer {
+  background-color: var(--ta-surface);
+  border: 1px solid var(--ta-border);
+  border-radius: 0.8rem;
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  position: relative;
+}
+
+.ta-paper__viewer iframe {
+  border: 0;
+  height: 100%;
+  inset: 0;
+  position: absolute;
+  width: 100%;
+}
+
+.ta-paper__fallback {
+  color: var(--ta-muted);
+  font-size: 0.66rem;
+  left: 50%;
+  margin: 0;
+  position: absolute;
+  text-align: center;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: -1;
+}
+
+@media screen and (max-width: 44.984375em) {
+  .ta-paper__panel {
+    border-left: 0;
+    width: 100vw;
+  }
+
+  /* one row of buttons, so the PDF keeps the height */
+  .ta-paper__actions .ta-btn {
+    flex: 1;
+    padding-left: 0.6rem;
+    padding-right: 0.6rem;
+    width: auto;
+  }
+}
+
 /* ================================================================ landing: podcast */
 
 .ta-podcast {

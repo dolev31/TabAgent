@@ -18,7 +18,8 @@
   <div class="ta-hero__bg" aria-hidden="true"></div>
   <div class="ta-hero__inner md-grid">
     {# named #}
-    <a class="ta-pill" href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper">
+    <a class="ta-pill" href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper" data-paper-open
+       aria-haspopup="dialog" aria-controls="ta-paper">
       <span class="ta-pill__tag">Paper</span>
       <span class="ta-pill__text">Distilling LLM Agent Components into Cheap Classifiers</span>
       <span class="ta-pill__arrow" aria-hidden="true">&rarr;</span>
@@ -214,6 +215,69 @@
   </script>
 </section>
 {%- endif %}
+{#- The paper, in a panel that slides in from the hero's paper pill. Without JavaScript the pill is a plain link to
+    arXiv; with it, the panel opens instead, with the PDF the Pages workflow keeps beside the page (extra.paper_pdf). -#}
+{# named #}
+<div class="ta-paper" id="ta-paper" role="dialog" aria-modal="true" aria-labelledby="ta-paper-title" hidden>
+  <div class="ta-paper__scrim" data-paper-close></div>
+  <aside class="ta-paper__panel">
+    <header class="ta-paper__head">
+      <span class="ta-pill__tag">Paper</span>
+      <p class="ta-paper__meta">arXiv 2602.16429 · cs.CL</p>
+      <button class="ta-paper__close" type="button" data-paper-close aria-label="Close the paper">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
+    </header>
+    <h2 class="ta-paper__title" id="ta-paper-title">TabAgent: Distilling LLM Agent Components into Cheap Classifiers</h2>
+    <p class="ta-paper__authors">Ido Levy, Segev Shlomov, Avi Yaeli, Nir Mashkif, Asaf Adi, Yinon Goldstein, Eilam Shapira, Leshem Choshen · IBM, Weizmann Institute of Science</p>
+    <div class="ta-paper__actions">
+      <a class="ta-btn ta-btn--primary" href="https://arxiv.org/abs/2602.16429" data-goatcounter-click="paper-arxiv">arXiv <span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/arrow-top-right.svg" %}</span></a>
+      <a class="ta-btn ta-btn--ghost" href="https://arxiv.org/pdf/2602.16429" data-goatcounter-click="paper-pdf"><span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/file-pdf-box.svg" %}</span> PDF</a>
+      <a class="ta-btn ta-btn--ghost" href="{{ 'project/citation/' | url }}"><span class="ta-btn__icon" aria-hidden="true">{% include ".icons/material/format-quote-close.svg" %}</span> Cite</a>
+    </div>
+    <div class="ta-paper__viewer">
+      <iframe title="The TabAgent paper (PDF)" loading="lazy" data-src="{{ (config.extra.paper_pdf or 'https://arxiv.org/pdf/2602.16429') | url }}#view=FitH&amp;navpanes=0"></iframe>
+      <p class="ta-paper__fallback">Your browser does not show PDFs here. <a href="https://arxiv.org/pdf/2602.16429">Open the PDF</a>.</p>
+    </div>
+  </aside>
+</div>
+<script>
+  // The paper pill opens the panel; Esc, the close button or a click outside closes it. The PDF loads on the first
+  // open only. Ctrl/Cmd-click and middle-click keep the link's normal behavior (a new tab to arXiv).
+  (function () {
+    var root = document.getElementById("ta-paper"), open = document.querySelector("[data-paper-open]");
+    if (!root || !open) return;
+    var panel = root.querySelector(".ta-paper__panel"), frame = root.querySelector("iframe"), last = null;
+    var reduce = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    function show(e) {
+      if (e && (e.metaKey || e.ctrlKey || e.shiftKey || e.button === 1)) return;
+      if (e) e.preventDefault();
+      if (frame && !frame.src) frame.src = frame.dataset.src;
+      last = document.activeElement; root.hidden = false;
+      document.documentElement.classList.add("ta-paper-open");
+      requestAnimationFrame(function () { requestAnimationFrame(function () { root.classList.add("is-open"); }); });
+      root.querySelector(".ta-paper__close").focus({ preventScroll: true });
+    }
+    function hide() {
+      root.classList.remove("is-open");
+      document.documentElement.classList.remove("ta-paper-open");
+      var done = function () { root.hidden = true; if (last && last.focus) last.focus({ preventScroll: true }); };
+      if (reduce) done(); else panel.addEventListener("transitionend", done, { once: true });
+    }
+    open.addEventListener("click", show);
+    root.querySelectorAll("[data-paper-close]").forEach(function (b) { b.addEventListener("click", hide); });
+    document.addEventListener("keydown", function (e) {
+      if (root.hidden) return;
+      if (e.key === "Escape") { hide(); return; }
+      if (e.key !== "Tab") return;
+      var f = panel.querySelectorAll("a[href], button, iframe");
+      var first = f[0], end = f[f.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); end.focus(); }
+      else if (!e.shiftKey && document.activeElement === end) { e.preventDefault(); first.focus(); }
+    });
+  })();
+</script>
+{# /named #}
 {% endblock %}
 
 {% block content %}
