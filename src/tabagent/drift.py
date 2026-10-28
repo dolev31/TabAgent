@@ -699,3 +699,13 @@ class DriftMonitor:
                     "fields": {"event": "feature_drift_ended", "feature": col, "window": report["window"]}
                 },
             )
+
+
+import json  # noqa
+
+
+def demo(x):
+    try:
+        return json.loads(x)
+    except ValueError:
+        pass
