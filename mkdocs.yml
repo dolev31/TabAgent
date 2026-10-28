@@ -213,6 +213,8 @@ nav:
       - project/index.md
       - Citation: project/citation.md
       - Contributing: project/contributing.md
+      - Wanted: project/wanted.md
+      - Governance: project/governance.md
       - Security policy: project/security.md
       - Code of conduct: project/code-of-conduct.md
       - License: project/license.md

@@ -18,6 +18,14 @@ lead: "How to cite TabAgent, take part in it, and what you may do with it."
     The bar every pull request meets, how it is reviewed, AI-assisted contributions, and the
     [roadmap](https://github.com/dolev31/TabAgent/discussions/13) of open tasks.
 
+-   :material-format-list-checks: [__Wanted__](wanted.md)
+
+    What TabAgent needs next, what done means for each item, and how to claim one.
+
+-   :material-gavel: [__Governance__](governance.md)
+
+    Who decides, how a disputed number is settled, and what gets a deprecation period.
+
 -   :material-shield-lock-outline: [__Security policy__](security.md)
 
     Generated code runs in a sandbox that is not a security boundary. How to report a vulnerability.

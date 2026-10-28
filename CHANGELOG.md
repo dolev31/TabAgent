@@ -4,6 +4,11 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **A written contribution standard.** `CONTRIBUTING.md` sets the bar for every pull request, the method's
+  guarantees a reviewer checks (leakage safety, task-grouped evaluation, the sandbox, saved heads that keep loading),
+  "done" for each kind of change, and the rules for AI coding agents. `GOVERNANCE.md` says who decides and that a
+  number is settled by evidence; two issue forms (result dispute, research proposal) and a *Wanted* page list what is
+  needed and what done means.
 - **Every pull request description is checked.** `scripts/check_pr_body.py` refuses a description with an empty
   section, a one-line reason, no evidence (or "No number can move:" without its reason) or no named reader; the
   diff gate also requires every suppression to give its code and reason, and every new module a docstring.

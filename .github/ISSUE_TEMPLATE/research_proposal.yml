@@ -1,0 +1,46 @@
+name: Research proposal
+description: Propose a study to run with TabAgent, stated so its result can be checked
+labels: [research]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Write the plan before the run: a question, what changes, what is held fixed, and the result that would prove
+        you wrong. A finding planned this way is worth more than one found by looking, and either answer is worth
+        publishing. Open questions are labeled [research](https://github.com/dolev31/TabAgent/issues?q=is%3Aopen+label%3Aresearch).
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: One sentence, answerable with a number.
+      placeholder: "Does a per-candidate recency feature raise P@R on τ²-bench tool shortlisting?"
+    validations:
+      required: true
+  - type: textarea
+    id: arms
+    attributes:
+      label: What changes
+      description: The arms of the comparison, by card, head or setting.
+    validations:
+      required: true
+  - type: textarea
+    id: fixed
+    attributes:
+      label: What is held fixed
+      description: The datasets and their pinned revisions, the folds (task-grouped), the seeds, the head preset.
+    validations:
+      required: true
+  - type: textarea
+    id: metrics
+    attributes:
+      label: Metric and test
+      description: The metric that answers the question (P@R, Recall@k, macro-F1, route@1) and the paired interval over tasks you will report.
+    validations:
+      required: true
+  - type: textarea
+    id: falsify
+    attributes:
+      label: What would prove it wrong
+      description: The result that would make you conclude the answer is no.
+    validations:
+      required: true

@@ -1,37 +1,85 @@
 # AGENTS.md
 
-Guidance for coding agents that work in this repository or build on the `tabagent` package. People can read
-it too: [CONTRIBUTING.md](CONTRIBUTING.md) is the human version of the first part.
+Instructions for a coding agent with this repository open, or building on the `tabagent` package. Short on purpose:
+this is what changes your behavior, not a second README. People can read it too; [CONTRIBUTING.md](CONTRIBUTING.md)
+is the full version of the first part.
 
-## Working in this repository
+## What this project is
 
-**The bar is the same for agents and people.** Pull requests are checked automatically and reviewed against the
-rubric in [CONTRIBUTING.md](CONTRIBUTING.md#the-bar). A change that does not meet it is closed, however it was made.
-Before you write code:
+A library that replaces an LLM agent's repeated closed-set decisions (which tools to shortlist, which skill or app
+to use, where to route) with a classifier trained on the agent's own successful runs. Its numbers mean something
+only because of three properties: **no leakage** (nothing sees the test fold, the label, or anything after the
+decision point), **task-grouped evaluation**, and **saved heads that keep loading**. Everything below protects them.
 
-1. **Work from an agreed issue.** Only change what an issue a maintainer agreed on asks for. Do not open pull
-   requests for problems you found yourself; open an issue and let a person decide.
-2. **Keep it small.** One change per pull request, at most 800 changed lines outside `tests/` and `docs/`. Never
-   reformat, rename or restructure code the issue did not need.
-3. **Test first.** Write a test that fails without your change, then make it pass. A test that only calls the code
-   or asserts on a mock does not count. At least 90% of the library lines you change must run in the tests.
-4. **Document and type** every public function, method and class you add or change, in the style of the module.
-5. **Never invent facts.** No made-up numbers, citations or API behavior; run the code to check what it does.
-6. **Run `make pr-ready` and read its output** before handing the change to the person who will open the pull request.
-   They must read every line and tick "AI-written" or "AI-assisted" in the description.
+## Rules that override normal instincts
 
-Then:
+**Never state a measurement you did not take.** No estimated scores, no "should improve P@R by ~2 points". Run it,
+paste the output, or say you did not.
 
-- Set up with `uv sync --group dev`. `make pr-ready` runs lint, format, the strict docs build, the test suite with
-  coverage and the contribution gate (`scripts/pr_gate.py`), which reports each problem with where and how to fix it.
-- Tests that need the network, a GPU or a long run carry the `network`, `gpu` and `slow` markers; `make test`
-  leaves them out. Add a test next to the code you change.
-- Never commit benchmark data, agent trajectories, model weights or API keys. Datasets are downloaded at run
-  time from pinned upstream releases; test fixtures are small, fabricated and marked as such.
-- A change to a metric, a fold or a default that moves a paper number must also update
-  `experiments/paper_cells.yaml` and say why.
-- The components keep the paper's names: TabSchema (`src/tabagent/tabschema/`), TabSynth
-  (`src/tabagent/tabsynth.py`) and TabHead (`src/tabagent/tabhead.py`).
+**A test that passes without the fix is not a test.** After fixing a bug, revert the fix and confirm the test fails.
+Write the test first when you can.
+
+**A feature may only read the prefix.** In extractor code and in a fitted primitive, never read the decision step,
+the steps after it, or outcome fields (`score`, `reward`, `eval`). `tests/leakage/` fails when you do; that failure
+is the test working, not an obstacle to silence.
+
+**Never weaken a check to make it pass.** Do not loosen a tolerance, add a skip, broaden an `except`, or add a
+`noqa` to get green. If a check is wrong, say so in the pull request and let a person decide.
+
+**Change only what the issue needs.** No reformatting, renaming or "modernizing" of code you were not asked to touch.
+At most 800 changed lines outside `tests/` and `docs/`.
+
+## Layout
+
+| Path | What lives there |
+|---|---|
+| `src/tabagent/tabschema/` | TabSchema: the LLM pipeline that discovers features, the sandbox, the fitted primitives |
+| `src/tabagent/tabsynth.py`, `tabhead.py` | TabSynth (label-preserving paraphrases) and TabHead (the classifier) |
+| `src/tabagent/api.py` | `onboard`, `load`, `TabAgentHead` (decide, save, the confidence gate) |
+| `src/tabagent/adapters/` | log formats: OpenAI/Anthropic/LangChain messages, τ²-bench, CUGA, generic step logs |
+| `src/tabagent/scanner.py` | `tabagent scan` and `check-logs`: which LLM calls are replaceable |
+| `src/tabagent/serve.py`, `integrations/` | the HTTP decision service, the tool filter, the CUGA hot swap |
+| `src/tabagent/evaluation/` | task-grouped cross-validation, the paper's metrics, paired bootstrap intervals |
+| `experiments/` | the commands that recompute the paper's public results (`paper_cells.yaml`) |
+
+## Commands
+
+```bash
+uv sync --group dev
+make test        # the CPU suite: no network, no GPU, no API key
+make pr-ready    # what a pull request runs: lint, strict docs, tests with coverage, the contribution gate
+```
+
+## Traps specific to this codebase
+
+**A card's types are frozen.** Feature types are inferred once from the full training frame and stored in the card;
+never re-infer them per fold.
+
+**Two kinds of features.** LLM-written extractor code may only compute stateless features of one decision. Anything
+that needs statistics over runs (priors, co-usage) is a fitted primitive in `tabschema/fitted.py`, fitted inside the
+training folds.
+
+**CatBoost differs across CPUs.** A fit can move by up to about 0.8 points between x86-64 and arm64; compare numbers
+on one machine, and never "fix" a golden by re-recording it on another.
+
+**Generated code is untrusted.** The extractor runs in the sandbox unless the user reviewed it; never switch a
+default to in-process execution.
+
+## Before you open a pull request
+
+The bar is in `CONTRIBUTING.md` under "The bar", and it is the same for an agent as for a person. Check the
+description and the diff the way CI will:
+
+```bash
+python scripts/check_pr_body.py --file body.md
+make gate
+```
+
+- Fill in every section of `.github/pull_request_template.md`. Under "Agent use", "Written with:" names you,
+  truthfully. Leave "Read in full by:" for the person who reads every line of the diff; never fill it in for them.
+- Never tick a checklist box for something you did not do or run.
+- "Evidence" is a result you ran, or "No number can move:" with the reason. Never a number you did not measure.
+- Every `noqa`, `type: ignore`, `pragma: no cover` and skip gives its reason; every TODO links its issue.
 
 ## Using TabAgent in another project
 

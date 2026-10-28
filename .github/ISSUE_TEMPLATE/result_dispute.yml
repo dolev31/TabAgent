@@ -1,0 +1,32 @@
+name: Result dispute
+description: A number in the paper or the docs does not reproduce
+labels: [results]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Disagreement about a number is useful and welcome. Most of the time the two runs held something different
+        fixed: the pinned data, a seed, the CPU architecture. [docs/reproducing.md](https://github.com/dolev31/TabAgent/blob/main/docs/reproducing.md)
+        lists each cell's command and the value it gives. See [GOVERNANCE.md](https://github.com/dolev31/TabAgent/blob/main/GOVERNANCE.md#result-disputes).
+  - type: input
+    id: disputed
+    attributes:
+      label: The number being disputed
+      description: Where it appears (a paper table and row, a docs page) and its value.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: The command you ran, and its output
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: "`uv pip freeze`, `python --version`, the operating system and the CPU (x86-64 or arm64)."
+      render: text
+    validations:
+      required: true

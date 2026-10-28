@@ -17,6 +17,7 @@ from mkdocs.structure.files import File
 PAGES = {
     "CHANGELOG.md": ("changelog.md", "Changelog"),
     "CONTRIBUTING.md": ("project/contributing.md", "Contributing"),
+    "GOVERNANCE.md": ("project/governance.md", "Governance"),
     "SECURITY.md": ("project/security.md", "Security policy"),
     "CODE_OF_CONDUCT.md": ("project/code-of-conduct.md", "Code of conduct"),
     "LICENSE": ("project/license.md", "License"),
@@ -25,10 +26,14 @@ _REPO = "https://github.com/dolev31/TabAgent"
 _REWRITES = [
     (r"\]\(CODE_OF_CONDUCT\.md\)", "](code-of-conduct.md)"),
     (r"\]\(SECURITY\.md\)", "](security.md)"),
+    (r"\]\(GOVERNANCE\.md(#[^)]*)?\)", r"](governance.md\1)"),
+    (r"\]\(CONTRIBUTING\.md(#[^)]*)?\)", r"](contributing.md\1)"),
+    (r"\]\(CHANGELOG\.md\)", "](../changelog.md)"),
+    (r"\]\(LICENSE\)", "](license.md)"),
     (r"\]\(docs/reproducing\.md\)", "](../reproducing.md)"),
+    (r"\]\(\.github/pull_request_template\.md\)", f"]({_REPO}/blob/main/.github/pull_request_template.md)"),
     (r"\]\(docs/releasing\.md\)", f"]({_REPO}/blob/main/docs/releasing.md)"),
     (r"\]\(AGENTS\.md\)", f"]({_REPO}/blob/main/AGENTS.md)"),
-    (r"\]\(CONTRIBUTING\.md#", "](contributing.md#"),
 ]
 
 
