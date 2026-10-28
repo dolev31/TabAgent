@@ -32,7 +32,7 @@ body:
     id: ai
     attributes:
       label: Will you use AI tools or a coding agent?
-      description: Welcome either way. You stay responsible for every line (CONTRIBUTING.md#ai-assisted-contributions).
+      description: Welcome either way. You stay responsible for every line (CONTRIBUTING.md#ai-coding-agents).
       options:
         - "No"
         - "Yes, for suggestions or review"

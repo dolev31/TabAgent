@@ -26,6 +26,11 @@ is the test working, not an obstacle to silence.
 **Never weaken a check to make it pass.** Do not loosen a tolerance, add a skip, broaden an `except`, or add a
 `noqa` to get green. If a check is wrong, say so in the pull request and let a person decide.
 
+**The contributor docs are checked by tests.** `tests/test_contributor_docs_say_what_is_true.py` asserts that the
+paths, numbers, commands, links and required checks in CONTRIBUTING.md, this file and GOVERNANCE.md are real.
+Changing a gate's limit, a make target, a check's name or a section heading means updating the docs in the same
+commit; the suite will tell you.
+
 **Change only what the issue needs.** No reformatting, renaming or "modernizing" of code you were not asked to touch.
 At most 800 changed lines outside `tests/` and `docs/`.
 

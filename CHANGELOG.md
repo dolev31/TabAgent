@@ -4,6 +4,11 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **The contribution standard is tested.** `tests/test_contributor_docs_say_what_is_true.py` fails when
+  CONTRIBUTING.md, AGENTS.md, GOVERNANCE.md, the pull request template, the issue forms or the Wanted page name a
+  path, number, command, link, label or required check that is not real; with the network, it also compares them with
+  the live `main` ruleset, the labels and the open issues. It found the contribution-proposal form linking a renamed
+  section, now fixed. CONTRIBUTING.md lists the checks required to merge.
 - **A written contribution standard.** `CONTRIBUTING.md` sets the bar for every pull request, the method's
   guarantees a reviewer checks (leakage safety, task-grouped evaluation, the sandbox, saved heads that keep loading),
   "done" for each kind of change, and the rules for AI coding agents. `GOVERNANCE.md` says who decides and that a

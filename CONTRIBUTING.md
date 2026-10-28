@@ -43,6 +43,13 @@ python scripts/check_pr_body.py --file body.md   # the description
 make gate                                        # the diff: scripts/pr_gate.py with coverage
 ```
 
+**Required to merge.** The repository's `main` ruleset lets nothing into `main` except through a pull request whose
+review threads are resolved and whose checks are green: `lint`, `test (3.10)`, `test (3.11)`, `test (3.12)`,
+`test (3.13)`, `docs`, `example`, `gitleaks`, `The description meets the bar` and `The diff meets the bar`. It also
+refuses a force-push to `main` and its deletion. This page is tested too:
+`tests/test_contributor_docs_say_what_is_true.py` fails when a path, number, command, link or required check it
+names stops being true.
+
 ### Every pull request
 
 - **One logical change, with tests.** A refactor and a feature are two pull requests. At most 800 changed lines
