@@ -1,25 +1,43 @@
-## What and why
+<!--
+Fill in every section. The "pr-quality" check reads this description and fails while a section is empty, still
+holds only these comments, or a required box is unticked. The bar, and why it exists:
+https://github.com/dolev31/TabAgent/blob/main/CONTRIBUTING.md#the-bar
+-->
 
-<!-- What this changes and why, in two or three sentences a reviewer can check. Link the issue: "Closes #123". -->
+## Why
+
+<!-- The problem this solves, or the question it answers. Link the issue ("Closes #12"). The diff shows what
+changed; say why. -->
+
+## What changed
+
+<!-- Two to five lines a reviewer reads before the diff. Name any public function, CLI flag, card field or
+endpoint that is new or behaves differently. -->
 
 ## How it was tested
 
-<!-- The test you added, and what it fails on without your change. For a result: the command and its output. -->
+<!-- Name the test that fails without this change and passes with it, and the command you ran. A docs-only
+change: say how you checked it (for example `mkdocs build --strict`). -->
 
-## AI assistance
+## Evidence
 
-<!-- Tick one. AI help is welcome; an honest answer is required (CONTRIBUTING.md#ai-assisted-contributions). -->
+<!-- If this can move a quality, latency or cost number: the command and its output, on a public dataset, against
+the current main (for a head: `tabagent.cross_validate` or `experiments/reproduce.py`, with paired intervals). If it
+cannot, write one line that starts with "No number can move:" and say why. -->
 
-- [ ] None
-- [ ] AI-assisted: I wrote the change, with AI suggestions or review
-- [ ] AI-written: an AI tool or agent wrote most of it, and I have reviewed every line and can explain it
+## Agent use
+
+<!-- AI coding agents are welcome, under the same bar. Say which you used, or "none", and name the person who read
+every line of the diff and answers for it. Keep the two lines below and fill them in. -->
+
+Written with:
+Read in full by:
 
 ## Checklist
 
-- [ ] `make pr-ready` passes (lint, tests, the strict docs build and the contribution gate)
-- [ ] the change does one thing, and the issue it closes agreed on the approach
-- [ ] new behavior has a test that fails without the change
-- [ ] public functions, methods and classes I added or changed have docstrings and type annotations
-- [ ] users will not notice the change, or `CHANGELOG.md` has a line for it under "Unreleased"
-- [ ] no data, trajectories, weights, keys or personal information are added
-- [ ] no paper number moves, or `experiments/paper_cells.yaml` is updated and the reason is given above
+- [ ] This PR makes one logical change, and its issue agreed on the approach.
+- [ ] `make pr-ready` passes (lint, the strict docs build, the tests with coverage, and the contribution gate).
+- [ ] New behavior and every bug fix have a test that fails without the change.
+- [ ] Every new `noqa`, `type: ignore` or `pragma: no cover` names its code and gives a reason.
+- [ ] `CHANGELOG.md` has a line under Unreleased, or nothing a user sees changed.
+- [ ] I read every line of the diff, and I can explain each one.

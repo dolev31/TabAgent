@@ -4,6 +4,9 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **Every pull request description is checked.** `scripts/check_pr_body.py` refuses a description with an empty
+  section, a one-line reason, no evidence (or "No number can move:" without its reason) or no named reader; the
+  diff gate also requires every suppression to give its code and reason, and every new module a docstring.
 - **The paper, one slide from the home page.** Drag the hero's "Paper" tag along its pill (or click it) and a panel
   slides in with the title, the authors, links to arXiv, the PDF and the citation, and the paper itself. It follows
   the drag and springs back if let go early; Esc, a click outside or a swipe closes it; Ctrl/Cmd-click still opens

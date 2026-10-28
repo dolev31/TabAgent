@@ -56,6 +56,12 @@ def git(*args: str) -> str:
     return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, check=True).stdout
 
 
+def new_files(base: str) -> set[str]:
+    """Files this branch adds (not in ``base``)."""
+    out = git("diff", "--name-only", "--diff-filter=A", f"{base}...HEAD")
+    return {f for f in out.splitlines() if f}
+
+
 def changed_files(base: str) -> list[str]:
     """Files added, copied, modified or renamed on this branch since it left ``base``."""
     out = git("diff", "--name-only", "--diff-filter=ACMR", f"{base}...HEAD")
@@ -95,7 +101,7 @@ def _touched(node: ast.AST, lines: set[int]) -> bool:
     return any(node.lineno <= n <= end for n in lines)
 
 
-def check_api(path: str, lines: set[int], report: Report) -> None:
+def check_api(path: str, lines: set[int], report: Report, new: bool = False) -> None:
     """Docstrings and annotations on the public definitions this branch adds or changes."""
     source = (ROOT / path).read_text(encoding="utf-8")
     try:
@@ -103,6 +109,8 @@ def check_api(path: str, lines: set[int], report: Report) -> None:
     except SyntaxError as e:  # ruff reports it too; say where
         report.fail("hygiene", f"{path}:{e.lineno}: does not parse ({e.msg})")
         return
+    if new and ast.get_docstring(tree) is None:
+        report.fail("docs", f"{path}: a new module opens with a docstring that says what it is for.")
     for name, node in _defs(tree):
         header_end = node.body[0].lineno - 1 if node.body else node.lineno
         header = set(range(node.lineno, header_end + 1))
@@ -149,22 +157,34 @@ HYGIENE = [
         "code",
     ),
     (
-        re.compile(r"^#\s*(TODO|FIXME|XXX)\b(?!.*#\d+)"),
-        "a TODO without an issue number: open an issue and write `# TODO(#123): ...`",
+        re.compile(r"^#\s*(TODO|FIXME|XXX)\b(?!\(#\d+\))"),
+        "a TODO without its issue: open one and write `# TODO(#123): ...`",
         "",
         "comment",
     ),
     (
-        re.compile(r"^#\s*noqa(?::\s*[A-Z0-9, ]+)?\s*$"),
-        "`# noqa` without a reason: add why after it (`# noqa: E402  the import must follow X`)",
+        re.compile(r"^#\s*noqa\b(?!:\s*[A-Z]+[0-9]+(?:\s*,\s*[A-Z]+[0-9]+)*\s+(?:-\s+)?\S)"),
+        "a `# noqa` names its code and says why (`# noqa: E402 - the import must follow X`)",
         "",
         "comment",
     ),
     (
-        re.compile(r"^#\s*type:\s*ignore(\[[^\]]*\])?\s*$"),
-        "`# type: ignore` without a reason: add why after it",
+        re.compile(r"^#\s*type:\s*ignore(?!\[[^\]]+\]\s+(?:-\s+)?\S)"),
+        "a `# type: ignore` names its code and says why (`# type: ignore[arg-type] - why`)",
         "",
         "comment",
+    ),
+    (
+        re.compile(r"^#\s*pragma:\s*no\s+cover(?!\s+-\s+\S)"),
+        "a `# pragma: no cover` says why (`# pragma: no cover - why`)",
+        "",
+        "comment",
+    ),
+    (
+        re.compile(r"pytest\.skip\(\s*\)|pytest\.mark\.skip(?:\(\s*\))?\s*$"),
+        'a skipped test says why (`pytest.mark.skip(reason="...")`)',
+        "",
+        "code",
     ),
 ]
 
@@ -201,9 +221,20 @@ def check_hygiene(path: str, lines: set[int], report: Report) -> None:
         return
     source = full.read_text(encoding="utf-8", errors="replace")
     comments = _comments(source)
-    for n, text in enumerate(source.splitlines(), 1):
+    rows = source.splitlines()
+    for n, text in enumerate(rows, 1):
         if n not in lines:
             continue
+        handler = re.match(r"^\s*except\b[^#]*:\s*(.*)$", text)
+        if handler and n not in comments:
+            rest = handler.group(1).strip()
+            body = rows[n].strip() if n < len(rows) else ""
+            if rest == "pass" or (not rest and body == "pass" and (n + 1) not in comments):
+                report.fail(
+                    "hygiene",
+                    f"{path}:{n}: an `except` whose body is only `pass` hides the error; handle it, "
+                    "or say in a comment why it is safe to ignore.",
+                )
         code = text.split(comments[n], 1)[0] if n in comments else text
         for pattern, why, scope, where in HYGIENE:
             target = comments.get(n, "") if where == "comment" else code
@@ -257,12 +288,13 @@ def main(argv: list[str] | None = None) -> int:
 
     report = Report()
     files = changed_files(args.base)
+    added = new_files(args.base)
     lib = [f for f in files if f.startswith(LIB) and f.endswith(".py")]
     for path in files:
         lines = added_lines(args.base, path)
         check_hygiene(path, lines, report)
         if path in lib:
-            check_api(path, lines, report)
+            check_api(path, lines, report, new=path in added)
 
     if lib and not any(f.startswith("tests/") for f in files):
         report.fail(

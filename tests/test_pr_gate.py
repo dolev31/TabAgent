@@ -54,7 +54,7 @@ def test_a_sloppy_change_fails_every_gate(repo, capsys):
     out = capsys.readouterr().out
     for g in ("docs", "types", "tests", "changelog", "hygiene"):
         assert f"[{g}]" in out, g
-    assert "print()" in out and "bare `except:`" in out and "TODO without an issue number" in out
+    assert "print()" in out and "bare `except:`" in out and "TODO without its issue" in out
 
 
 def test_a_good_change_passes(repo, capsys):
@@ -106,5 +106,38 @@ def test_hygiene_reads_comments_not_strings(repo):
     report = gate.Report()
     gate.check_hygiene("src/tabagent/mod.py", {1, 2, 3, 4, 5}, report)
     assert [m for _, m in report.failures] == [
-        "src/tabagent/mod.py:5: a TODO without an issue number: open an issue and write `# TODO(#123): ...`."
+        "src/tabagent/mod.py:5: a TODO without its issue: open one and write `# TODO(#123): ...`."
     ]
+
+
+def test_suppressions_need_their_code_and_reason(repo):
+    """Every noqa, type: ignore and pragma names its code and says why; an except-pass explains."""
+    root, gate = repo
+    (root / "src/tabagent/mod.py").write_text(
+        '"""A module."""\n\n'
+        "import os  # noqa: F401 - re-exported for the CLI\n"
+        "import re  # noqa: F401\n"
+        "x: int = 'a'  # type: ignore[assignment] - a string sentinel\n"
+        "y: int = 'b'  # type: ignore\n"
+        "def f():  # pragma: no cover - only on Windows\n    return 1\n"
+        "def g():  # pragma: no cover\n    return 2\n"
+        "try:\n    pass\nexcept OSError:\n    pass\n"
+        "try:\n    pass\nexcept OSError:  # a missing cache is rebuilt on the next call\n    pass\n"
+    )
+    report = gate.Report()
+    gate.check_hygiene("src/tabagent/mod.py", set(range(1, 20)), report)
+    lines = sorted(int(m.split(":")[1]) for _, m in report.failures)
+    assert lines == [4, 6, 9, 13], [m for _, m in report.failures]
+
+
+def test_a_new_module_opens_with_a_docstring(repo):
+    root, gate = repo
+    (root / "src/tabagent/newmod.py").write_text(
+        'def half(x: float) -> float:\n    """Half."""\n    return x / 2\n'
+    )
+    report = gate.Report()
+    gate.check_api("src/tabagent/newmod.py", {1, 2, 3}, report, new=True)
+    assert any("new module opens with a docstring" in m for _, m in report.failures)
+    report = gate.Report()
+    gate.check_api("src/tabagent/newmod.py", {1, 2, 3}, report, new=False)
+    assert not any("new module" in m for _, m in report.failures)

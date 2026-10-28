@@ -1,4 +1,4 @@
-.PHONY: setup hooks lint format test check docs gate pr-ready data reproduce
+.PHONY: setup hooks lint format test check docs gate pr-body pr-ready data reproduce
 
 setup:
 	uv sync --group dev
@@ -26,7 +26,12 @@ gate:
 	uv run pytest -m "not slow and not gpu and not network" --cov=src/tabagent --cov-report=xml -q
 	uv run python scripts/pr_gate.py --base $(BASE) --coverage coverage.xml
 
-# Everything CI checks on a pull request, in one command: run it before you push.
+# The pull request description, checked as CI checks it: make pr-body BODY=body.md
+BODY ?= body.md
+pr-body:
+	python3 scripts/check_pr_body.py --file $(BODY)
+
+# Everything CI checks on a pull request's code, in one command: run it before you push.
 pr-ready: lint docs gate
 
 data:

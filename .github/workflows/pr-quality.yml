@@ -1,72 +1,66 @@
 name: pr-quality
-# The contribution bar for every pull request, on top of ci.yml (lint, tests on four Pythons, docs, example):
-#   gate      scripts/pr_gate.py on the pull request's own changes: docstrings and types on changed public API,
-#             a test with every library change, 90% of the changed library lines covered, a changelog line,
-#             hygiene, and at most 800 changed lines outside tests/ and docs/
-#   form      the pull request description fills the template: what and why, how it was tested, the issue it
-#             closes, and the AI-assistance disclosure (CONTRIBUTING.md#ai-assisted-contributions)
-# A maintainer waives one gate for one pull request with the label `gate-waived: <gate>`; the description says why.
+# Checks a pull request against the bar in CONTRIBUTING.md ("The bar") before a person reads it:
+#   description  scripts/check_pr_body.py: every section of the pull request template is filled in, "Evidence" is a
+#                result or says why no number can move, "Agent use" names who read every line, the checklist is ticked
+#   gate         scripts/pr_gate.py on the lines the diff adds: docstrings and types on changed public API, a new
+#                module's docstring, a test with every library change, 90% of the changed library lines covered, a
+#                changelog line, every suppression with its reason, every TODO with its issue, at most 800 lines
+#
+# It runs again when the description is edited or a label changes, so fixing the description is enough to clear it.
+# Drafts are skipped until they are marked ready for review. A maintainer waives one rule for one pull request with
+# a label: `no-changelog` (nothing a user sees changed), `no-new-test` (a pure refactor), or `gate-waived: <gate>`.
+# The workflow reads the pull request and the repository and writes nothing: it runs on `pull_request`, never
+# `pull_request_target`, so a fork's code runs with a read-only token. Actions are pinned by commit SHA (the tag is
+# in the trailing comment).
 on:
   pull_request:
-    types: [opened, edited, synchronize, reopened, labeled, unlabeled]
+    types: [opened, edited, synchronize, reopened, ready_for_review, labeled, unlabeled]
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: pr-quality-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
-  gate:
-    runs-on: ubuntu-latest
+  description:
+    name: The description meets the bar
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+      # The description reaches the script only through the environment, never by expanding into the command line.
+      - name: Check the description
+        env:
+          PR_BODY: ${{ github.event.pull_request.body }}
+        run: python scripts/check_pr_body.py
+
+  gate:
+    name: The diff meets the bar
+    if: github.event.pull_request.draft == false
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
           fetch-depth: 0
-      - uses: astral-sh/setup-uv@v5
+      - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5
       - run: uv sync --group dev --extra tabschema --extra llm
       - name: Tests with coverage
         run: uv run pytest -m "not slow and not gpu and not network" --cov=src/tabagent --cov-report=xml -q
       - name: The contribution gate on this pull request's changes
         env:
-          GATE_BASE: origin/${{ github.base_ref }}
-          GATE_WAIVE: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+          BASE_REF: ${{ github.base_ref }}
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
         run: |
-          waive=$(echo "$GATE_WAIVE" | tr ',' '\n' | sed -n 's/^gate-waived: *//p' | paste -sd, -)
-          uv run python scripts/pr_gate.py --base "$GATE_BASE" --coverage coverage.xml --waive "$waive"
-
-  form:
-    runs-on: ubuntu-latest
-    steps:
-      - name: The description follows the template
-        env:
-          BODY: ${{ github.event.pull_request.body }}
-        run: |
-          python3 - <<'EOF'
-          import os, re, sys
-          body = os.environ.get("BODY") or ""
-          problems = []
-          def section(title):
-              m = re.search(rf"^##\s*{re.escape(title)}\s*$(.*?)(?=^##\s|\Z)", body, re.M | re.S)
-              text = re.sub(r"<!--.*?-->", "", m.group(1), flags=re.S).strip() if m else None
-              return text
-          for title in ("What and why", "How it was tested"):
-              text = section(title)
-              if text is None:
-                  problems.append(f'the "## {title}" section is missing (use the pull request template)')
-              elif len(text) < 40:
-                  problems.append(f'"## {title}" needs a real answer (a sentence or two at least)')
-          ai = section("AI assistance")
-          if ai is None or not re.search(r"\[[xX]\]", ai):
-              problems.append('tick one box under "## AI assistance": an honest answer is required, and AI help is welcome')
-          elif re.search(r"\[[xX]\][^\n]*(?:wrote|generated)", ai) and not re.search(r"\[[xX]\][^\n]*(?:reviewed|understand)", ai):
-              problems.append('an AI-written change must also tick "I have reviewed every line and can explain it"')
-          unchecked = re.findall(r"^\s*-\s*\[ \]\s*(.+)$", section("Checklist") or "", re.M)
-          if unchecked:
-              problems.append("unticked checklist items: " + "; ".join(u.strip()[:70] for u in unchecked))
-          if problems:
-              print("The pull request description needs:")
-              for p in problems:
-                  print(f"  - {p}")
-              print("See CONTRIBUTING.md#the-bar. Edit the description; this check reruns on its own.")
-              sys.exit(1)
-          print("The description follows the template.")
-          EOF
+          waive=$(echo "$LABELS" | tr ',' '\n' | sed -n -e 's/^gate-waived: *//p' \
+            -e 's/^no-changelog$/changelog/p' -e 's/^no-new-test$/tests/p' | paste -sd, -)
+          uv run python scripts/pr_gate.py --base "origin/$BASE_REF" --coverage coverage.xml --waive "$waive"
