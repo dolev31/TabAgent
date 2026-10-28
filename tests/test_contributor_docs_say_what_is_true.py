@@ -18,8 +18,10 @@ compare the documents with GitHub: the live ruleset, the labels and the open iss
 
 import importlib.util
 import json
+import os
 import re
 import sys
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -134,11 +136,19 @@ def _required_to_merge() -> list[str]:
 
 
 def _github(path: str):
-    request = urllib.request.Request(
-        f"https://api.github.com/{path}", headers={"User-Agent": "tabagent-tests"}
-    )
-    with urllib.request.urlopen(request, timeout=30) as response:
-        return json.load(response)
+    """GitHub's REST API, with $GITHUB_TOKEN when it is set. Without one GitHub allows 60 requests an hour; a
+    test that hits that limit is skipped with the reason, since the limit says nothing about the documents."""
+    headers = {"User-Agent": "tabagent-tests", "Accept": "application/vnd.github+json"}
+    if os.environ.get("GITHUB_TOKEN"):
+        headers["Authorization"] = f"Bearer {os.environ['GITHUB_TOKEN']}"
+    request = urllib.request.Request(f"https://api.github.com/{path}", headers=headers)
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            return json.load(response)
+    except urllib.error.HTTPError as e:
+        if e.code in (403, 429) and e.headers.get("X-RateLimit-Remaining") == "0":
+            pytest.skip(reason="GitHub's API rate limit; set GITHUB_TOKEN or rerun later")
+        raise
 
 
 # --- what the documents name exists
@@ -396,8 +406,7 @@ def test_the_labels_contributing_names_exist():
 
 @pytest.mark.network
 def test_every_issue_the_wanted_page_links_is_open():
-    numbers = sorted(
-        set(re.findall(rf"github\.com/{REPO}/issues/(\d+)", _text("docs/project/wanted.md"))), key=int
-    )
-    closed = [n for n in numbers if _github(f"repos/{REPO}/issues/{n}")["state"] != "open"]
+    numbers = set(re.findall(rf"github\.com/{REPO}/issues/(\d+)", _text("docs/project/wanted.md")))
+    open_now = {str(issue["number"]) for issue in _github(f"repos/{REPO}/issues?state=open&per_page=100")}
+    closed = sorted(numbers - open_now, key=int)
     assert not closed, f"the Wanted page links closed issues {closed}; take them off the page"
