@@ -41,6 +41,7 @@ STANDARD = (
     "CONTRIBUTING.md",
     "AGENTS.md",
     "GOVERNANCE.md",
+    "MAINTAINING.md",
     ".github/pull_request_template.md",
     "docs/project/wanted.md",
 )
@@ -224,6 +225,7 @@ def test_every_relative_link_and_anchor_on_a_contributor_surface_resolves():
                 "GOVERNANCE.md",
                 "SECURITY.md",
                 "AGENTS.md",
+                "MAINTAINING.md",
                 "README.md",
             }:
                 continue
@@ -311,6 +313,16 @@ def test_the_agent_fields_agents_md_names_are_the_ones_the_check_reads():
 
 
 # --- labels, gates and required checks
+
+
+def test_the_issue_waiver_contributing_names_is_the_one_the_description_check_reads():
+    """CONTRIBUTING.md says a maintainer can waive the linked issue with a label; the description check reads
+    that label, and the workflow hands it the pull request's labels."""
+    check = _load("check_pr_body")
+    assert f"`{check.NO_ISSUE}` label" in _words("CONTRIBUTING.md")
+    workflow = yaml.safe_load(_text(".github/workflows/pr-quality.yml"))
+    step = next(s for s in workflow["jobs"]["description"]["steps"] if "check_pr_body.py" in s.get("run", ""))
+    assert '--labels "$LABELS"' in step["run"] and "labels" in step["env"]["LABELS"]
 
 
 def test_every_waiver_label_names_a_gate_the_gate_reports():

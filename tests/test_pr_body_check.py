@@ -145,3 +145,34 @@ def test_the_workflow_runs_both_checks_safely():
     for step in wf.split("- name:")[1:]:
         run = step.split("run:", 1)[1] if "run:" in step else ""
         assert "github.event.pull_request.body" not in run
+
+
+def test_why_must_link_the_issue_it_closes_unless_a_maintainer_waives_it():
+    """A contribution is claimed before it is written: "Why" links its issue, or carries `no-issue`."""
+    why = "`tabagent scan` cannot read OpenTelemetry GenAI traces, so agents that only export OTel spans "
+    unlinked = _replace(FILLED, "Why", why + "cannot be scanned before onboarding.")
+    assert any("links no issue" in p for p in check.problems(unlinked))
+    assert not any("links no issue" in p for p in check.problems(unlinked, {"no-issue"}))
+    url = _replace(
+        FILLED, "Why", why + "cannot be scanned. See https://github.com/dolev31/TabAgent/issues/1."
+    )
+    assert check.problems(url) == []
+    entity = _replace(FILLED, "Why", why + "cannot be scanned; the trace&#39;s spans are lost.")
+    assert any("links no issue" in p for p in check.problems(entity)), "an HTML entity is not an issue"
+
+
+def test_how_it_was_tested_names_the_command_in_backticks():
+    prose = _replace(
+        FILLED, "How it was tested", "I ran the adapter tests and the full suite, and they pass."
+    )
+    assert any("names no command or test" in p for p in check.problems(prose))
+    named = _replace(FILLED, "How it was tested", "Ran `make pr-ready`; all green.")
+    assert check.problems(named) == []
+
+
+def test_main_reads_the_labels(tmp_path, capsys):
+    body = tmp_path / "body.md"
+    body.write_text(re.sub(r"Closes #1\.", "", FILLED))
+    assert check.main(["--file", str(body)]) == 1
+    assert "links no issue" in capsys.readouterr().out
+    assert check.main(["--file", str(body), "--labels", "agent-assisted,no-issue"]) == 0

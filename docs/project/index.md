@@ -26,6 +26,10 @@ lead: "How to cite TabAgent, take part in it, and what you may do with it."
 
     Who decides, how a disputed number is settled, and what gets a deprecation period.
 
+-   :material-account-check-outline: [__Maintaining__](maintaining.md)
+
+    How a contribution is triaged, reviewed, merged and credited, and how issues are written.
+
 -   :material-shield-lock-outline: [__Security policy__](security.md)
 
     Generated code runs in a sandbox that is not a security boundary. How to report a vulnerability.

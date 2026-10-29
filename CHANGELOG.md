@@ -4,6 +4,13 @@ Changes that affect users, newest first. The GitHub release notes list every pul
 
 ## Unreleased
 
+- **Claim first, and maintainers' side of the bar.** A pull request's "Why" links the issue it closes (a maintainer
+  waives it for a small fix with the `no-issue` label), and "How it was tested" names the exact command in backticks;
+  the description check refuses either gap. CONTRIBUTING.md adds the claim steps ("I'm taking this", one pull request
+  per issue, a draft within two weeks), evidence from the real system and not only fakes, the whole problem rather
+  than one instance, two more cases closed without review, and credit. `MAINTAINING.md` (new) covers triage, pushing
+  back on shallow work, review, merge, credit and how to write issues; AGENTS.md adds the matching agent rules. The
+  proposal form asks for a "Done when" list, and blank issues are off.
 - **The contribution standard is tested.** `tests/test_contributor_docs_say_what_is_true.py` fails when
   CONTRIBUTING.md, AGENTS.md, GOVERNANCE.md, the pull request template, the issue forms or the Wanted page name a
   path, number, command, link, label or required check that is not real; with the network, it also compares them with

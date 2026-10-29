@@ -6,8 +6,8 @@ https://github.com/dolev31/TabAgent/blob/main/CONTRIBUTING.md#the-bar
 
 ## Why
 
-<!-- The problem this solves, or the question it answers. Link the issue ("Closes #12"). The diff shows what
-changed; say why. -->
+<!-- The problem this solves, or the question it answers. Link the issue you claimed ("Closes #12"); a small
+fix without one needs a maintainer's `no-issue` label. The diff shows what changed; say why. -->
 
 ## What changed
 
@@ -16,13 +16,13 @@ endpoint that is new or behaves differently. -->
 
 ## How it was tested
 
-<!-- Name the test that fails without this change and passes with it, and the command you ran. A docs-only
-change: say how you checked it (for example `mkdocs build --strict`). -->
+<!-- Name the test that fails without this change and passes with it, and the exact command you ran, in
+backticks. A docs-only change: say how you checked it (for example `mkdocs build --strict`). -->
 
 ## Evidence
 
-<!-- If this can move a quality, latency or cost number: the command and its output, on a public dataset, against
-the current main (for a head: `tabagent.cross_validate` or `experiments/reproduce.py`, with paired intervals). If it
+<!-- Evidence from the real system, not only from tests with fakes. If this can move a quality, latency or cost
+number: the command and its output, on a public dataset, against the current main (for a head: `tabagent.cross_validate` or `experiments/reproduce.py`, with paired intervals). If it
 cannot, write one line that starts with "No number can move:" and say why. -->
 
 ## Agent use

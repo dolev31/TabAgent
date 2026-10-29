@@ -1,14 +1,17 @@
 name: pr-quality
 # Checks a pull request against the bar in CONTRIBUTING.md ("The bar") before a person reads it:
-#   description  scripts/check_pr_body.py: every section of the pull request template is filled in, "Evidence" is a
-#                result or says why no number can move, "Agent use" names who read every line, the checklist is ticked
+#   description  scripts/check_pr_body.py: every section of the pull request template is filled in, "Why" links the
+#                issue it closes (the `no-issue` label waives it), "How it was tested" names the command in backticks,
+#                "Evidence" is a result or says why no number can move, "Agent use" names who read every line, and
+#                the checklist is ticked
 #   gate         scripts/pr_gate.py on the lines the diff adds: docstrings and types on changed public API, a new
 #                module's docstring, a test with every library change, 90% of the changed library lines covered, a
 #                changelog line, every suppression with its reason, every TODO with its issue, at most 800 lines
 #
 # It runs again when the description is edited or a label changes, so fixing the description is enough to clear it.
 # Drafts are skipped until they are marked ready for review. A maintainer waives one rule for one pull request with
-# a label: `no-changelog` (nothing a user sees changed), `no-new-test` (a pure refactor), or `gate-waived: <gate>`.
+# a label: `no-issue` (a small fix with no issue), `no-changelog` (nothing a user sees changed), `no-new-test`
+# (a pure refactor), or `gate-waived: <gate>`.
 # The workflow reads the pull request and the repository and writes nothing: it runs on `pull_request`, never
 # `pull_request_target`, so a fork's code runs with a read-only token. Actions are pinned by commit SHA (the tag is
 # in the trailing comment).
@@ -40,7 +43,8 @@ jobs:
       - name: Check the description
         env:
           PR_BODY: ${{ github.event.pull_request.body }}
-        run: python scripts/check_pr_body.py
+          LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
+        run: python scripts/check_pr_body.py --labels "$LABELS"
 
   gate:
     name: The diff meets the bar

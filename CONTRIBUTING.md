@@ -26,10 +26,15 @@ what a pull request runs: lint and format, the strict docs build, the suite with
 
 ## Before you write code: agree on the approach
 
-Comment on the issue (or open one, with the *Contribution proposal* form) with how you plan to solve it, and wait
-for a maintainer's go. For a new decision kind, a change to the saved-head format, a metric, or anything over about
-400 lines, this is required: the design is agreed before the code is written. Typos, broken links and small doc
-fixes need no issue.
+1. **Find or open an issue.** Every pull request links the issue it closes; a small fix (a typo, a broken link)
+   can go without one when a maintainer adds the `no-issue` label. An issue says what "done" means: read its
+   "Done when" list before you start. A new idea starts with the *Contribution proposal* form.
+2. **Claim it.** Comment "I'm taking this" on the issue, and a maintainer assigns it to you. One pull request per
+   issue: if someone has already claimed it, pick another, or offer to help in its thread.
+3. **Agree the design first.** Comment with how you plan to solve it, and wait for a maintainer's go. For a new
+   decision kind, a change to the saved-head format, a metric, or anything over about 400 lines, this is
+   required: the design is agreed before the code is written.
+4. **Open a draft pull request within two weeks** of the go, or the claim lapses and the issue is open to others.
 
 ## The bar
 
@@ -69,6 +74,13 @@ names stops being true.
   `# pragma: no cover - reason`, `pytest.mark.skip(reason="...")`. An `except` whose body is only `pass` says in a
   comment why the error is safe to ignore. A TODO links its issue, as `TODO(#12)`. No `print()` in the library: use
   the `tabagent` logger. No bare `except:`.
+- **Evidence from the real system, not only from fakes.** A unit test with a fabricated log shows the code handles
+  a case; it does not show the problem is gone. Show the change working where the problem lives: the command and its
+  output before and after, on real logs or a public dataset. For a race, a leak or a latency claim, that is a
+  reproduction that fails on main and passes on your branch, with the counts.
+- **The whole problem, not one instance.** When the bug is a pattern, search for it and fix, or list with the reason
+  it is safe, every place it occurs. A pull request that fixes the line an issue named while the same bug sits ten
+  lines below is sent back.
 - **No number moves unless that is the point**, and then "Evidence" shows it: the command, its output on a public
   dataset, and the paired interval against main. A change that moves a paper number also updates
   `experiments/paper_cells.yaml`. A maintainer adds `needs-evidence` when a description says a number moves but does
@@ -98,7 +110,9 @@ These are what make TabAgent's numbers mean something. A reviewer checks them on
 | Feature primitive | It is registered in `FITTED` (`src/tabagent/tabschema/fitted.py`), reads only the training rows and the prefix, and a test in `tests/leakage/test_leakage.py` shows scrambling the test fold's labels leaves it unchanged. |
 | Head or estimator | It follows the scikit-learn contract (`clone`, `get_params`, `fit`/`predict_proba`); `experiments/figures/head_ablation.py` compares it on a fixed card with paired intervals. |
 | Benchmark | It loads at a pinned revision with each file's SHA-256 in `datasets/manifests/`, its license is in `NOTICE`, a frozen card is under `src/tabagent/cards/`, and its tests run offline. |
-| Bug fix | The test that reproduces the bug is in the same pull request and fails on main. |
+| Bug fix | The test that reproduces the bug is in the same pull request and fails on main. Every other place with the same pattern is fixed, or listed with the reason it is safe. |
+| Feature | The issue's "Done when" list is met item by item, and the description says where. The design agreed on the issue is the design in the diff. |
+| Latency or cost | Before and after numbers from the same machine and command, with the spread over at least three runs. |
 | Serving or the CLI | The serving tests cover the new path, including a deferral and a timeout; the CLI page of the docs (generated from argparse) builds. |
 | Docs | `mkdocs build --strict` passes, and every command shown was run. |
 
@@ -111,18 +125,25 @@ Agents are welcome, and the bar does not move for them.
 - **"Written with:" names the agent, or "none".** Using an agent is not a mark against a pull request; hiding it is.
   A maintainer may add `agent-assisted`, for the record.
 - **An agent's confidence is not evidence.** A test that was run is, and so is a command's output.
-- **An agent works from an agreed issue.** It does not open pull requests for problems it found by itself, and it
-  never makes bulk changes: no reformatting, renaming or "modernizing" across files the issue did not need.
+- **An agent works from an issue its person claimed and was assigned.** It does not open pull requests for problems
+  it found by itself, and it never makes bulk changes: no reformatting, renaming or "modernizing" across files the
+  issue did not need.
 - [AGENTS.md](AGENTS.md) gives an agent this repository's rules. Point yours at it.
 
 ## Below the bar
 
 The checks fail and say what is missing; fix the description or the diff and they run again. A pull request a
 reviewer still finds below the bar (no reason for the change, untested behavior, a diff its author cannot explain)
-is closed with a link to this section. That is a statement about the pull request, not about you: open it again
-once it meets the bar. A pull request whose description does not match its diff, or one of many opened at once, is
-closed without review. A pull request with no reply to review comments for 30 days is closed; it can be reopened at
-any time.
+is sent back with the specific gaps, or closed with a link to this section. That is a statement about the pull
+request, not about you: open it again once it meets the bar. A pull request with no reply to review comments for 30
+days is closed; it can be reopened at any time.
+
+These are closed without review:
+
+- a pull request whose description does not match its diff;
+- one of many opened at once by the same author;
+- a change to formatting, spelling or wording alone, outside the docs, unless an issue asked for it;
+- a pull request for an issue someone else has claimed.
 
 ## How a pull request is reviewed
 
@@ -137,7 +158,13 @@ short on:
 4. **Is it tested the way it can fail?** A test that would catch the bug it fixes, not only the happy path.
 5. **Will the next person understand it?** Clear names, a docstring that says why as well as what, and no dead code.
 
-Expect a first review within a week.
+Expect a first review within a week. [MAINTAINING.md](MAINTAINING.md) is the maintainers' side of the same bar:
+triage, review, merge and credit.
+
+## Credit
+
+Credit follows merged work. Your commit carries your name, and the release notes name every contributor and the pull
+request they landed. Nothing here is traded for stars, follows or posts.
 
 ## Disagreeing about a number
 

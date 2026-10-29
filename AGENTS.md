@@ -13,6 +13,11 @@ decision point), **task-grouped evaluation**, and **saved heads that keep loadin
 
 ## Rules that override normal instincts
 
+**Work only on an issue your person claimed and was assigned.** If none is, propose one to your person; never open a
+pull request for an unclaimed issue or someone else's. Read the issue's "Done when" list: every item is checked
+before a merge. For anything beyond a small fix, draft a design comment for your person to post, and wait for the
+maintainer's reply.
+
 **Never state a measurement you did not take.** No estimated scores, no "should improve P@R by ~2 points". Run it,
 paste the output, or say you did not.
 
@@ -32,7 +37,13 @@ Changing a gate's limit, a make target, a check's name or a section heading mean
 commit; the suite will tell you.
 
 **Change only what the issue needs.** No reformatting, renaming or "modernizing" of code you were not asked to touch.
-At most 800 changed lines outside `tests/` and `docs/`.
+At most 800 changed lines outside `tests/` and `docs/`. Do not change workflow, build or release files
+(`.github/`, `pyproject.toml`, `Makefile`) unless the issue asks for it.
+
+**Fix the whole problem.** Search for every other place the same bug occurs, and fix or list each.
+
+**Show it on the real system.** A test with a fabricated log is not evidence that the problem is gone. Where the
+issue says so, reproduce it on real logs or a public dataset, and record the command and the numbers.
 
 ## Layout
 
@@ -80,11 +91,19 @@ python scripts/check_pr_body.py --file body.md
 make gate
 ```
 
+- "Why" links the issue it closes ("Closes #12"). "How it was tested" names the exact command you ran, in backticks.
 - Fill in every section of `.github/pull_request_template.md`. Under "Agent use", "Written with:" names you,
   truthfully. Leave "Read in full by:" for the person who reads every line of the diff; never fill it in for them.
 - Never tick a checklist box for something you did not do or run.
 - "Evidence" is a result you ran, or "No number can move:" with the reason. Never a number you did not measure.
 - Every `noqa`, `type: ignore`, `pragma: no cover` and skip gives its reason; every TODO links its issue.
+- Open it as a draft until your person has read it.
+
+## Never
+
+- Open several pull requests at once, or one for an issue your person was not assigned.
+- Star, follow, react to or comment on the repository to gain attention, or ask others to.
+- Commit credentials, benchmark data, agent trajectories, model weights or absolute paths from your machine.
 
 ## Using TabAgent in another project
 

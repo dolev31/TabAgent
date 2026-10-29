@@ -15,17 +15,29 @@ body:
     validations:
       required: true
   - type: textarea
-    id: plan
+    id: what-exists
     attributes:
-      label: Your plan
-      description: Which files you will change or add, the approach, and anything you are unsure about.
+      label: What exists
+      description: The code involved today, as file paths and function names, and what it does not do.
     validations:
       required: true
   - type: textarea
-    id: test
+    id: plan
     attributes:
-      label: How you will test it
-      description: The test that will fail before your change and pass after it.
+      label: Your plan
+      description: Numbered steps. Which files you will change or add, any public interface that changes, and anything you are unsure about.
+    validations:
+      required: true
+  - type: textarea
+    id: done-when
+    attributes:
+      label: Done when
+      description: >-
+        A checklist a reviewer can verify: the test that fails before your change and passes after it, and the
+        evidence from the real system (the command and its output on real logs or a public dataset, before and after).
+      placeholder: |
+        - [ ] ...
+        - [ ] ...
     validations:
       required: true
   - type: dropdown

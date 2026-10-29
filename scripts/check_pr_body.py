@@ -1,6 +1,6 @@
 """Refuse a pull request whose description is below the bar.
 
-    python scripts/check_pr_body.py --file body.md
+    python scripts/check_pr_body.py --file body.md [--labels no-issue]
 
 Run by `.github/workflows/pr-quality.yml` on every pull request that is not a draft, and by hand before you
 open one. The bar is written out in CONTRIBUTING.md under "The bar"; this script checks the description, and
@@ -9,9 +9,10 @@ open one. The bar is written out in CONTRIBUTING.md under "The bar"; this script
 Checks the description (from `--file`, `-` for stdin, or `$PR_BODY`):
 
 - every section of `.github/pull_request_template.md` is there and filled in, not left as the template's
-  comments
-  or a placeholder such as "TBD";
-- "Why" is a reason, not a title;
+  comments or a placeholder such as "TBD";
+- "Why" is a reason, not a title, and links the issue it closes (`#12` or an issue URL): a contribution is
+  claimed before it is written. A maintainer waives the link for a small fix with the `no-issue` label;
+- "How it was tested" names the exact command or test, in backticks;
 - "Evidence" is a result, or a line that starts "No number can move:" and gives the reason;
 - "Agent use" says what wrote the change and names, by GitHub handle, the person who read every line of it;
 - every box in the checklist is ticked.
@@ -46,10 +47,15 @@ PLACEHOLDERS = {"todo", "tbd", "wip", "n/a", "na", "none", "-", "...", "see diff
 #: A "Why" shorter than this is a title, not a reason.
 MIN_WHY_WORDS = 8
 
+#: The label with which a maintainer waives the linked issue, for a small fix.
+NO_ISSUE = "no-issue"
+
 _COMMENT = re.compile(r"<!--.*?-->", re.S)
 _HEADING = re.compile(r"^##\s+(.+?)\s*$", re.M)
 _BOX = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.+)$", re.M)
 _HANDLE = re.compile(r"@[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})")
+_ISSUE = re.compile(r"(?<![\w/&])#\d+\b|/issues/\d+\b")
+_CODE_SPAN = re.compile(r"`[^`\n]+`")
 
 
 def sections(body: str) -> dict[str, str]:
@@ -74,8 +80,9 @@ def _is_placeholder(text: str) -> bool:
     return text in PLACEHOLDERS or text.strip(".!") in PLACEHOLDERS | {""}
 
 
-def problems(body: str) -> list[str]:
-    """What the description is missing, one sentence each; empty when it meets the bar."""
+def problems(body: str, labels: set[str] | frozenset[str] = frozenset()) -> list[str]:
+    """What the description is missing, one sentence each; empty when it meets the bar. ``labels`` are the
+    pull request's labels: ``no-issue`` waives the linked issue."""
     found = []
     parts = sections(body or "")
     for name in SECTIONS:
@@ -87,8 +94,21 @@ def problems(body: str) -> list[str]:
             found.append(f'"## {name}" says only "{parts[name]}"')
 
     why = parts.get("Why", "")
-    if why and not _is_placeholder(why) and len(why.split()) < MIN_WHY_WORDS:
-        found.append('"## Why" is a few words; say what problem this solves, and for whom')
+    if why and not _is_placeholder(why):
+        if len(why.split()) < MIN_WHY_WORDS:
+            found.append('"## Why" is a few words; say what problem this solves, and for whom')
+        if NO_ISSUE not in labels and not _ISSUE.search(why):
+            found.append(
+                '"## Why" links no issue; claim one first and link it ("Closes #12"), '
+                f"or ask a maintainer to add {NO_ISSUE} for a small fix"
+            )
+
+    tested = parts.get("How it was tested", "")
+    if tested and not _is_placeholder(tested) and not _CODE_SPAN.search(tested):
+        found.append(
+            '"## How it was tested" names no command or test; put the exact command you ran, '
+            "or the test's name, in backticks"
+        )
 
     evidence = parts.get("Evidence", "")
     if evidence.lower().startswith("no number can move"):
@@ -119,6 +139,7 @@ def main(argv: list[str] | None = None) -> int:
     """Check a pull request description; exit 1 and say what is missing when it is below the bar."""
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--file", help="the description, or - for stdin (default: $PR_BODY)")
+    parser.add_argument("--labels", default="", help="the pull request's labels, comma-separated")
     args = parser.parse_args(argv)
     if args.file == "-":
         body = sys.stdin.read()
@@ -126,7 +147,7 @@ def main(argv: list[str] | None = None) -> int:
         body = Path(args.file).read_text(encoding="utf-8")
     else:
         body = os.environ.get("PR_BODY", "")
-    found = problems(body)
+    found = problems(body, {label.strip() for label in args.labels.split(",") if label.strip()})
     for p in found:
         print(f"::error::{p}")
     print(f"The bar, and how to meet it: {GUIDE}" if found else "the description meets the bar")
